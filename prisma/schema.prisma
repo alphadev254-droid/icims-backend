@@ -1,0 +1,370 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Permissions (global — seeded once) ────────────────────────────────────────
+
+model Permission {
+  id       String   @id @default(cuid())
+  name     String   @unique   // e.g. 'members:create'
+  resource String             // 'members'
+  action   String             // 'create'
+
+  roles    RolePermission[]
+
+  @@map("permissions")
+}
+
+// ─── Roles (global — shared across all tenants) ────────────────────────────────
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique    // 'national_admin' | 'regional_leader' etc.
+  displayName String              // 'National Administrator'
+  createdAt   DateTime @default(now())
+
+  permissions RolePermission[]
+  users       User[]
+
+  @@map("roles")
+}
+
+// ─── Role ↔ Permission junction ────────────────────────────────────────────────
+
+model RolePermission {
+  nationalAdminId String
+  roleId          String
+  permissionId    String
+
+  nationalAdmin User       @relation("NationalAdminRolePermissions", fields: [nationalAdminId], references: [id], onDelete: Cascade)
+  role          Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([nationalAdminId, roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ─── Users & Auth ─────────────────────────────────────────────────────────────
+
+model User {
+  id                     String   @id @default(cuid())
+  email                  String   @unique
+  password               String
+  firstName              String
+  lastName               String
+  roleId                 String?
+  phone                  String?
+  avatar                 String?
+  churchId               String?
+  packageId              String?
+  nationalAdminId        String?
+  regions                String?  @db.Text
+  districts              String?  @db.Text
+  traditionalAuthorities String?  @db.Text
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  role                   Role?    @relation(fields: [roleId], references: [id])
+  church                 Church?  @relation(fields: [churchId], references: [id])
+  package                Package? @relation(fields: [packageId], references: [id])
+  ownedChurches          Church[] @relation("NationalAdminChurches")
+  rolePermissions        RolePermission[] @relation("NationalAdminRolePermissions")
+
+  @@map("users")
+}
+
+// ─── Church Hierarchy ──────────────────────────────────────────────────────────
+
+model Location {
+  id                   Int      @id @default(autoincrement())
+  region               String
+  district             String
+  traditionalAuthority String   @map("traditional_authority")
+  village              String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("locations")
+}
+
+model Church {
+  id                   String   @id @default(cuid())
+  name                 String
+  // level: national | regional | district | local
+  level                String   @default("local")
+  location             String
+  country              String   @default("Malawi")
+  region               String?
+  district             String?
+  traditionalAuthority String?
+  village              String?
+  address              String?
+  phone       String?
+  email       String?
+  website     String?
+  memberCount Int      @default(0)
+  yearFounded Int?
+  parentId    String?
+  leaderId    String?
+  branchCode  String?  @unique
+  // Link to national admin account that owns this church
+  nationalAdminId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent        Church?    @relation("ChurchHierarchy", fields: [parentId], references: [id])
+  children      Church[]   @relation("ChurchHierarchy")
+  nationalAdmin User?      @relation("NationalAdminChurches", fields: [nationalAdminId], references: [id])
+  users         User[]
+  members       Member[]
+  events        Event[]
+  donations     Donation[]
+  attendance    Attendance[]
+  meetings      Meeting[]
+  announcements Announcement[]
+  resources     Resource[]
+  payments      Payment[]
+
+  @@map("churches")
+}
+
+// ─── Members ───────────────────────────────────────────────────────────────────
+
+model Member {
+  id          String    @id @default(cuid())
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String
+  gender      String?   // male | female | other
+  dateOfBirth DateTime?
+  // status: active | inactive | pending
+  status      String    @default("pending")
+  joinDate    DateTime  @default(now())
+  roles       String    @default("[]") @db.Text  // JSON array of ministry roles (choir, elder, etc.)
+  familyId    String?
+  memberId    String?   @unique                  // auto-generated e.g. MBR-0001
+  churchId    String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  church      Church    @relation(fields: [churchId], references: [id])
+
+  @@map("members")
+}
+
+// ─── Events ────────────────────────────────────────────────────────────────────
+
+model Event {
+  id            String   @id @default(cuid())
+  title         String
+  description   String   @db.Text
+  date          DateTime
+  time          String
+  location      String
+  // type: service | meeting | conference | outreach | fellowship
+  type          String   @default("service")
+  // status: upcoming | ongoing | completed | cancelled
+  status        String   @default("upcoming")
+  attendeeCount Int      @default(0)
+  churchId      String
+  createdById   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  church        Church   @relation(fields: [churchId], references: [id])
+
+  @@map("events")
+}
+
+// ─── Giving & Donations ────────────────────────────────────────────────────────
+
+model Donation {
+  id         String   @id @default(cuid())
+  memberId   String?
+  memberName String
+  amount     Float
+  // type: tithe | offering | pledge | special
+  type       String   @default("offering")
+  date       DateTime @default(now())
+  // method: cash | card | mobile_money | bank_transfer
+  method     String   @default("cash")
+  // status: completed | pending | failed
+  status     String   @default("pending")
+  reference  String?
+  notes      String?  @db.Text
+  churchId   String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  church     Church   @relation(fields: [churchId], references: [id])
+
+  @@map("donations")
+}
+
+// ─── Attendance ────────────────────────────────────────────────────────────────
+
+model Attendance {
+  id             String   @id @default(cuid())
+  eventId        String?
+  churchId       String
+  date           DateTime
+  totalAttendees Int
+  newVisitors    Int      @default(0)
+  serviceType    String   @default("Sunday Service")
+  notes          String?  @db.Text
+  createdAt      DateTime @default(now())
+
+  church         Church   @relation(fields: [churchId], references: [id])
+
+  @@map("attendance")
+}
+
+// ─── Meetings ──────────────────────────────────────────────────────────────────
+
+model Meeting {
+  id          String   @id @default(cuid())
+  title       String
+  description String?  @db.Text
+  date        DateTime
+  time        String
+  location    String?
+  // status: scheduled | in_progress | completed | cancelled
+  status      String   @default("scheduled")
+  agenda      String?  @db.Text  // JSON string
+  minutes     String?  @db.Text
+  churchId    String
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  church      Church   @relation(fields: [churchId], references: [id])
+
+  @@map("meetings")
+}
+
+// ─── Announcements / Communication ────────────────────────────────────────────
+
+model Announcement {
+  id          String   @id @default(cuid())
+  title       String
+  content     String   @db.Text
+  // type: announcement | prayer_request | newsletter
+  type        String   @default("announcement")
+  // priority: normal | urgent
+  priority    String   @default("normal")
+  churchId    String
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  church      Church   @relation(fields: [churchId], references: [id])
+
+  @@map("announcements")
+}
+
+// ─── Resources ────────────────────────────────────────────────────────────────
+
+model Resource {
+  id          String   @id @default(cuid())
+  title       String
+  description String?  @db.Text
+  // category: bible | devotional | study_plan | sermon | worship | general
+  category    String   @default("general")
+  // type: article | video | audio | document | link
+  type        String   @default("document")
+  fileUrl     String?  // primary uploaded file path or external URL
+  fileName    String?  // original file name
+  fileSize    Int?     // bytes
+  mimeType    String?  // e.g. application/pdf
+  filesJson   String?  @db.Text  // JSON array of { url, name, size, mimeType } for multiple uploads
+  duration    String?  // e.g. "45 min"
+  author      String?
+  tags        String?  @db.Text  // JSON array
+  churchId    String
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  church      Church   @relation(fields: [churchId], references: [id])
+
+  @@map("resources")
+}
+
+// ─── Packages & Payments ───────────────────────────────────────────────────────
+
+model Package {
+  id           String   @id @default(cuid())
+  name         String   @unique  // 'basic' | 'standard' | 'premium'
+  displayName  String
+  description  String?  @db.Text
+  priceMonthly Float    @default(0)
+  priceYearly  Float    @default(0)
+  // Maximum number of churches allowed for this package
+  maxChurches  Int      @default(1)
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  features     PackageFeatureLink[]
+  payments     Payment[]
+  users        User[]  // National admins with this package
+
+  @@map("packages")
+}
+
+model PackageFeature {
+  id          String   @id @default(cuid())
+  name        String   @unique  // e.g. 'members_management'
+  displayName String             // e.g. 'Members Management'
+  description String?  @db.Text
+  // category: core | communication | reporting | management
+  category    String   @default("core")
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  packages  PackageFeatureLink[]
+
+  @@map("package_features")
+}
+
+model PackageFeatureLink {
+  packageId String
+  featureId String
+
+  package Package        @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  feature PackageFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([packageId, featureId])
+  @@map("package_feature_links")
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  churchId    String
+  packageId   String?
+  amount      Float
+  currency    String   @default("MWK")
+  // type: subscription | upgrade | downgrade | renewal
+  type        String   @default("subscription")
+  // status: pending | completed | failed
+  status      String   @default("pending")
+  // denormalized package name for historical records
+  packageName String   @default("basic")
+  reference   String?
+  notes       String?  @db.Text
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  church      Church   @relation(fields: [churchId], references: [id])
+  package     Package? @relation(fields: [packageId], references: [id])
+
+  @@map("payments")
+}

@@ -1,0 +1,31 @@
+import { Router } from 'express';
+import { authenticate } from '../middleware/auth';
+import { authorizePermission } from '../middleware/auth';
+import {
+  getPackages, getCurrentPackage,
+  getFeatures, createFeature, deleteFeature,
+  setPackageFeatures,
+  getPayments, createPayment, updatePayment,
+} from '../controllers/packageController';
+
+const router = Router();
+
+// All routes require authentication
+router.use(authenticate);
+
+// ─── Package tiers ────────────────────────────────────────────────────────────
+router.get('/',          getPackages);  // Public - no permission needed
+router.get('/current',   getCurrentPackage);  // User's own package
+
+// ─── Package features (manage which features each package includes) ───────────
+router.get('/features',           getFeatures);  // Public - no permission needed
+router.post('/features',          authorizePermission('packages:manage'), createFeature);
+router.delete('/features/:id',    authorizePermission('packages:manage'), deleteFeature);
+router.put('/:id/features',       authorizePermission('packages:manage'), setPackageFeatures);
+
+// ─── Payments ─────────────────────────────────────────────────────────────────
+router.get('/payments',           getPayments);  // User's own payments
+router.post('/payments',          createPayment);  // User can create payments
+router.put('/payments/:id',       updatePayment);  // User can update own payments
+
+export default router;
