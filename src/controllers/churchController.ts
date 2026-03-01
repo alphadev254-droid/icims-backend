@@ -91,6 +91,11 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     }
   });
 
+  if (!adminUser) {
+    res.status(404).json({ success: false, message: 'User not found' });
+    return;
+  }
+
   if (role !== 'national_admin') {
     res.status(403).json({ success: false, message: 'Only national admins can create churches' });
     return;
