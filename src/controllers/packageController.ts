@@ -49,7 +49,6 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        roleName: user.roleName
       },
       package: user.package,
       churchCount: user.ownedChurches.length,

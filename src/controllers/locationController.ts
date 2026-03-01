@@ -11,7 +11,7 @@ export async function getRegions(req: Request, res: Response): Promise<void> {
 }
 
 export async function getDistricts(req: Request, res: Response): Promise<void> {
-  const { region } = req.params;
+  const region = String(req.params.region);
   const districts = await prisma.location.findMany({
     where: { region },
     select: { district: true },
@@ -22,7 +22,8 @@ export async function getDistricts(req: Request, res: Response): Promise<void> {
 }
 
 export async function getTraditionalAuthorities(req: Request, res: Response): Promise<void> {
-  const { region, district } = req.params;
+  const region = String(req.params.region);
+  const district = String(req.params.district);
   const tas = await prisma.location.findMany({
     where: { region, district },
     select: { traditionalAuthority: true },
@@ -33,7 +34,9 @@ export async function getTraditionalAuthorities(req: Request, res: Response): Pr
 }
 
 export async function getVillages(req: Request, res: Response): Promise<void> {
-  const { region, district, traditionalAuthority } = req.params;
+  const region = String(req.params.region);
+  const district = String(req.params.district);
+  const traditionalAuthority = String(req.params.traditionalAuthority);
   const villages = await prisma.location.findMany({
     where: { region, district, traditionalAuthority },
     select: { village: true },
