@@ -214,22 +214,31 @@ export async function login(req: Request, res: Response): Promise<void> {
   }
 
   // Get package from National Admin if needed
-  user = await getUserWithPackage(user.id) as any;
+  const userWithPackage = await getUserWithPackage(user.id);
+  if (!userWithPackage) {
+    res.status(500).json({ success: false, message: 'Failed to load user data' });
+    return;
+  }
 
-  const permissions = await getUserPermissions(user);
+  const permissions = await getUserPermissions(userWithPackage);
+
+  if (!userWithPackage) {
+    res.status(500).json({ success: false, message: 'Failed to load user data' });
+    return;
+  }
 
   const token = signToken({
-    userId: user.id,
-    email: user.email,
-    role: (user.role?.name || 'member') as UserRole,
-    churchId: user.churchId,
+    userId: userWithPackage.id,
+    email: userWithPackage.email,
+    role: (userWithPackage.role?.name || 'member') as UserRole,
+    churchId: userWithPackage.churchId,
     permissions,
-    districts: parseJson(user.districts),
-    traditionalAuthorities: parseJson(user.traditionalAuthorities),
+    districts: parseJson(userWithPackage.districts),
+    traditionalAuthorities: parseJson(userWithPackage.traditionalAuthorities),
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.json({ success: true, user: safeUser(user, permissions) });
+  res.json({ success: true, user: safeUser(userWithPackage, permissions) });
 }
 
 const registerSchema = z.object({

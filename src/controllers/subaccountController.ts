@@ -73,11 +73,11 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
   }
 
   // Get nationalAdminId from user or church
-  let nationalAdminId = req.user?.nationalAdminId || userId;
+  let nationalAdminId = userId;
   if (roleName === 'district_overseer' || roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (user?.nationalAdminId) {
-      nationalAdminId = user.nationalAdminId;
+    const userRecord = await prisma.user.findUnique({ where: { id: userId } });
+    if (userRecord?.nationalAdminId) {
+      nationalAdminId = userRecord.nationalAdminId;
     }
   }
 

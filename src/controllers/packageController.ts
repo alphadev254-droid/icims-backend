@@ -212,8 +212,8 @@ const paymentSchema = z.object({
 /** POST /api/packages/payments — record a payment and update user package */
 export async function createPayment(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
-  const churchId = req.user?.churchId;
-  if (!userId || !churchId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+  const role = req.user?.role;
+  if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
   const parsed = paymentSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
@@ -224,9 +224,23 @@ export async function createPayment(req: Request, res: Response): Promise<void> 
   const pkg = await prisma.package.findUnique({ where: { name: packageName } });
   if (!pkg) { res.status(400).json({ success: false, message: 'Package not found' }); return; }
 
+  // Determine nationalAdminId
+  let nationalAdminId: string;
+  if (role === 'national_admin') {
+    nationalAdminId = userId;
+  } else {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
+    if (!user?.nationalAdminId) {
+      res.status(400).json({ success: false, message: 'No national admin assigned' });
+      return;
+    }
+    nationalAdminId = user.nationalAdminId;
+  }
+
   const payment = await prisma.payment.create({
     data: {
-      churchId, amount, currency, type, status,
+      nationalAdminId,
+      amount, currency, type, status,
       packageName, packageId: pkg.id,
       reference, notes, createdById: userId,
     },

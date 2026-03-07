@@ -349,7 +349,7 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
     await tx.announcement.deleteMany({ where: { churchId: church.id } });
     await tx.resource.deleteMany({ where: { churchId: church.id } });
     // Payment model uses nationalAdminId, not churchId
-    await tx.payment.deleteMany({ where: { nationalAdminId: church.nationalAdminId } });
+    await tx.payment.deleteMany({ where: { nationalAdminId: church.nationalAdminId || undefined } });
     await tx.transaction.deleteMany({ where: { churchId: church.id } });
     
     // Update users to remove church association (but don't delete the users)

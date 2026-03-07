@@ -219,8 +219,6 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
     });
     churchIds = churches.map(c => c.id);
     console.log('National admin churches:', churchIds);
-  } else if (roleName === 'member') {
-    churchIds = churchId ? [churchId] : [];
   } else {
     churchIds = await getAccessibleChurchIds(
       roleName,
@@ -407,8 +405,6 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
-  } else if (roleName === 'member') {
-    churchIds = churchId ? [churchId] : [];
   } else {
     churchIds = await getAccessibleChurchIds(
       roleName,

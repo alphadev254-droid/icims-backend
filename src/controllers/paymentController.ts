@@ -137,7 +137,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
     },
   });
   console.log(`[${traceId}] Pending transaction created: ${pendingTx.id}`);
-  console.log(`[${traceId}] Pending transaction metadata:`, JSON.parse(pendingTx.metadata));
+  console.log(`[${traceId}] Pending transaction metadata:`, pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {});
 
   // Route to appropriate gateway
   if (gateway === 'paychangu') {
@@ -161,7 +161,7 @@ async function initiatePaystackPayment(
   console.log(`[${traceId}] Amount in kobo: ${amountInKobo}`);
 
   try {
-    const metadata = JSON.parse(pendingTx.metadata);
+    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
     const paystackPayload = {
       email: nationalAdmin.email,
       amount: amountInKobo,
@@ -494,7 +494,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           return;
         }
         
-        const pendingMetadata = JSON.parse(pendingTx.metadata);
+        const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, Tax: ${pendingMetadata.taxAmount}, Total: ${pendingMetadata.totalAmount}`);
         
         // Create transaction
@@ -578,7 +578,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           return;
         }
         
-        const pendingMetadata = JSON.parse(pendingTx.metadata);
+        const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, Tax: ${pendingMetadata.taxAmount}, Total: ${pendingMetadata.totalAmount}`);
         
         // Create transaction

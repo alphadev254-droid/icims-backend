@@ -192,7 +192,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
 
   const campaign = await prisma.givingCampaign.findUnique({
-    where: { id },
+    where: { id: String(id) },
     include: {
       church: { select: { name: true } },
       _count: { select: { donations: true } },
@@ -205,13 +205,13 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
   }
 
   const stats = await prisma.donationTransaction.aggregate({
-    where: { campaignId: id, status: 'completed' },
+    where: { campaignId: String(id), status: 'completed' },
     _sum: { amount: true },
   });
 
   // Count unique donors
   const uniqueDonors = await prisma.donationTransaction.findMany({
-    where: { campaignId: id, status: 'completed' },
+    where: { campaignId: String(id), status: 'completed' },
     select: { userId: true },
     distinct: ['userId'],
   });
@@ -220,7 +220,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
     success: true,
     data: {
       ...campaign,
-      totalRaised: stats._sum.amount || 0,
+      totalRaised: stats._sum?.amount || 0,
       donorCount: uniqueDonors.length,
     },
   });
@@ -238,7 +238,10 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
   }
 
   // Check if campaign exists and user has access
-  const existingCampaign = await prisma.givingCampaign.findUnique({ where: { id }, include: { church: true } });
+  const existingCampaign = await prisma.givingCampaign.findUnique({ 
+    where: { id: String(id) }, 
+    include: { church: true } 
+  });
   if (!existingCampaign) {
     res.status(404).json({ success: false, message: 'Campaign not found' });
     return;
@@ -275,7 +278,7 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
   const { endDate, ...data } = parsed.data;
 
   const campaign = await prisma.givingCampaign.update({
-    where: { id },
+    where: { id: String(id) },
     data: {
       ...data,
       ...(endDate && { endDate: new Date(endDate) }),
@@ -291,7 +294,10 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
   const roleName = req.user?.role;
 
   // Check if campaign exists and user has access
-  const existingCampaign = await prisma.givingCampaign.findUnique({ where: { id }, include: { church: true } });
+  const existingCampaign = await prisma.givingCampaign.findUnique({ 
+    where: { id: String(id) }, 
+    include: { church: true } 
+  });
   if (!existingCampaign) {
     res.status(404).json({ success: false, message: 'Campaign not found' });
     return;
@@ -325,7 +331,7 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  await prisma.givingCampaign.delete({ where: { id } });
+  await prisma.givingCampaign.delete({ where: { id: String(id) } });
 
   res.json({ success: true, message: 'Campaign deleted' });
 }
