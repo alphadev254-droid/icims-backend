@@ -42,6 +42,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.9.1",
     "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^7.0.11",
     "@types/papaparse": "^5.5.2",
     "@types/react-csv": "^1.1.10",
     "prisma": "^5.22.0",

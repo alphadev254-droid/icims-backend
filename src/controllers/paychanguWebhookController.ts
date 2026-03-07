@@ -130,7 +130,7 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
     console.log(`[${traceId}] Pending transaction found: ${pendingTx.id}`);
     console.log(`[${traceId}] Type: ${pendingTx.type}`);
     
-    const metadata = JSON.parse(pendingTx.metadata);
+    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
     console.log(`[${traceId}] Metadata:`, metadata);
 
     // Handle package subscriptions
