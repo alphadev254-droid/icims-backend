@@ -27,6 +27,26 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
   const userId = req.user!.userId;
   const roleName = req.user?.role ?? 'member';
 
+  // Check if user's account country is Kenya
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { accountCountry: true, nationalAdminId: true }
+  });
+
+  let accountCountry = user?.accountCountry;
+  if (!accountCountry && user?.nationalAdminId) {
+    const nationalAdmin = await prisma.user.findUnique({
+      where: { id: user.nationalAdminId },
+      select: { accountCountry: true }
+    });
+    accountCountry = nationalAdmin?.accountCountry;
+  }
+
+  if (accountCountry !== 'Kenya') {
+    res.status(403).json({ success: false, message: 'Subaccounts are only available for Kenya accounts' });
+    return;
+  }
+
   const parsed = createSubaccountSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
@@ -108,7 +128,28 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
 }
 
 export async function updateSubaccount(req: Request, res: Response): Promise<void> {
+  const userId = req.user!.userId;
   const subaccountId = String(req.params.id);
+  
+  // Check if user's account country is Kenya
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { accountCountry: true, nationalAdminId: true }
+  });
+
+  let accountCountry = user?.accountCountry;
+  if (!accountCountry && user?.nationalAdminId) {
+    const nationalAdmin = await prisma.user.findUnique({
+      where: { id: user.nationalAdminId },
+      select: { accountCountry: true }
+    });
+    accountCountry = nationalAdmin?.accountCountry;
+  }
+
+  if (accountCountry !== 'Kenya') {
+    res.status(403).json({ success: false, message: 'Subaccounts are only available for Kenya accounts' });
+    return;
+  }
   
   const parsed = updateSubaccountSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -160,7 +201,28 @@ export async function updateSubaccount(req: Request, res: Response): Promise<voi
 }
 
 export async function getSubaccount(req: Request, res: Response): Promise<void> {
+  const userId = req.user!.userId;
   const churchId = String(req.params.churchId);
+
+  // Check if user's account country is Kenya
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { accountCountry: true, nationalAdminId: true }
+  });
+
+  let accountCountry = user?.accountCountry;
+  if (!accountCountry && user?.nationalAdminId) {
+    const nationalAdmin = await prisma.user.findUnique({
+      where: { id: user.nationalAdminId },
+      select: { accountCountry: true }
+    });
+    accountCountry = nationalAdmin?.accountCountry;
+  }
+
+  if (accountCountry !== 'Kenya') {
+    res.status(403).json({ success: false, message: 'Subaccounts are only available for Kenya accounts' });
+    return;
+  }
 
   const subaccount = await prisma.subaccount.findUnique({
     where: { churchId },
