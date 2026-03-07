@@ -25,6 +25,7 @@ const PERMISSIONS = [
   { name: 'churches:create', resource: 'churches', action: 'create' },
   { name: 'churches:update', resource: 'churches', action: 'update' },
   { name: 'churches:delete', resource: 'churches', action: 'delete' },
+  { name: 'churches:invite', resource: 'churches', action: 'invite' },
   { name: 'communication:read', resource: 'communication', action: 'read' },
   { name: 'communication:create', resource: 'communication', action: 'create' },
   { name: 'communication:update', resource: 'communication', action: 'update' },
@@ -44,8 +45,30 @@ const PERMISSIONS = [
   { name: 'roles:manage', resource: 'roles', action: 'manage' },
   { name: 'packages:read', resource: 'packages', action: 'read' },
   { name: 'packages:manage', resource: 'packages', action: 'manage' },
+  { name: 'packages:view', resource: 'packages', action: 'view' },
+  { name: 'packages:update', resource: 'packages', action: 'update' },
+  { name: 'system_payments:view', resource: 'system_payments', action: 'view' },
   { name: 'payments:read', resource: 'payments', action: 'read' },
   { name: 'payments:create', resource: 'payments', action: 'create' },
+  { name: 'payments:pay', resource: 'payments', action: 'pay' },
+  { name: 'transactions:read', resource: 'transactions', action: 'read' },
+  { name: 'transactions:create', resource: 'transactions', action: 'create' },
+  { name: 'transactions:update', resource: 'transactions', action: 'update' },
+  { name: 'transactions:delete', resource: 'transactions', action: 'delete' },
+  { name: 'withdrawals:read', resource: 'withdrawals', action: 'read' },
+  { name: 'withdrawals:create', resource: 'withdrawals', action: 'create' },
+  { name: 'tickets:read', resource: 'tickets', action: 'read' },
+  { name: 'tickets:create', resource: 'tickets', action: 'create' },
+  { name: 'tickets:cancel', resource: 'tickets', action: 'cancel' },
+  { name: 'subaccounts:create', resource: 'subaccounts', action: 'create' },
+  { name: 'subaccounts:view', resource: 'subaccounts', action: 'view' },
+  { name: 'subaccounts:update', resource: 'subaccounts', action: 'update' },
+  { name: 'campaigns:read', resource: 'campaigns', action: 'read' },
+  { name: 'campaigns:create', resource: 'campaigns', action: 'create' },
+  { name: 'campaigns:update', resource: 'campaigns', action: 'update' },
+  { name: 'campaigns:delete', resource: 'campaigns', action: 'delete' },
+  { name: 'donations:read', resource: 'donations', action: 'read' },
+  { name: 'donations:create', resource: 'donations', action: 'create' },
 ];
 
 const ROLES = [
@@ -54,6 +77,23 @@ const ROLES = [
   { name: 'district_overseer', displayName: 'District Overseer' },
   { name: 'local_admin', displayName: 'Local Administrator' },
   { name: 'member', displayName: 'Member' },
+];
+
+const MEMBER_PERMISSIONS = [
+  'dashboard:read',
+  'events:read',
+  'giving:read',
+  'giving:create',
+  'communication:read',
+  'resources:read',
+  'transactions:read',
+  'payments:pay',
+  'tickets:read',
+  'campaigns:read',
+  'donations:create',
+  'donations:read',
+  'settings:read',
+  'packages:view',
 ];
 
 async function main() {
@@ -111,35 +151,54 @@ async function main() {
     console.log('✅ Admin user already exists: admin@icims.org\n');
   }
 
-  // 4. Link ALL permissions to admin user's national_admin role
-  console.log('🔗 Linking all permissions to admin user...');
+  // 4. Link ALL permissions to national_admin role (global)
+  console.log('🔗 Linking all permissions to national_admin role (global)...');
   const allPermissions = await prisma.permission.findMany();
   
   let linked = 0;
   for (const permission of allPermissions) {
-    const existing = await prisma.rolePermission.findUnique({
-      where: {
-        nationalAdminId_roleId_permissionId: {
-          nationalAdminId: adminUser.id,
-          roleId: nationalAdminRole.id,
-          permissionId: permission.id,
-        },
-      },
-    });
-
-    if (!existing) {
+    try {
       await prisma.rolePermission.create({
         data: {
-          nationalAdminId: adminUser.id,
+          nationalAdminId: 'GLOBAL',
           roleId: nationalAdminRole.id,
           permissionId: permission.id,
         },
       });
       linked++;
+    } catch (e) {
+      console.log(`Skipping duplicate: ${permission.name}`);
     }
   }
 
-  console.log(`✅ Linked ${linked} new permissions (${allPermissions.length} total)\n`);
+  console.log(`✅ Linked ${linked} permissions to national_admin\n`);
+
+  // 5. Assign member permissions to member role (global)
+  console.log('🔗 Assigning member permissions to member role (global)...');
+  const memberRole = await prisma.role.findUnique({ where: { name: 'member' } });
+  
+  if (memberRole) {
+    const memberPerms = await prisma.permission.findMany({
+      where: { name: { in: MEMBER_PERMISSIONS } },
+    });
+    
+    let memberLinked = 0;
+    for (const permission of memberPerms) {
+      try {
+        await prisma.rolePermission.create({
+          data: {
+            nationalAdminId: 'GLOBAL',
+            roleId: memberRole.id,
+            permissionId: permission.id,
+          },
+        });
+        memberLinked++;
+      } catch (e) {
+        console.log(`Skipping duplicate: ${permission.name}`);
+      }
+    }
+    console.log(`✅ Linked ${memberLinked} permissions to member role\n`);
+  }
 
   console.log('🎉 Database seeded successfully!\n');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

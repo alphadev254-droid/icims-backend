@@ -7,11 +7,6 @@ import { console } from 'inspector';
 const USER_INCLUDE = {
   role: true,
   church: true,
-  rolePermissions: {
-    include: {
-      permission: true,
-    },
-  },
 } as const;
 
 function safeUser(user: any) {
@@ -30,49 +25,86 @@ function safeUser(user: any) {
 export async function getUsers(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const role = req.user?.role ?? 'member';
+  const churchId = req.user?.churchId;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
     return;
   }
 
-  let users: any[] = [];
+  // Pagination
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.max(100, parseInt(req.query.limit as string) || 100);
+  const skip = (page - 1) * limit;
+
+  // Filters
+  const search = (req.query.search as string)?.trim() || '';
+  const filterChurchId = req.query.churchId as string | undefined;
+  const filterRole = req.query.role as string | undefined;
+
+  // Build where clause based on role
+  let whereClause: any = {};
 
   if (role === 'national_admin') {
-    // National admin sees all users in their churches + district_overseer/local_admin they created
     const churches = await prisma.church.findMany({
       where: { nationalAdminId: userId },
       select: { id: true }
     });
     const churchIds = churches.map(c => c.id);
-    console.log('National admin userId:', userId, 'owns churches:', churchIds);
     
-    users = await prisma.user.findMany({
-      where: {
-        OR: [
-          { churchId: { in: churchIds } },
-          { nationalAdminId: userId }
-        ]
-      },
-      include: { role: true },
-      orderBy: { createdAt: 'desc' },
+    whereClause.OR = [
+      { churchId: { in: churchIds } },
+      { nationalAdminId: userId }
+    ];
+  } else if (role === 'district_overseer') {
+    const userDistricts = req.user?.districts ?? [];
+    const churches = await prisma.church.findMany({
+      where: userDistricts.includes('__all__') ? {} : { district: { in: userDistricts } },
+      select: { id: true }
     });
+    whereClause.churchId = { in: churches.map(c => c.id) };
+  } else if (role === 'local_admin') {
+    const userTAs = req.user?.traditionalAuthorities ?? [];
+    const churches = await prisma.church.findMany({
+      where: userTAs.includes('__all__') ? {} : { traditionalAuthority: { in: userTAs } },
+      select: { id: true }
+    });
+    whereClause.churchId = { in: churches.map(c => c.id) };
   } else {
-    // Other roles need churchId
-    const churchId = req.user?.churchId;
     if (!churchId) {
       res.status(400).json({ success: false, message: 'churchId required' });
       return;
     }
-
-    users = await prisma.user.findMany({
-      where: { churchId },
-      include: { role: true },
-      orderBy: { createdAt: 'desc' },
-    });
+    whereClause.churchId = churchId;
   }
 
-  res.json({ success: true, data: users.map(safeUser) });
+  // Apply filters
+  if (filterChurchId) whereClause.churchId = filterChurchId;
+  if (filterRole) whereClause.role = { name: filterRole };
+  if (search) {
+    whereClause.OR = [
+      { firstName: { contains: search, mode: 'insensitive' } },
+      { lastName: { contains: search, mode: 'insensitive' } },
+      { email: { contains: search, mode: 'insensitive' } },
+    ];
+  }
+
+  const [users, total] = await Promise.all([
+    prisma.user.findMany({
+      where: whereClause,
+      include: { role: true, church: { select: { name: true } } },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.user.count({ where: whereClause }),
+  ]);
+
+  res.json({ 
+    success: true, 
+    data: users.map(safeUser),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+  });
 }
 
 // ─── POST /api/users — create a user in the same church ───────────────────────
@@ -84,9 +116,10 @@ const createUserSchema = z.object({
   lastName: z.string().min(1, 'Last name required'),
   phone: z.string().optional(),
   roleName: z.string().default('member'),
-  // Geographic scope for district_overseer / local_admin
+  // Geographic scope for district_overseer / local_admin / regional_leader
   districts: z.array(z.string()).optional(),
   traditionalAuthorities: z.array(z.string()).optional(),
+  regions: z.array(z.string()).optional(),
   // Church assignment for member role
   churchId: z.string().optional(),
   // Location selection for roles that need geographic assignment
@@ -120,7 +153,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { email, password, firstName, lastName, phone, roleName, districts, traditionalAuthorities, churchId, region, district, traditionalAuthority, village } = parsed.data;
+  const { email, password, firstName, lastName, phone, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
 
   // Role restrictions: only national_admin can create users with roles other than 'member'
   if (role !== 'national_admin' && roleName !== 'member') {
@@ -223,6 +256,22 @@ export async function createUser(req: Request, res: Response): Promise<void> {
   }
 
   const hashed = await hashPassword(password);
+  
+  // Determine nationalAdminId for the new user
+  let nationalAdminIdForNewUser: string | undefined;
+  if (roleName === 'member') {
+    // Members inherit nationalAdminId from creator
+    if (role === 'national_admin') {
+      nationalAdminIdForNewUser = userId;
+    } else {
+      // Creator is district_overseer or local_admin, use their nationalAdminId
+      const creator = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
+      nationalAdminIdForNewUser = creator?.nationalAdminId || undefined;
+    }
+  } else if (roleName === 'district_overseer' || roleName === 'local_admin') {
+    nationalAdminIdForNewUser = userId;
+  }
+  
   const user = await prisma.user.create({
     data: {
       email,
@@ -232,12 +281,30 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       phone,
       roleId: roleRecord.id,
       churchId: assignedChurchId,
-      nationalAdminId: (roleName === 'district_overseer' || roleName === 'local_admin') ? userId : undefined,
+      nationalAdminId: nationalAdminIdForNewUser,
       districts: districts ? JSON.stringify(districts) : undefined,
       traditionalAuthorities: traditionalAuthorities ? JSON.stringify(traditionalAuthorities) : undefined,
+      regions: regions ? JSON.stringify(regions) : undefined,
     },
     include: USER_INCLUDE,
   });
+
+  const { queueEmail } = await import('../lib/emailQueue');
+  const { userCreatedTemplate } = await import('../lib/emailTemplates');
+  
+  queueEmail(
+    user.email,
+    'Your Account Has Been Created',
+    userCreatedTemplate({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      password,
+      churchName: user.church?.name,
+      roleName: user.role?.displayName || roleName,
+    }),
+    'user_created'
+  ).catch(err => console.error('Failed to queue user creation email:', err));
 
   res.status(201).json({ success: true, data: safeUser(user) });
 }
@@ -253,7 +320,9 @@ const updateUserSchema = z.object({
   roleName: z.string().optional(),
   districts: z.array(z.string()).optional(),
   traditionalAuthorities: z.array(z.string()).optional(),
+  regions: z.array(z.string()).optional(),
   churchId: z.string().optional(),
+  status: z.enum(['active', 'inactive']).optional(),
 });
 
 export async function updateUser(req: Request, res: Response): Promise<void> {
@@ -284,7 +353,7 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { firstName, lastName, phone, email, password, roleName, districts, traditionalAuthorities, churchId } = parsed.data;
+  const { firstName, lastName, phone, email, password, roleName, districts, traditionalAuthorities, regions, churchId, status } = parsed.data;
   
   // Role restrictions: only national_admin can assign roles other than 'member'
   if (roleName && role !== 'national_admin' && roleName !== 'member') {
@@ -302,8 +371,10 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   if (email) updateData.email = email;
   if (password) updateData.password = await hashPassword(password);
   if (churchId !== undefined) updateData.churchId = churchId;
+  if (status) updateData.status = status;
   if (districts !== undefined) updateData.districts = JSON.stringify(districts);
   if (traditionalAuthorities !== undefined) updateData.traditionalAuthorities = JSON.stringify(traditionalAuthorities);
+  if (regions !== undefined) updateData.regions = JSON.stringify(regions);
 
   if (roleName) {
     const roleRecord = await prisma.role.findUnique({ where: { name: roleName } });
@@ -315,6 +386,7 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
     // Clear scope fields when role changes (let caller re-supply if needed)
     if (!districts) updateData.districts = null;
     if (!traditionalAuthorities) updateData.traditionalAuthorities = null;
+    if (!regions) updateData.regions = null;
   }
 
   const updated = await prisma.user.update({

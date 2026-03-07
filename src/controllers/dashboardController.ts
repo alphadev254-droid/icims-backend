@@ -14,6 +14,34 @@ export async function getStats(req: Request, res: Response): Promise<void> {
 
   let churchIds: string[] = [];
 
+  if (roleName === 'member') {
+    // Members see stats only for their church
+    if (!churchId) {
+      res.status(400).json({ success: false, message: 'No church assigned' });
+      return;
+    }
+    churchIds = [churchId];
+
+    // Get member-specific data
+    const [myDonations, churchEvents] = await Promise.all([
+      prisma.donationTransaction.findMany({ where: { userId } }),
+      prisma.event.findMany({ where: { churchId } }),
+    ]);
+
+    const myTotalDonations = myDonations.filter(d => d.status === 'completed').reduce((sum, d) => sum + d.amount, 0);
+
+    res.json({
+      success: true,
+      data: {
+        myTotalDonations,
+        myDonationRecords: myDonations.length,
+        upcomingEvents: churchEvents.filter(e => e.status === 'upcoming').length,
+        totalEvents: churchEvents.length,
+      },
+    });
+    return;
+  }
+
   if (roleName === 'national_admin') {
     // For national admin, get churches where they are the nationalAdminId
     const churches = await prisma.church.findMany({ 
@@ -30,10 +58,10 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
   }
 
-  const [members, events, donations, attendance] = await Promise.all([
-    prisma.member.findMany({ where: { churchId: { in: churchIds } } }),
+  const [users, events, donations, attendance] = await Promise.all([
+    prisma.user.findMany({ where: { churchId: { in: churchIds } } }),
     prisma.event.findMany({ where: { churchId: { in: churchIds } } }),
-    prisma.donation.findMany({ where: { churchId: { in: churchIds } } }),
+    prisma.donationTransaction.findMany({ where: { churchId: { in: churchIds } } }),
     prisma.attendance.findMany({ where: { churchId: { in: churchIds } } }),
   ]);
 
@@ -46,12 +74,12 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     ? Math.round(attendance.reduce((sum, a) => sum + a.totalAttendees, 0) / attendance.length)
     : 0;
 
-  const activeMembers = members.filter(m => m.status === 'active').length;
+  const activeMembers = users.filter(u => u.status === 'active').length;
 
   res.json({
     success: true,
     data: {
-      totalMembers: members.length,
+      totalMembers: users.length,
       activeMembers,
       totalChurches,
       totalDonations: completedAmount,

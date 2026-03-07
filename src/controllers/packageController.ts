@@ -22,24 +22,50 @@ export async function getPackages(_req: Request, res: Response): Promise<void> {
 /** GET /api/packages/current — current user's package with feature access */
 export async function getCurrentPackage(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const role = req.user?.role;
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    include: {
-      package: {
-        include: {
-          features: {
-            include: { feature: true },
-            orderBy: { feature: { sortOrder: 'asc' } },
-          },
-        },
-      },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      nationalAdminId: true,
+      church: { select: { nationalAdminId: true } },
       ownedChurches: true,
     },
   });
   
   if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+
+  // Determine nationalAdminId
+  let nationalAdminId: string | null = null;
+  if (role === 'national_admin') {
+    nationalAdminId = userId;
+  } else if (role === 'member' && user.church?.nationalAdminId) {
+    nationalAdminId = user.church.nationalAdminId;
+  } else if (user.nationalAdminId) {
+    nationalAdminId = user.nationalAdminId;
+  }
+
+  let subscription = null;
+  if (nationalAdminId) {
+    subscription = await prisma.subscription.findFirst({
+      where: { nationalAdminId, status: 'active' },
+      include: {
+        package: {
+          include: {
+            features: {
+              include: { feature: true },
+              orderBy: { feature: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
+    });
+  }
 
   res.json({ 
     success: true, 
@@ -50,9 +76,13 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
         firstName: user.firstName,
         lastName: user.lastName,
       },
-      package: user.package,
+      package: subscription?.package || null,
+      subscription: subscription ? {
+        status: subscription.status,
+        startsAt: subscription.startsAt,
+        expiresAt: subscription.expiresAt,
+      } : null,
       churchCount: user.ownedChurches.length,
-      maxChurches: user.package?.maxChurches || 0
     } 
   });
 }
@@ -126,12 +156,45 @@ export async function setPackageFeatures(req: Request, res: Response): Promise<v
 /** GET /api/packages/payments — payment history for current user */
 export async function getPayments(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const role = req.user?.role;
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
+  // Determine national admin ID
+  let nationalAdminId: string;
+  if (role === 'national_admin') {
+    nationalAdminId = userId;
+  } else {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
+    if (!user?.nationalAdminId) {
+      res.status(400).json({ success: false, message: 'No national admin assigned' });
+      return;
+    }
+    nationalAdminId = user.nationalAdminId;
+  }
+
   const payments = await prisma.payment.findMany({
-    where: { createdById: userId },
+    where: { nationalAdminId },
     orderBy: { createdAt: 'desc' },
-    include: { package: { select: { name: true, displayName: true } } },
+    select: {
+      id: true,
+      createdAt: true,
+      paidAt: true,
+      type: true,
+      packageName: true,
+      amount: true,
+      baseAmount: true,
+      convenienceFee: true,
+      taxAmount: true,
+      totalAmount: true,
+      currency: true,
+      reference: true,
+      status: true,
+      gateway: true,
+      billingCycle: true,
+      expiresAt: true,
+      paymentMethod: true,
+      package: { select: { displayName: true } },
+    },
   });
   res.json({ success: true, data: payments });
 }
@@ -170,14 +233,6 @@ export async function createPayment(req: Request, res: Response): Promise<void> 
     include: { package: { select: { name: true, displayName: true } } },
   });
 
-  // If completed, update user's package
-  if (status === 'completed' && (type === 'upgrade' || type === 'downgrade' || type === 'subscription')) {
-    await prisma.user.update({ 
-      where: { id: userId }, 
-      data: { packageId: pkg.id } 
-    });
-  }
-
   res.status(201).json({ success: true, data: payment });
 }
 
@@ -197,16 +252,6 @@ export async function updatePayment(req: Request, res: Response): Promise<void> 
     data: { status },
     include: { package: { select: { name: true, displayName: true } } },
   });
-
-  // If now completed, upgrade the user's package
-  if (status === 'completed' && (payment.type === 'upgrade' || payment.type === 'downgrade' || payment.type === 'subscription')) {
-    if (payment.packageId) {
-      await prisma.user.update({ 
-        where: { id: userId }, 
-        data: { packageId: payment.packageId } 
-      });
-    }
-  }
 
   res.json({ success: true, data: updated });
 }

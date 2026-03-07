@@ -39,6 +39,8 @@ const PERMISSIONS = [
   { name: 'users:create', resource: 'users', action: 'create' },
   { name: 'users:update', resource: 'users', action: 'update' },
   { name: 'users:delete', resource: 'users', action: 'delete' },
+  { name: 'transactions:read', resource: 'transactions', action: 'read' },
+  { name: 'transactions:create', resource: 'transactions', action: 'create' },
   { name: 'roles:read', resource: 'roles', action: 'read' },
   { name: 'roles:assign', resource: 'roles', action: 'assign' },
   { name: 'roles:manage', resource: 'roles', action: 'manage' },
@@ -88,8 +90,13 @@ const ROLE_PERMISSIONS_MAP: Record<string, string[]> = {
     'reports:read',
   ],
   member: [
-    'dashboard:read', 'events:read', 'giving:read',
-    'communication:read', 'resources:read',
+    'dashboard:read',
+    'events:read',
+    'giving:read', 'giving:create',
+    'communication:read',
+    'resources:read',
+    'transactions:read',
+    'settings:read',
   ],
 };
 

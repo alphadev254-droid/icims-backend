@@ -16,6 +16,13 @@ import resourceRoutes from './routes/resources';
 import userRoutes from './routes/users';
 import locationRoutes from './routes/locations';
 import packageRoutes from './routes/packages';
+import transactionRoutes from './routes/transactions';
+import paymentRoutes from './routes/payments';
+import subaccountRoutes from './routes/subaccounts';
+import uploadRoutes from './routes/upload';
+import passwordResetRoutes from './routes/passwordReset';
+import webhookRoutes from './routes/webhookRoutes';
+import walletRoutes from './routes/walletRoutes';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
@@ -38,7 +45,8 @@ app.get('/api/health', (_req, res) => {
 
 // ─── Routes ────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
-app.use('/api/members', memberRoutes);
+app.use('/api/password-reset', passwordResetRoutes);
+// app.use('/api/members', memberRoutes); // Deprecated - use /api/users instead
 app.use('/api/events', eventRoutes);
 app.use('/api/giving', givingRoutes);
 app.use('/api/dashboard', dashboardRoutes);
@@ -50,6 +58,12 @@ app.use('/api/resources', resourceRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/locations', locationRoutes);
 app.use('/api/packages', packageRoutes);
+app.use('/api/transactions', transactionRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/subaccounts', subaccountRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/wallet', walletRoutes);
 
 // ─── Serve uploaded files ──────────────────────────────────────────────────
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));

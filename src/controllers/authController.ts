@@ -14,15 +14,163 @@ const COOKIE_OPTIONS = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 const USER_INCLUDE = {
-  church: true,
-  package: true,
-  role: true,
-  rolePermissions: {
-    include: {
-      permission: true,
+  role: {
+    select: {
+      id: true,
+      name: true,
+      displayName: true,
+    },
+  },
+  church: {
+    select: {
+      id: true,
+      name: true,
     },
   },
 } as const;
+
+async function getUserWithPackage(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: USER_INCLUDE,
+  });
+
+  if (!user) return null;
+
+  const roleName = user.role?.name;
+  
+  // For member: get package from church's National Admin subscription
+  if (roleName === 'member' && user.churchId) {
+    const church = await prisma.church.findUnique({
+      where: { id: user.churchId },
+      select: { nationalAdminId: true },
+    });
+    
+    if (church?.nationalAdminId) {
+      const subscription = await prisma.subscription.findFirst({
+        where: { 
+          nationalAdminId: church.nationalAdminId,
+          status: 'active',
+        },
+        include: {
+          package: {
+            include: {
+              features: {
+                include: {
+                  feature: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      
+      if (subscription?.package) {
+        return { ...user, package: subscription.package };
+      }
+    }
+  }
+  
+  // For district_overseer, local_admin, regional_leader: get package from their National Admin subscription
+  if ((roleName === 'district_overseer' || roleName === 'local_admin' || roleName === 'regional_leader') && user.nationalAdminId) {
+    const subscription = await prisma.subscription.findFirst({
+      where: { 
+        nationalAdminId: user.nationalAdminId,
+        status: 'active',
+      },
+      include: {
+        package: {
+          include: {
+            features: {
+              include: {
+                feature: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    
+    if (subscription?.package) {
+      return { ...user, package: subscription.package };
+    }
+  }
+  
+  // For national_admin: get their own subscription
+  if (roleName === 'national_admin') {
+    const subscription = await prisma.subscription.findFirst({
+      where: { 
+        nationalAdminId: userId,
+        status: 'active',
+      },
+      include: {
+        package: {
+          include: {
+            features: {
+              include: {
+                feature: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    
+    if (subscription?.package) {
+      return { ...user, package: subscription.package };
+    }
+  }
+
+  // No subscription found - return user with null package
+  return { ...user, package: null };
+}
+
+async function getUserPermissions(user: any): Promise<string[]> {
+  if (!user.roleId) return [];
+  
+  const roleName = user.role?.name;
+  
+  // National admin: check both their own nationalAdminId and GLOBAL
+  if (roleName === 'national_admin') {
+    const permissions = await prisma.rolePermission.findMany({
+      where: {
+        roleId: user.roleId,
+        OR: [
+          { nationalAdminId: user.id },
+          { nationalAdminId: 'GLOBAL' },
+        ],
+      },
+      include: { permission: { select: { name: true } } },
+    });
+    return permissions.map(rp => rp.permission.name);
+  }
+  
+  // Member: check GLOBAL permissions
+  if (roleName === 'member') {
+    const permissions = await prisma.rolePermission.findMany({
+      where: {
+        roleId: user.roleId,
+        nationalAdminId: 'GLOBAL',
+      },
+      include: { permission: { select: { name: true } } },
+    });
+    return permissions.map(rp => rp.permission.name);
+  }
+  
+  // Tenant-specific roles: district_overseer, local_admin - use nationalAdminId
+  if (user.nationalAdminId) {
+    const permissions = await prisma.rolePermission.findMany({
+      where: {
+        nationalAdminId: user.nationalAdminId,
+        roleId: user.roleId,
+      },
+      include: { permission: { select: { name: true } } },
+    });
+    return permissions.map(rp => rp.permission.name);
+  }
+  
+  return [];
+}
 
 function extractPermissions(user: { rolePermissions: { permission: { name: string } }[] }): string[] {
   return user.rolePermissions.map(rp => rp.permission.name);
@@ -33,14 +181,15 @@ function parseJson(val: string | null | undefined): string[] | undefined {
   try { return JSON.parse(val) as string[]; } catch { return undefined; }
 }
 
-function safeUser(user: any): any {
+function safeUser(user: any, permissions: string[]): any {
   const { password: _pw, rolePermissions: _rp, ...rest } = user;
   return {
     ...rest,
     roleName: user.role?.name || null,
-    permissions: extractPermissions(user),
+    permissions,
     districts: parseJson(user.districts),
     traditionalAuthorities: parseJson(user.traditionalAuthorities),
+    accountCountry: user.accountCountry,
   };
 }
 
@@ -57,14 +206,17 @@ export async function login(req: Request, res: Response): Promise<void> {
   }
 
   const { email, password } = parsed.data;
-  const user = await prisma.user.findUnique({ where: { email }, include: USER_INCLUDE });
+  let user = await prisma.user.findUnique({ where: { email }, include: USER_INCLUDE });
 
   if (!user || !(await comparePassword(password, user.password))) {
     res.status(401).json({ success: false, message: 'Invalid email or password' });
     return;
   }
 
-  const permissions = extractPermissions(user);
+  // Get package from National Admin if needed
+  user = await getUserWithPackage(user.id) as any;
+
+  const permissions = await getUserPermissions(user);
 
   const token = signToken({
     userId: user.id,
@@ -77,7 +229,7 @@ export async function login(req: Request, res: Response): Promise<void> {
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.json({ success: true, user: safeUser(user) });
+  res.json({ success: true, user: safeUser(user, permissions) });
 }
 
 const registerSchema = z.object({
@@ -85,7 +237,18 @@ const registerSchema = z.object({
   lastName: z.string().min(2, 'Last name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  phone: z.string().optional(),
+  phone: z.string().min(1, 'Phone number is required'),
+  accountCountry: z.enum(['Malawi', 'Kenya'], { required_error: 'Country is required' }).optional(),
+  inviteToken: z.string().optional(),
+}).superRefine((data, ctx) => {
+  // If no inviteToken (national admin registration), require accountCountry
+  if (!data.inviteToken && !data.accountCountry) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Country is required',
+      path: ['accountCountry'],
+    });
+  }
 });
 
 export async function register(req: Request, res: Response): Promise<void> {
@@ -103,12 +266,43 @@ export async function register(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const basicPackage = await prisma.package.findFirst({ where: { name: 'basic' } });
-  const nationalAdminRole = await prisma.role.findFirst({ where: { name: 'national_admin' } });
-  
-  if (!basicPackage || !nationalAdminRole) {
-    res.status(500).json({ success: false, message: 'System not properly configured. Please contact support.' });
-    return;
+  let churchId: string | null = null;
+  let nationalAdminId: string | null = null;
+  let roleId: string;
+
+  // Check if registering via church invite link
+  if (data.inviteToken) {
+    const church = await prisma.church.findUnique({ 
+      where: { inviteToken: data.inviteToken },
+      select: { id: true, nationalAdminId: true }
+    });
+    
+    if (!church) {
+      res.status(400).json({ success: false, message: 'Invalid or expired invite link' });
+      return;
+    }
+    
+    // Member registration via invite link:
+    // - Assign churchId so member belongs to this church
+    // - nationalAdminId stays null for members (they get package access via church.nationalAdminId lookup)
+    // - Assign member role
+    churchId = church.id;
+    nationalAdminId = null; // Members don't have direct nationalAdminId
+    
+    const memberRole = await prisma.role.findFirst({ where: { name: 'member' } });
+    if (!memberRole) {
+      res.status(500).json({ success: false, message: 'System not properly configured' });
+      return;
+    }
+    roleId = memberRole.id;
+  } else {
+    // Regular registration as national admin (no invite link)
+    const nationalAdminRole = await prisma.role.findFirst({ where: { name: 'national_admin' } });
+    if (!nationalAdminRole) {
+      res.status(500).json({ success: false, message: 'System not properly configured. Please contact support.' });
+      return;
+    }
+    roleId = nationalAdminRole.id;
   }
 
   const hashed = await hashPassword(data.password);
@@ -119,49 +313,44 @@ export async function register(req: Request, res: Response): Promise<void> {
       password: hashed,
       firstName: data.firstName,
       lastName: data.lastName,
-      roleId: nationalAdminRole.id,
+      roleId,
+      churchId,
+      nationalAdminId,
+      accountCountry: data.accountCountry,
       phone: data.phone,
-      packageId: basicPackage.id,
     },
-  });
-
-  // Give national admin ALL permissions by creating role-permission links
-  const allPermissions = await prisma.permission.findMany();
-  for (const permission of allPermissions) {
-    await prisma.rolePermission.create({
-      data: {
-        nationalAdminId: user.id,
-        roleId: nationalAdminRole.id,
-        permissionId: permission.id,
-      },
-    });
-  }
-
-  // Refetch user with permissions
-  const userWithPerms = await prisma.user.findUnique({
-    where: { id: user.id },
     include: USER_INCLUDE,
   });
 
-  if (!userWithPerms) {
-    res.status(500).json({ success: false, message: 'Failed to create user' });
-    return;
-  }
+  const permissions = await getUserPermissions(user);
 
-  const permissions = extractPermissions(userWithPerms);
+  const { queueEmail } = await import('../lib/emailQueue');
+  const { registrationTemplate } = await import('../lib/emailTemplates');
+  
+  queueEmail(
+    user.email,
+    'Welcome to ICIMS',
+    registrationTemplate({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      roleName: user.role?.displayName,
+    }),
+    'registration'
+  ).catch(err => console.error('Failed to queue registration email:', err));
 
   const token = signToken({
-    userId: userWithPerms.id,
-    email: userWithPerms.email,
-    role: (userWithPerms.role?.name || 'member') as UserRole,
-    churchId: userWithPerms.churchId,
+    userId: user.id,
+    email: user.email,
+    role: (user.role?.name || 'member') as UserRole,
+    churchId: user.churchId,
     permissions,
-    districts: parseJson(userWithPerms.districts),
-    traditionalAuthorities: parseJson(userWithPerms.traditionalAuthorities),
+    districts: parseJson(user.districts),
+    traditionalAuthorities: parseJson(user.traditionalAuthorities),
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.status(201).json({ success: true, user: safeUser(userWithPerms) });
+  res.status(201).json({ success: true, user: safeUser(user, permissions) });
 }
 
 export function logout(_req: Request, res: Response): void {
@@ -175,17 +364,14 @@ export async function getMe(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: req.user.userId },
-    include: USER_INCLUDE,
-  });
+  const user = await getUserWithPackage(req.user.userId);
 
   if (!user) {
     res.status(404).json({ success: false, message: 'User not found' });
     return;
   }
 
-  res.json({ success: true, user: safeUser(user) });
+  res.json({ success: true, user: safeUser(user, await getUserPermissions(user)) });
 }
 
 const profileSchema = z.object({
@@ -219,11 +405,13 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
     updateData.password = await hashPassword(newPassword);
   }
 
-  const updated = await prisma.user.update({
+  await prisma.user.update({
     where: { id: user.id },
     data: updateData,
-    include: USER_INCLUDE,
   });
 
-  res.json({ success: true, user: safeUser(updated) });
+  const updated = await getUserWithPackage(user.id);
+  if (!updated) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+
+  res.json({ success: true, user: safeUser(updated, await getUserPermissions(updated)) });
 }
