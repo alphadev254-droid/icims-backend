@@ -247,7 +247,7 @@ model Transaction {
   channel       String?  // mobile_money | card | bank
   ipAddress     String?
   paidAt        DateTime?
-  gatewayResponse String?
+  gatewayResponse String?  @db.LongText
   // Fee breakdown
   baseAmount      Float?   // Original amount (what church gets)
   convenienceFee  Float?   // 2% convenience fee
@@ -565,7 +565,7 @@ model Payment {
   // Metadata
   billingCycle    String?  // monthly | yearly
   expiresAt       DateTime? // When this subscription expires
-  gatewayResponse String?  @db.Text // Full Paystack response JSON
+  gatewayResponse String?  @db.LongText // Full Paystack response JSON
   createdById     String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
