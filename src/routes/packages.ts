@@ -24,8 +24,8 @@ router.delete('/features/:id',    authorizePermission('packages:manage'), delete
 router.put('/:id/features',       authorizePermission('packages:manage'), setPackageFeatures);
 
 // ─── Payments ─────────────────────────────────────────────────────────────────
-router.get('/payments',           getPayments);  // User's own payments
-router.post('/payments',          createPayment);  // User can create payments
-router.put('/payments/:id',       updatePayment);  // User can update own payments
+router.get('/payments',           authorizePermission('system_payments:view'), getPayments);
+router.post('/payments',          authorizePermission('payments:create'), createPayment);
+router.put('/payments/:id',       authorizePermission('payments:create'), updatePayment);
 
 export default router;

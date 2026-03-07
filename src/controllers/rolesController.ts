@@ -6,8 +6,9 @@ import prisma from '../lib/prisma';
 
 export async function getRoles(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const role = req.user?.role;
   
-  // Roles are global, but permissions are per national admin
+  // Roles are global
   const roles = await prisma.role.findMany({
     include: {
       _count: { select: { users: true } },
@@ -15,11 +16,11 @@ export async function getRoles(req: Request, res: Response): Promise<void> {
     orderBy: { name: 'asc' },
   });
 
-  // Get permissions for current national admin (if applicable)
-  const rolePermissions = userId ? await prisma.rolePermission.findMany({
-    where: { nationalAdminId: userId },
+  // Get permissions - use GLOBAL for national_admin and member
+  const rolePermissions = await prisma.rolePermission.findMany({
+    where: { nationalAdminId: 'GLOBAL' },
     include: { permission: true },
-  }) : [];
+  });
 
   const data = roles.map(r => {
     const perms = rolePermissions
@@ -53,11 +54,47 @@ const updatePermsSchema = z.object({
 });
 
 export async function updateRolePermissions(req: Request, res: Response): Promise<void> {
-  // This function is no longer applicable since roles are global and permissions are managed per national admin
-  res.status(400).json({ 
-    success: false, 
-    message: 'Role permissions are managed globally. Contact system administrator.' 
+  const permissions = req.user?.permissions ?? [];
+  
+  if (!permissions.includes('roles:manage')) {
+    res.status(403).json({ success: false, message: 'Permission denied: roles:manage required' });
+    return;
+  }
+
+  const parsed = updatePermsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const roleId = String(req.params.id);
+  const { permissions: permNames } = parsed.data;
+
+  const roleRecord = await prisma.role.findUnique({ where: { id: roleId } });
+  if (!roleRecord) {
+    res.status(404).json({ success: false, message: 'Role not found' });
+    return;
+  }
+
+  const permRecords = await prisma.permission.findMany({
+    where: { name: { in: permNames } },
   });
+
+  await prisma.rolePermission.deleteMany({
+    where: { nationalAdminId: 'GLOBAL', roleId },
+  });
+
+  for (const perm of permRecords) {
+    await prisma.rolePermission.create({
+      data: {
+        nationalAdminId: 'GLOBAL',
+        roleId,
+        permissionId: perm.id,
+      },
+    });
+  }
+
+  res.json({ success: true, message: 'Permissions updated' });
 }
 
 // ─── POST /api/roles/assign — assign a role to a user ─────────────────────────

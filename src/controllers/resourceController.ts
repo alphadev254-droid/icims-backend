@@ -9,7 +9,7 @@ type StoredFile = { url: string; name: string; size: number; mimeType: string };
 
 function deleteUploadedFile(url: string) {
   if (url.startsWith('/uploads/')) {
-    const p = path.join(process.cwd(), 'uploads', path.basename(url));
+    const p = path.join(process.cwd(), url.replace(/^\//,''));
     if (fs.existsSync(p)) fs.unlinkSync(p);
   }
 }
@@ -22,9 +22,18 @@ function parseStoredFiles(json: unknown): StoredFile[] {
 // ─── GET /api/resources ───────────────────────────────────────────────────────
 
 export async function getResources(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
   const churchId = req.user?.churchId ?? '';
   const roleName = req.user?.role ?? 'member';
-  const churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities);
+  
+  const churchIds = await getAccessibleChurchIds(
+    roleName, 
+    churchId, 
+    req.user?.districts, 
+    req.user?.traditionalAuthorities, 
+    req.user?.regions, 
+    userId
+  );
   const resources = await prisma.resource.findMany({
     where: { churchId: { in: churchIds } },
     orderBy: { createdAt: 'desc' },
@@ -56,9 +65,9 @@ export async function createResource(req: Request, res: Response): Promise<void>
   const { title, description, category, type, author, duration, tags, fileUrl, churchId } = parsed.data;
   const files = ((req as any).files as Express.Multer.File[] | undefined) ?? [];
   const primaryFile = files[0];
-  const resolvedFileUrl = primaryFile ? `/uploads/${primaryFile.filename}` : fileUrl;
+  const resolvedFileUrl = primaryFile ? `/uploads/resources/${primaryFile.filename}` : fileUrl;
   const filesJson = files.length > 0
-    ? JSON.stringify(files.map(f => ({ url: `/uploads/${f.filename}`, name: f.originalname, size: f.size, mimeType: f.mimetype })))
+    ? JSON.stringify(files.map(f => ({ url: `/uploads/resources/${f.filename}`, name: f.originalname, size: f.size, mimeType: f.mimetype })))
     : undefined;
 
   const resource = await prisma.resource.create({
@@ -89,13 +98,21 @@ const updateSchema = z.object({
 });
 
 export async function updateResource(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
   const churchId = req.user?.churchId ?? '';
   const roleName = req.user?.role ?? 'member';
 
   const resource = await prisma.resource.findUnique({ where: { id: String(req.params.id) } });
   if (!resource) { res.status(404).json({ success: false, message: 'Resource not found' }); return; }
 
-  const accessibleIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities);
+  const accessibleIds = await getAccessibleChurchIds(
+    roleName, 
+    churchId, 
+    req.user?.districts, 
+    req.user?.traditionalAuthorities, 
+    req.user?.regions, 
+    userId
+  );
   if (!accessibleIds.includes(resource.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' }); return;
   }
@@ -131,7 +148,7 @@ export async function updateResource(req: Request, res: Response): Promise<void>
 
     // Append newly uploaded files
     const uploadedEntries: StoredFile[] = newUploads.map(f => ({
-      url: `/uploads/${f.filename}`,
+      url: `/uploads/resources/${f.filename}`,
       name: f.originalname,
       size: f.size,
       mimeType: f.mimetype,
@@ -160,13 +177,21 @@ export async function updateResource(req: Request, res: Response): Promise<void>
 // ─── DELETE /api/resources/:id ────────────────────────────────────────────────
 
 export async function deleteResource(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
   const churchId = req.user?.churchId ?? '';
   const roleName = req.user?.role ?? 'member';
 
   const resource = await prisma.resource.findUnique({ where: { id: String(req.params.id) } });
   if (!resource) { res.status(404).json({ success: false, message: 'Resource not found' }); return; }
 
-  const accessibleIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities);
+  const accessibleIds = await getAccessibleChurchIds(
+    roleName, 
+    churchId, 
+    req.user?.districts, 
+    req.user?.traditionalAuthorities, 
+    req.user?.regions, 
+    userId
+  );
   if (!accessibleIds.includes(resource.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' }); return;
   }

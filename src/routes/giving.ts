@@ -1,15 +1,19 @@
 import { Router } from 'express';
-import { getDonations, getDonation, createDonation, updateDonation, deleteDonation } from '../controllers/givingController';
 import { authenticate, authorizePermission } from '../middleware/auth';
+import * as givingController from '../controllers/givingController';
 
 const router = Router();
 
-router.use(authenticate);
+// Campaigns
+router.post('/campaigns', authenticate, authorizePermission('campaigns:create'), givingController.createCampaign);
+router.get('/campaigns', authenticate, authorizePermission('campaigns:read'), givingController.getCampaigns);
+router.get('/campaigns/:id', authenticate, authorizePermission('campaigns:read'), givingController.getCampaign);
+router.put('/campaigns/:id', authenticate, authorizePermission('campaigns:update'), givingController.updateCampaign);
+router.delete('/campaigns/:id', authenticate, authorizePermission('campaigns:delete'), givingController.deleteCampaign);
 
-router.get('/',       authorizePermission('giving:read'),   getDonations);
-router.get('/:id',    authorizePermission('giving:read'),   getDonation);
-router.post('/',      authorizePermission('giving:create'), createDonation);
-router.put('/:id',    authorizePermission('giving:update'), updateDonation);
-router.delete('/:id', authorizePermission('giving:delete'), deleteDonation);
+// Donations
+router.post('/donate', authenticate, authorizePermission('donations:create'), givingController.createDonation);
+router.get('/donations', authenticate, authorizePermission('donations:read'), givingController.getDonations);
+router.get('/donations/:id/transaction', authenticate, authorizePermission('donations:read'), givingController.getDonationTransaction);
 
 export default router;

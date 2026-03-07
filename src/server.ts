@@ -1,12 +1,18 @@
 import app from './app';
 import prisma from './lib/prisma';
+import './workers/emailWorker';
+import { startSubscriptionCron } from './workers/subscriptionCron';
 
 const PORT = process.env.PORT || 5000;
 
 async function main() {
-  // Verify DB connection
   await prisma.$connect();
   console.log('✅ Database connected');
+  console.log('📧 Email worker initialized');
+  
+  // Start subscription checker cron job
+  startSubscriptionCron();
+  console.log('📅 Subscription checker initialized');
 
   app.listen(PORT, () => {
     console.log(`🚀 ICIMS API running on http://localhost:${PORT}`);

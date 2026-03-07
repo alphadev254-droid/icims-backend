@@ -3,17 +3,36 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 const FEATURES = [
+  // Core Features
   { name: 'members_management', displayName: 'Members Management', category: 'core', sortOrder: 1 },
   { name: 'events_management', displayName: 'Events Management', category: 'core', sortOrder: 2 },
   { name: 'giving_tracking', displayName: 'Giving & Donations', category: 'core', sortOrder: 3 },
   { name: 'attendance_tracking', displayName: 'Attendance Tracking', category: 'core', sortOrder: 4 },
-  { name: 'churches_management', displayName: 'Churches Management', category: 'management', sortOrder: 5 },
-  { name: 'communication', displayName: 'Communication & Announcements', category: 'communication', sortOrder: 6 },
-  { name: 'resources_library', displayName: 'Resources Library', category: 'core', sortOrder: 7 },
-  { name: 'reports_analytics', displayName: 'Reports & Analytics', category: 'reporting', sortOrder: 8 },
-  { name: 'performance_dashboard', displayName: 'Performance Dashboard', category: 'reporting', sortOrder: 9 },
-  { name: 'users_management', displayName: 'Users Management', category: 'management', sortOrder: 10 },
-  { name: 'roles_permissions', displayName: 'Roles & Permissions', category: 'management', sortOrder: 11 },
+  { name: 'resources_library', displayName: 'Resources Library', category: 'core', sortOrder: 5 },
+  { name: 'churches_management', displayName: 'Churches Management', category: 'core', sortOrder: 6 },
+  { name: 'transactions_view', displayName: 'Transactions View', category: 'core', sortOrder: 7 },
+  
+  // Management Features
+  { name: 'users_management', displayName: 'Users Management', category: 'management', sortOrder: 8 },
+  { name: 'roles_permissions', displayName: 'Roles & Permissions', category: 'management', sortOrder: 9 },
+  
+  // Communication Features
+  { name: 'communication', displayName: 'Communication & Announcements', category: 'communication', sortOrder: 10 },
+  { name: 'meetings', displayName: 'Meetings Management', category: 'communication', sortOrder: 11 },
+  
+  // Reporting Features
+  { name: 'reports_analytics', displayName: 'Reports & Analytics', category: 'reporting', sortOrder: 12 },
+  { name: 'performance_dashboard', displayName: 'Performance Dashboard', category: 'reporting', sortOrder: 13 },
+  { name: 'advanced_reports', displayName: 'Advanced Reports', category: 'reporting', sortOrder: 14 },
+  
+  // Event Features
+  { name: 'event_ticketing', displayName: 'Event Ticketing', category: 'events', sortOrder: 15 },
+  { name: 'event_attendance', displayName: 'Event Attendance Tracking', category: 'events', sortOrder: 16 },
+  
+  // Limits
+  { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 17 },
+  { name: 'max_churches', displayName: 'Maximum Churches', category: 'limit', sortOrder: 18 },
+  { name: 'max_events_per_month', displayName: 'Maximum Events Per Month', category: 'limit', sortOrder: 19 },
 ];
 
 const PACKAGES = [
@@ -21,11 +40,20 @@ const PACKAGES = [
     name: 'basic',
     displayName: 'Basic',
     description: 'Essential features for small churches',
-    priceMonthly: 0,
-    priceYearly: 0,
-    maxChurches: 1,
+    priceMonthly: 5000,
+    priceYearly: 50000,
     sortOrder: 1,
-    features: ['members_management', 'events_management', 'giving_tracking', 'attendance_tracking']
+    features: [
+      { name: 'members_management', limit: null },
+      { name: 'events_management', limit: null },
+      { name: 'giving_tracking', limit: null },
+      { name: 'attendance_tracking', limit: null },
+      { name: 'churches_management', limit: null },
+      { name: 'transactions_view', limit: null },
+      { name: 'max_members', limit: 100 },
+      { name: 'max_churches', limit: 1 },
+      { name: 'max_events_per_month', limit: 10 },
+    ]
   },
   {
     name: 'standard',
@@ -33,9 +61,24 @@ const PACKAGES = [
     description: 'Advanced features for growing churches',
     priceMonthly: 50000,
     priceYearly: 500000,
-    maxChurches: 5,
     sortOrder: 2,
-    features: ['members_management', 'events_management', 'giving_tracking', 'attendance_tracking', 'churches_management', 'communication', 'resources_library', 'reports_analytics']
+    features: [
+      { name: 'members_management', limit: null },
+      { name: 'events_management', limit: null },
+      { name: 'giving_tracking', limit: null },
+      { name: 'attendance_tracking', limit: null },
+      { name: 'resources_library', limit: null },
+      { name: 'churches_management', limit: null },
+      { name: 'transactions_view', limit: null },
+      { name: 'communication', limit: null },
+      { name: 'meetings', limit: null },
+      { name: 'reports_analytics', limit: null },
+      { name: 'event_ticketing', limit: null },
+      { name: 'event_attendance', limit: null },
+      { name: 'max_members', limit: 500 },
+      { name: 'max_churches', limit: 5 },
+      { name: 'max_events_per_month', limit: 50 },
+    ]
   },
   {
     name: 'premium',
@@ -43,9 +86,28 @@ const PACKAGES = [
     description: 'Complete solution for large church networks',
     priceMonthly: 100000,
     priceYearly: 1000000,
-    maxChurches: 999,
     sortOrder: 3,
-    features: ['members_management', 'events_management', 'giving_tracking', 'attendance_tracking', 'churches_management', 'communication', 'resources_library', 'reports_analytics', 'performance_dashboard', 'users_management', 'roles_permissions']
+    features: [
+      { name: 'members_management', limit: null },
+      { name: 'events_management', limit: null },
+      { name: 'giving_tracking', limit: null },
+      { name: 'attendance_tracking', limit: null },
+      { name: 'resources_library', limit: null },
+      { name: 'churches_management', limit: null },
+      { name: 'transactions_view', limit: null },
+      { name: 'users_management', limit: null },
+      { name: 'roles_permissions', limit: null },
+      { name: 'communication', limit: null },
+      { name: 'meetings', limit: null },
+      { name: 'reports_analytics', limit: null },
+      { name: 'performance_dashboard', limit: null },
+      { name: 'advanced_reports', limit: null },
+      { name: 'event_ticketing', limit: null },
+      { name: 'event_attendance', limit: null },
+      { name: 'max_members', limit: 999999 },
+      { name: 'max_churches', limit: 999 },
+      { name: 'max_events_per_month', limit: 999999 },
+    ]
   }
 ];
 
@@ -74,10 +136,10 @@ async function main() {
       create: packageData,
     });
 
-    // Link features to package
-    for (const featureName of features) {
+    // Link features to package with limits
+    for (const featureConfig of features) {
       const feature = await prisma.packageFeature.findUnique({
-        where: { name: featureName },
+        where: { name: featureConfig.name },
       });
 
       if (feature) {
@@ -88,38 +150,17 @@ async function main() {
               featureId: feature.id,
             },
           },
-          update: {},
+          update: { limitValue: featureConfig.limit },
           create: {
             packageId: createdPackage.id,
             featureId: feature.id,
+            limitValue: featureConfig.limit,
           },
         });
       }
     }
   }
   console.log(`✅ Created ${PACKAGES.length} packages\n`);
-
-  // 3. Assign premium package to admin user
-  console.log('👤 Assigning package to admin user...');
-  const adminUser = await prisma.user.findUnique({
-    where: { email: 'admin@icims.org' },
-  });
-
-  if (adminUser) {
-    const premiumPackage = await prisma.package.findUnique({
-      where: { name: 'premium' },
-    });
-
-    if (premiumPackage) {
-      await prisma.user.update({
-        where: { id: adminUser.id },
-        data: { packageId: premiumPackage.id },
-      });
-      console.log('✅ Assigned Premium package to admin@icims.org\n');
-    }
-  } else {
-    console.log('⚠️  Admin user not found\n');
-  }
 
   console.log('🎉 Packages seeded successfully!\n');
 }

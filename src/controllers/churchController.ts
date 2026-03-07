@@ -29,25 +29,36 @@ export async function getChurches(req: Request, res: Response): Promise<void> {
     );
   }
 
+  const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
+  
   const allChurches = await prisma.church.findMany({
     where: { id: { in: churchIds } },
-    include: { _count: { select: { members: true, users: true } } },
     orderBy: { name: 'asc' },
   });
+  
+  const churchesWithCounts = await Promise.all(allChurches.map(async (church) => {
+    const memberCount = await prisma.user.count({
+      where: { churchId: church.id, roleId: memberRole?.id }
+    });
+    return { ...church, memberCount };
+  }));
 
-  res.json({ success: true, data: allChurches });
+  res.json({ success: true, data: churchesWithCounts });
 }
 
 export async function getChurch(req: Request, res: Response): Promise<void> {
+  const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
+  
   const church = await prisma.church.findUnique({
     where: { id: String(req.params.id) },
-    include: {
-      _count: { select: { members: true, users: true, events: true } },
-      children: true,
-    },
   });
   if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
-  res.json({ success: true, data: church });
+  
+  const memberCount = await prisma.user.count({
+    where: { churchId: church.id, roleId: memberRole?.id }
+  });
+  
+  res.json({ success: true, data: { ...church, memberCount } });
 }
 
 // ─── POST /api/churches ───────────────────────────────────────────────────────
@@ -64,8 +75,8 @@ const churchSchema = z.object({
   phone: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
   website: z.string().optional(),
+  pastorName: z.string().optional(),
   yearFounded: z.coerce.number().int().positive().optional(),
-  parentId: z.string().optional(),
 });
 
 export async function createChurch(req: Request, res: Response): Promise<void> {
@@ -76,19 +87,27 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // Check if user has churches_management feature
+  const { hasFeature, checkLimit } = await import('../lib/packageChecker');
+  
+  if (!(await hasFeature(adminUserId, 'churches_management'))) {
+    res.status(403).json({ 
+      success: false, 
+      message: 'Churches management is not available in your package. Please upgrade to access this feature.',
+      featureRequired: 'churches_management'
+    });
+    return;
+  }
+
   const parsed = churchSchema.safeParse(req.body);
   if (!parsed.success) { 
     res.status(400).json({ success: false, message: parsed.error.errors[0].message }); 
     return; 
   }
 
-  // Get the national admin user and their package
   const adminUser = await prisma.user.findUnique({
     where: { id: adminUserId },
-    include: { 
-      package: true,
-      ownedChurches: true 
-    }
+    include: { ownedChurches: true }
   });
 
   if (!adminUser) {
@@ -101,22 +120,20 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  if (!adminUser.package) {
-    res.status(400).json({ success: false, message: 'No package assigned to your account' });
-    return;
-  }
-
-  // Check if package allows creating more churches
+  // Check max_churches limit
   const currentChurchCount = adminUser.ownedChurches.length;
-  if (currentChurchCount >= adminUser.package.maxChurches) {
+  const limitCheck = await checkLimit(adminUserId, 'max_churches', currentChurchCount);
+  
+  if (!limitCheck.allowed) {
     res.status(403).json({ 
       success: false, 
-      message: `Your ${adminUser.package.displayName} package allows maximum ${adminUser.package.maxChurches} churches. Upgrade your package to create more churches.` 
+      message: limitCheck.message || 'Church limit reached',
+      limit: limitCheck.limit
     });
     return;
   }
 
-  const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, yearFounded, parentId } = parsed.data;
+  const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, pastorName, yearFounded } = parsed.data;
 
   // Build location string
   const locParts = [traditionalAuthority, district, region].filter(Boolean);
@@ -128,12 +145,11 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     data: {
       name, location, country,
       region, district, traditionalAuthority, village,
-      address, phone, email: email || undefined, website, yearFounded,
-      parentId: parentId || undefined,
+      address, phone, email: email || undefined, website, pastorName, yearFounded,
       branchCode,
-      nationalAdminId: adminUserId, // Link to national admin
+      nationalAdminId: adminUserId,
     },
-    include: { _count: { select: { members: true, users: true } } },
+    include: { _count: { select: { users: true } } },
   });
 
   res.status(201).json({ success: true, data: church });
@@ -153,8 +169,8 @@ const updateChurchSchema = z.object({
   phone: z.string().optional(),
   email: z.string().email().optional().or(z.literal('')),
   website: z.string().optional(),
+  pastorName: z.string().optional(),
   yearFounded: z.coerce.number().int().positive().optional(),
-  parentId: z.string().optional(),
 });
 
 export async function updateChurch(req: Request, res: Response): Promise<void> {
@@ -214,7 +230,62 @@ export async function updateChurch(req: Request, res: Response): Promise<void> {
   const updated = await prisma.church.update({
     where: { id: String(req.params.id) },
     data: updateData,
-    include: { _count: { select: { members: true, users: true } } },
+    include: { _count: { select: { users: true } } },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+// ─── POST /api/churches/:id/generate-invite ──────────────────────────────────
+
+export async function generateInviteLink(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const role = req.user?.role ?? 'member';
+  
+  if (!userId) { 
+    res.status(401).json({ success: false, message: 'Not authenticated' }); 
+    return; 
+  }
+
+  const church = await prisma.church.findUnique({ where: { id: String(req.params.id) } });
+  if (!church) { 
+    res.status(404).json({ success: false, message: 'Church not found' }); 
+    return; 
+  }
+
+  // Check access permissions based on role
+  let hasAccess = false;
+  
+  if (role === 'national_admin') {
+    // National admin can only generate links for churches they own
+    hasAccess = church.nationalAdminId === userId;
+  } else if (role === 'regional_leader') {
+    // Regional leader can generate links for churches in their regions
+    const regions = req.user?.regions || [];
+    hasAccess = regions.includes('__all__') || !!(church.region && regions.includes(church.region));
+  } else if (role === 'district_overseer') {
+    // District overseer can generate links for churches in their districts
+    const districts = req.user?.districts || [];
+    hasAccess = districts.includes('__all__') || !!(church.district && districts.includes(church.district));
+  } else if (role === 'local_admin') {
+    // Local admin can generate links for churches in their traditional authorities
+    const tas = req.user?.traditionalAuthorities || [];
+    hasAccess = tas.includes('__all__') || !!(church.traditionalAuthority && tas.includes(church.traditionalAuthority));
+  }
+  
+  if (!hasAccess) { 
+    res.status(403).json({ success: false, message: 'Access denied' }); 
+    return; 
+  }
+
+  // Generate unique token
+  const crypto = await import('crypto');
+  const inviteToken = crypto.randomBytes(16).toString('hex');
+
+  const updated = await prisma.church.update({
+    where: { id: church.id },
+    data: { inviteToken },
+    select: { id: true, name: true, inviteToken: true },
   });
 
   res.json({ success: true, data: updated });
@@ -270,14 +341,16 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
   // Delete related records first to avoid foreign key constraint violations
   await prisma.$transaction(async (tx) => {
     // Delete all related records
-    await tx.member.deleteMany({ where: { churchId: church.id } });
     await tx.event.deleteMany({ where: { churchId: church.id } });
-    await tx.donation.deleteMany({ where: { churchId: church.id } });
+    await tx.givingCampaign.deleteMany({ where: { churchId: church.id } });
+    await tx.donationTransaction.deleteMany({ where: { churchId: church.id } });
     await tx.attendance.deleteMany({ where: { churchId: church.id } });
     await tx.meeting.deleteMany({ where: { churchId: church.id } });
     await tx.announcement.deleteMany({ where: { churchId: church.id } });
     await tx.resource.deleteMany({ where: { churchId: church.id } });
-    await tx.payment.deleteMany({ where: { churchId: church.id } });
+    // Payment model uses nationalAdminId, not churchId
+    await tx.payment.deleteMany({ where: { nationalAdminId: church.nationalAdminId } });
+    await tx.transaction.deleteMany({ where: { churchId: church.id } });
     
     // Update users to remove church association (but don't delete the users)
     await tx.user.updateMany({ 
