@@ -111,7 +111,7 @@ export const kpiController = {
 
   async getById(req: Request, res: Response) {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const user = (req as any).user;
       const userId = user.userId;
       const role = user.role;
@@ -140,7 +140,7 @@ export const kpiController = {
 
   async update(req: Request, res: Response) {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const data = updateKPISchema.parse(req.body);
       const user = (req as any).user;
       const userId = user.userId;
@@ -176,7 +176,7 @@ export const kpiController = {
 
   async delete(req: Request, res: Response) {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const user = (req as any).user;
       const userId = user.userId;
       const role = user.role;
