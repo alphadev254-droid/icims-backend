@@ -180,6 +180,67 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   res.status(201).json({ success: true, data: record });
 }
 
+export async function updateAttendance(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const roleName = req.user?.role;
+  const id = req.params.id as string;
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const { churchId, eventId, ...data } = parsed.data;
+
+  const record = await prisma.attendance.findUnique({ where: { id }, include: { church: true } });
+  if (!record) {
+    res.status(404).json({ success: false, message: 'Record not found' });
+    return;
+  }
+
+  // Verify user has access
+  let hasAccess = false;
+  if (roleName === 'national_admin') {
+    hasAccess = record.church.nationalAdminId === userId;
+  } else if (roleName === 'local_admin') {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
+    if (user?.traditionalAuthorities) {
+      const tas = JSON.parse(user.traditionalAuthorities);
+      hasAccess = tas.includes(record.church.traditionalAuthority);
+    }
+  } else if (roleName === 'district_overseer') {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
+    if (user?.districts) {
+      const districts = JSON.parse(user.districts);
+      hasAccess = districts.includes(record.church.district);
+    }
+  } else if (roleName === 'regional_leader') {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
+    if (user?.regions) {
+      const regions = JSON.parse(user.regions);
+      hasAccess = regions.includes(record.church.region);
+    }
+  }
+
+  if (!hasAccess) {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  const updated = await prisma.attendance.update({
+    where: { id },
+    data: {
+      ...data,
+      date: new Date(data.date),
+      churchId,
+      eventId,
+    },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
 export async function deleteAttendance(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;
