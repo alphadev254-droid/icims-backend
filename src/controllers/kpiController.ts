@@ -224,6 +224,13 @@ export const kpiController = {
         where: { churchId: { in: accessibleChurchIds }, status: 'active' },
       });
 
+      // Cache member role lookup
+      const memberRole = await prisma.role.findUnique({ where: { name: 'member' } });
+      const memberRoleId = memberRole?.id;
+
+      // Batch updates
+      const updates: Promise<any>[] = [];
+
       for (const kpi of kpis) {
         let currentValue = 0;
 
@@ -264,16 +271,17 @@ export const kpiController = {
               break;
 
             case 'new_members':
-              const memberRole = await prisma.role.findUnique({ where: { name: 'member' } });
-              const members = await prisma.user.count({
-                where: {
-                  churchId: kpi.churchId,
-                  roleId: memberRole?.id,
-                  status: 'active',
-                  createdAt: { gte: kpi.startDate, lte: kpi.endDate },
-                },
-              });
-              currentValue = members;
+              if (memberRoleId) {
+                const members = await prisma.user.count({
+                  where: {
+                    churchId: kpi.churchId,
+                    roleId: memberRoleId,
+                    status: 'active',
+                    createdAt: { gte: kpi.startDate, lte: kpi.endDate },
+                  },
+                });
+                currentValue = members;
+              }
               break;
 
             case 'event_count':
@@ -287,15 +295,16 @@ export const kpiController = {
               break;
 
             case 'total_members':
-              const memberRole2 = await prisma.role.findUnique({ where: { name: 'member' } });
-              const totalMembers = await prisma.user.count({
-                where: { 
-                  churchId: kpi.churchId, 
-                  roleId: memberRole2?.id,
-                  status: 'active' 
-                },
-              });
-              currentValue = totalMembers;
+              if (memberRoleId) {
+                const totalMembers = await prisma.user.count({
+                  where: { 
+                    churchId: kpi.churchId, 
+                    roleId: memberRoleId,
+                    status: 'active' 
+                  },
+                });
+                currentValue = totalMembers;
+              }
               break;
 
             case 'new_visitors':
@@ -310,14 +319,20 @@ export const kpiController = {
               break;
           }
 
-          await prisma.kPI.update({
-            where: { id: kpi.id },
-            data: { currentValue },
-          });
+          // Add to batch updates
+          updates.push(
+            prisma.kPI.update({
+              where: { id: kpi.id },
+              data: { currentValue },
+            })
+          );
         } catch (error) {
           console.error(`Failed to calculate KPI ${kpi.id}:`, error);
         }
       }
+
+      // Execute all updates in parallel
+      await Promise.all(updates);
 
       res.json({ message: 'KPIs calculated successfully' });
     } catch (error: any) {

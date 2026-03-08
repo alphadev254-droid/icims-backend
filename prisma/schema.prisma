@@ -96,6 +96,7 @@ model User {
   donationTransactions   DonationTransaction[]
   passwordResetTokens    PasswordResetToken[]
 
+  @@index([churchId, roleId, status, createdAt])
   @@map("users")
 }
 
@@ -204,6 +205,7 @@ model Event {
   church        Church       @relation(fields: [churchId], references: [id])
   tickets       EventTicket[]
 
+  @@index([churchId, date])
   @@map("events")
 }
 
@@ -368,6 +370,7 @@ model DonationTransaction {
   @@index([userId])
   @@index([churchId])
   @@index([status])
+  @@index([churchId, status, createdAt])
   @@map("donation_transactions")
 }
 
@@ -393,6 +396,7 @@ model Attendance {
 
   church         Church   @relation(fields: [churchId], references: [id])
 
+  @@index([churchId, date])
   @@map("attendance")
 }
 
@@ -682,6 +686,7 @@ model KPI {
   @@index([churchId])
   @@index([category])
   @@index([status])
+  @@index([churchId, status, metricType])
   @@map("kpis")
 }
 
