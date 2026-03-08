@@ -247,6 +247,7 @@ const registerSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   phone: z.string().min(1, 'Phone number is required'),
+  gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
   accountCountry: z.enum(['Malawi', 'Kenya'], { required_error: 'Country is required' }).optional(),
   inviteToken: z.string().optional(),
 }).superRefine((data, ctx) => {
@@ -327,6 +328,7 @@ export async function register(req: Request, res: Response): Promise<void> {
       nationalAdminId,
       accountCountry: data.accountCountry,
       phone: data.phone,
+      gender: data.gender,
     },
     include: USER_INCLUDE,
   });

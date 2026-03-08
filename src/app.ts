@@ -23,6 +23,7 @@ import uploadRoutes from './routes/upload';
 import passwordResetRoutes from './routes/passwordReset';
 import webhookRoutes from './routes/webhookRoutes';
 import walletRoutes from './routes/walletRoutes';
+import kpiRoutes from './routes/kpiRoutes';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
@@ -64,6 +65,7 @@ app.use('/api/subaccounts', subaccountRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/kpis', kpiRoutes);
 
 // ─── Serve uploaded files ──────────────────────────────────────────────────
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));

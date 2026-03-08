@@ -149,6 +149,7 @@ model Church {
   transactions  Transaction[]
   subaccount    Subaccount?
   wallet        Wallet?
+  kpis          KPI[]
 
   @@map("churches")
 }
@@ -378,6 +379,13 @@ model Attendance {
   churchId       String
   date           DateTime
   totalAttendees Int
+  maleCount      Int      @default(0)
+  femaleCount    Int      @default(0)
+  children       Int      @default(0)  // 0-12 years
+  youth          Int      @default(0)  // 13-17 years
+  youngAdults    Int      @default(0)  // 18-35 years
+  adults         Int      @default(0)  // 36-59 years
+  seniors        Int      @default(0)  // 60+ years
   newVisitors    Int      @default(0)
   serviceType    String   @default("Sunday Service")
   notes          String?  @db.Text
@@ -646,6 +654,35 @@ model Withdrawal {
   @@index([status])
   @@index([createdAt])
   @@map("withdrawals")
+}
+
+// ─── KPIs ──────────────────────────────────────────────────────────────────────
+
+model KPI {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?  @db.Text
+  category        String   // Attendance | Giving | Membership | Events
+  metricType      String   // total_attendance | average_attendance | total_giving | new_members | event_count
+  targetValue     Float
+  currentValue    Float    @default(0)
+  unit            String   // people | MWK | percentage | events
+  period          String   // monthly | quarterly | yearly
+  startDate       DateTime
+  endDate         DateTime
+  status          String   @default("active") // active | completed | cancelled
+  nationalAdminId String
+  churchId        String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  church          Church   @relation(fields: [churchId], references: [id])
+
+  @@index([nationalAdminId])
+  @@index([churchId])
+  @@index([category])
+  @@index([status])
+  @@map("kpis")
 }
 
 // ─── Email Queue ───────────────────────────────────────────────────────────────
