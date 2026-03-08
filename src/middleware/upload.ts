@@ -46,6 +46,6 @@ export const uploadImage = multer({
 
 export const uploadFiles = multer({
   storage,
-  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
+  limits: { fileSize: parseInt(process.env.MAX_VIDEO_SIZE_MB || '500') * 1024 * 1024 },
   fileFilter: fileFilter,
 });
