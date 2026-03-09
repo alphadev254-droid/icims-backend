@@ -8,19 +8,32 @@ const createKPISchema = z.object({
   description: z.string().optional(),
   category: z.enum(['Attendance', 'Giving', 'Membership', 'Events']),
   metricType: z.string(),
+  attendanceType: z.enum(['regular', 'event']).optional(),
+  eventId: z.string().optional(),
   targetValue: z.number().positive(),
   unit: z.string(),
   period: z.enum(['monthly', 'quarterly', 'yearly']),
   startDate: z.string(),
   endDate: z.string(),
   churchId: z.string().min(1),
+  isRecurring: z.boolean().optional().default(false),
 });
 
 const updateKPISchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
+  category: z.enum(['Attendance', 'Giving', 'Membership', 'Events']).optional(),
+  metricType: z.string().optional(),
+  attendanceType: z.enum(['regular', 'event']).optional(),
+  eventId: z.string().optional(),
   targetValue: z.number().positive().optional(),
+  unit: z.string().optional(),
+  period: z.enum(['monthly', 'quarterly', 'yearly']).optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  churchId: z.string().optional(),
   status: z.enum(['active', 'completed', 'cancelled']).optional(),
+  recurringActive: z.boolean().optional(),
 });
 
 export const kpiController = {
@@ -162,9 +175,31 @@ export const kpiController = {
 
       if (!kpi) return res.status(404).json({ error: 'KPI not found' });
 
+      // PROTECTION: Prevent editing completed KPIs
+      if (kpi.status === 'completed') {
+        res.status(400).json({ error: 'Cannot edit completed KPI. This KPI period has ended.' });
+        return;
+      }
+
+      // PROTECTION: Prevent editing if end date has passed
+      if (new Date(kpi.endDate) < new Date()) {
+        res.status(400).json({ error: 'Cannot edit KPI. The end date has passed.' });
+        return;
+      }
+
+      // If churchId is being updated, verify access
+      if (data.churchId && !accessibleChurchIds.includes(data.churchId)) {
+        res.status(403).json({ error: 'Access denied to target church' });
+        return;
+      }
+
+      const updateData: any = { ...data };
+      if (data.startDate) updateData.startDate = new Date(data.startDate);
+      if (data.endDate) updateData.endDate = new Date(data.endDate);
+
       const updated = await prisma.kPI.update({
         where: { id },
-        data,
+        data: updateData,
         include: { church: { select: { id: true, name: true } } },
       });
 
@@ -237,22 +272,48 @@ export const kpiController = {
         try {
           switch (kpi.metricType) {
             case 'total_attendance':
+              const whereClause: any = {
+                churchId: kpi.churchId,
+                date: { gte: kpi.startDate, lte: kpi.endDate },
+              };
+              
+              // Filter by attendance type
+              if (kpi.attendanceType === 'regular') {
+                whereClause.eventId = null;
+              } else if (kpi.attendanceType === 'event') {
+                if (kpi.eventId) {
+                  whereClause.eventId = kpi.eventId;
+                } else {
+                  whereClause.eventId = { not: null };
+                }
+              }
+              
               const attendance = await prisma.attendance.aggregate({
-                where: {
-                  churchId: kpi.churchId,
-                  date: { gte: kpi.startDate, lte: kpi.endDate },
-                },
+                where: whereClause,
                 _sum: { totalAttendees: true },
               });
               currentValue = attendance._sum.totalAttendees || 0;
               break;
 
             case 'average_attendance':
+              const avgWhereClause: any = {
+                churchId: kpi.churchId,
+                date: { gte: kpi.startDate, lte: kpi.endDate },
+              };
+              
+              // Filter by attendance type
+              if (kpi.attendanceType === 'regular') {
+                avgWhereClause.eventId = null;
+              } else if (kpi.attendanceType === 'event') {
+                if (kpi.eventId) {
+                  avgWhereClause.eventId = kpi.eventId;
+                } else {
+                  avgWhereClause.eventId = { not: null };
+                }
+              }
+              
               const avgAttendance = await prisma.attendance.aggregate({
-                where: {
-                  churchId: kpi.churchId,
-                  date: { gte: kpi.startDate, lte: kpi.endDate },
-                },
+                where: avgWhereClause,
                 _avg: { totalAttendees: true },
               });
               currentValue = Math.round(avgAttendance._avg.totalAttendees || 0);

@@ -92,7 +92,15 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const [users, total] = await Promise.all([
     prisma.user.findMany({
       where: whereClause,
-      include: { role: true, church: { select: { name: true } } },
+      include: { 
+        role: true, 
+        church: { select: { name: true } },
+        teams: {
+          include: {
+            team: { select: { name: true } }
+          }
+        }
+      },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
@@ -102,7 +110,10 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
 
   res.json({ 
     success: true, 
-    data: users.map(safeUser),
+    data: users.map(u => ({
+      ...safeUser(u),
+      teams: u.teams.map(t => t.team.name)
+    })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
   });
 }

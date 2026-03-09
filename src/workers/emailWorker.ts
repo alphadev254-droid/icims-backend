@@ -27,7 +27,13 @@ export async function processEmailQueue(): Promise<void> {
 
     for (const email of emails) {
       try {
-        await sendEmail(email.to, email.subject, email.html);
+        const recipients = email.to.split(',').map((e: string) => e.trim());
+        const attachments = email.attachments ? JSON.parse(email.attachments).map((a: any) => ({
+          filename: a.filename,
+          content: Buffer.from(a.content, 'base64')
+        })) : undefined;
+        
+        await sendEmail(recipients, email.subject, email.html, attachments);
         
         await prisma.$executeRaw`
           UPDATE email_queue

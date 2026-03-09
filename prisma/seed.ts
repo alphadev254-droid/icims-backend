@@ -33,6 +33,9 @@ const PERMISSIONS = [
   { name: 'resources:read', resource: 'resources', action: 'read' },
   { name: 'resources:create', resource: 'resources', action: 'create' },
   { name: 'reports:read', resource: 'reports', action: 'read' },
+  { name: 'reports:create', resource: 'reports', action: 'create' },
+  { name: 'reports:update', resource: 'reports', action: 'update' },
+  { name: 'reports:delete', resource: 'reports', action: 'delete' },
   { name: 'performance:read', resource: 'performance', action: 'read' },
   { name: 'settings:read', resource: 'settings', action: 'read' },
   { name: 'settings:update', resource: 'settings', action: 'update' },
@@ -69,6 +72,12 @@ const PERMISSIONS = [
   { name: 'campaigns:delete', resource: 'campaigns', action: 'delete' },
   { name: 'donations:read', resource: 'donations', action: 'read' },
   { name: 'donations:create', resource: 'donations', action: 'create' },
+  { name: 'teams:read', resource: 'teams', action: 'read' },
+  { name: 'teams:create', resource: 'teams', action: 'create' },
+  { name: 'teams:update', resource: 'teams', action: 'update' },
+  { name: 'teams:delete', resource: 'teams', action: 'delete' },
+  { name: 'teams:assign', resource: 'teams', action: 'assign' },
+  { name: 'reminders:read', resource: 'reminders', action: 'read' },
 ];
 
 const ROLES = [
@@ -85,6 +94,9 @@ const MEMBER_PERMISSIONS = [
   'giving:read',
   'giving:create',
   'communication:read',
+  'communication:create',
+  'communication:update',
+  'communication:delete',
   'resources:read',
   'transactions:read',
   'payments:pay',
@@ -94,6 +106,8 @@ const MEMBER_PERMISSIONS = [
   'donations:read',
   'settings:read',
   'packages:view',
+  'teams:read',
+  'reminders:read',
 ];
 
 async function main() {

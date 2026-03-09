@@ -10,15 +10,17 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-export async function sendEmail(to: string, subject: string, html: string) {
+export async function sendEmail(to: string | string[], subject: string, html: string, attachments?: Array<{ filename: string; content: Buffer }>) {
   try {
     await transporter.sendMail({
       from: `"${process.env.SYSTEM || 'ICIMS'}" <${process.env.SMTP_USER}>`,
-      to,
+      to: Array.isArray(to) ? to.join(',') : to,
       subject,
       html,
+      attachments,
     });
-    console.log(`Email sent to ${to}: ${subject}`);
+    const recipients = Array.isArray(to) ? to.join(', ') : to;
+    console.log(`Email sent to ${recipients}: ${subject}`);
   } catch (error) {
     console.error('Failed to send email:', error);
     throw error;

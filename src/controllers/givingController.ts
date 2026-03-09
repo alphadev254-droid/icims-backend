@@ -45,6 +45,25 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
 
   const { churchId, endDate, ...data } = parsed.data;
 
+  // Check if Kenya account has subaccount for receiving donations
+  const { getPaymentGateway } = await import('../utils/gatewayRouter');
+  const gateway = await getPaymentGateway(userId!);
+  
+  if (gateway === 'paystack') {
+    // Kenya account - check for subaccount
+    const subaccount = await prisma.subaccount.findUnique({
+      where: { churchId }
+    });
+    
+    if (!subaccount) {
+      res.status(400).json({ 
+        success: false, 
+        message: 'To create giving campaigns, you need to set up a Paystack subaccount first. Please go to Branches > Finance account management to create your finance account.' 
+      });
+      return;
+    }
+  }
+
   // Verify user has access to this church
   let hasAccess = false;
   if (roleName === 'national_admin') {

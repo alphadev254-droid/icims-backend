@@ -82,6 +82,13 @@ model User {
   traditionalAuthorities String?  @db.Text
   gender                 String?
   dateOfBirth            DateTime?
+  maritalStatus          String?  // Single, Married, Widowed, Divorced
+  weddingDate            DateTime?  // Only if married
+  anniversary            DateTime?
+  residentialNeighbourhood String?
+  serviceInterest        String?  // Choir, Ushering, Greeters, Security/Protocol, Missions/Outreaches, Other
+  membershipType         String?  // Visitor, Member
+  baptizedByImmersion    Boolean?
   status                 String   @default("active")
   memberId               String?  @unique
   createdAt              DateTime @default(now())
@@ -95,8 +102,13 @@ model User {
   transactions           Transaction[]
   donationTransactions   DonationTransaction[]
   passwordResetTokens    PasswordResetToken[]
+  teams                  UserTeam[]
+  reminders              ReminderCache[]
 
   @@index([churchId, roleId, status, createdAt])
+  @@index([dateOfBirth])
+  @@index([weddingDate])
+  @@index([anniversary])
   @@map("users")
 }
 
@@ -151,6 +163,8 @@ model Church {
   subaccount    Subaccount?
   wallet        Wallet?
   kpis          KPI[]
+  teams         Team[]
+  reminders     ReminderCache[]
 
   @@map("churches")
 }
@@ -184,6 +198,7 @@ model Event {
   title         String
   description   String   @db.Text
   date          DateTime
+  endDate       DateTime
   time          String
   location      String
   type          String   @default("service")
@@ -196,6 +211,7 @@ model Event {
   currency      String?  // 'MWK' | 'KSH'
   totalTickets  Int?
   ticketsSold   Int      @default(0)
+  ticketSalesCutoff DateTime?
   imageUrl      String?
   churchId      String
   createdById   String
@@ -204,6 +220,7 @@ model Event {
 
   church        Church       @relation(fields: [churchId], references: [id])
   tickets       EventTicket[]
+  reminders     ReminderCache[]
 
   @@index([churchId, date])
   @@map("events")
@@ -483,6 +500,8 @@ model Subscription {
   expiresAt       DateTime
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  // Email tracking for expiration reminders
+  lastEmailDay    Int?     // Last day email was sent: -6, -4, -2 for expiring; 1-6 for expired
 
   package         Package  @relation(fields: [packageId], references: [id])
 
@@ -668,6 +687,8 @@ model KPI {
   description     String?  @db.Text
   category        String   // Attendance | Giving | Membership | Events
   metricType      String   // total_attendance | average_attendance | total_giving | new_members | event_count
+  attendanceType  String?  // regular | event (for Attendance category)
+  eventId         String?  // Specific event ID (for event attendance KPIs)
   targetValue     Float
   currentValue    Float    @default(0)
   unit            String   // people | MWK | percentage | events
@@ -675,6 +696,10 @@ model KPI {
   startDate       DateTime
   endDate         DateTime
   status          String   @default("active") // active | completed | cancelled
+  isRecurring     Boolean  @default(false)
+  recurringActive Boolean  @default(true)
+  parentKpiId     String?
+  recurrenceCount Int      @default(0)
   nationalAdminId String
   churchId        String
   createdAt       DateTime @default(now())
@@ -687,24 +712,116 @@ model KPI {
   @@index([category])
   @@index([status])
   @@index([churchId, status, metricType])
+  @@index([parentKpiId])
+  @@index([isRecurring, recurringActive, endDate])
   @@map("kpis")
+}
+
+// ─── Teams ─────────────────────────────────────────────────────────────────────
+
+model Team {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  churchId    String
+  color       String?  // For visual distinction
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  church      Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  members     UserTeam[]
+  communications TeamCommunication[]
+
+  @@index([churchId])
+  @@map("teams")
+}
+
+model UserTeam {
+  userId    String
+  teamId    String
+  isLeader  Boolean  @default(false)
+  assignedAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@id([userId, teamId])
+  @@index([teamId])
+  @@index([userId])
+  @@map("user_teams")
+}
+
+// ─── Team Communication ────────────────────────────────────────────────────────
+
+model TeamCommunication {
+  id          String   @id @default(cuid())
+  title       String
+  content     String   @db.Text
+  teamId      String
+  authorId    String
+  mediaUrls   Json?    // [{url, type, name, size}]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+  @@index([authorId])
+  @@index([teamId, createdAt])
+  @@map("team_communications")
 }
 
 // ─── Email Queue ───────────────────────────────────────────────────────────────
 
 model EmailQueue {
-  id        String   @id @default(cuid())
-  to        String
-  subject   String
-  html      String   @db.Text
-  type      String   // user_created | registration | password_reset | password_changed | ticket_purchase | donation_receipt
-  status    String   @default("pending") // pending | sent | failed
-  attempts  Int      @default(0)
-  error     String?  @db.Text
-  sentAt    DateTime?
-  createdAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  to          String
+  subject     String
+  html        String   @db.Text
+  attachments String?  @db.Text  // JSON array of {filename, content(base64)}
+  type        String   // user_created | registration | password_reset | password_changed | ticket_purchase | donation_receipt
+  status      String   @default("pending") // pending | sent | failed
+  attempts    Int      @default(0)
+  error       String?  @db.Text
+  sentAt      DateTime?
+  createdAt   DateTime @default(now())
 
   @@index([status])
   @@index([createdAt])
   @@map("email_queue")
+}
+
+// ─── Reminder Cache ────────────────────────────────────────────────────────────
+
+model ReminderCache {
+  id              String   @id @default(cuid())
+  userId          String
+  type            String   // birthday | wedding | member_anniversary | church_founded | event
+  originalDate    DateTime
+  upcomingDate    DateTime
+  daysUntil       Int
+  age             Int?
+  years           Int?
+  churchId        String
+  nationalAdminId String?
+  eventId         String?  // For event reminders
+  eventTitle      String?  // Denormalized for quick display
+  lastNotified    DateTime?
+  notifyAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  church          Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  event           Event?   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, upcomingDate, eventId])
+  @@index([upcomingDate])
+  @@index([churchId])
+  @@index([nationalAdminId])
+  @@index([type])
+  @@index([notifyAt])
+  @@index([daysUntil])
+  @@index([eventId])
+  @@map("reminder_cache")
 }

@@ -69,7 +69,13 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
 
   const records = await prisma.attendance.findMany({
     where: accessibleChurchIds.length > 0 ? { churchId: { in: accessibleChurchIds } } : {},
-    include: { church: { select: { name: true } } },
+    select: {
+      id: true,
+      date: true,
+      totalAttendees: true,
+      serviceType: true,
+      churchId: true,
+    },
     orderBy: { date: 'desc' },
     take: 100,
   });

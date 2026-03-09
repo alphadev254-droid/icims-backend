@@ -249,6 +249,7 @@ const registerSchema = z.object({
   phone: z.string().min(1, 'Phone number is required'),
   gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
   accountCountry: z.enum(['Malawi', 'Kenya'], { required_error: 'Country is required' }).optional(),
+  anniversary: z.string().optional(),
   inviteToken: z.string().optional(),
 }).superRefine((data, ctx) => {
   // If no inviteToken (national admin registration), require accountCountry
@@ -329,6 +330,7 @@ export async function register(req: Request, res: Response): Promise<void> {
       accountCountry: data.accountCountry,
       phone: data.phone,
       gender: data.gender,
+      anniversary: data.anniversary ? new Date(data.anniversary) : undefined,
     },
     include: USER_INCLUDE,
   });
@@ -336,19 +338,36 @@ export async function register(req: Request, res: Response): Promise<void> {
   const permissions = await getUserPermissions(user);
 
   const { queueEmail } = await import('../lib/emailQueue');
-  const { registrationTemplate } = await import('../lib/emailTemplates');
+  const { registrationTemplate, memberWelcomeTemplate } = await import('../lib/emailTemplates');
   
-  queueEmail(
-    user.email,
-    'Welcome to ICIMS',
-    registrationTemplate({
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      roleName: user.role?.displayName,
-    }),
-    'registration'
-  ).catch(err => console.error('Failed to queue registration email:', err));
+  // Send different email based on role
+  if (data.inviteToken && user.church) {
+    // Member registration - send welcome to church email
+    queueEmail(
+      user.email,
+      `Welcome to ${user.church.name}`,
+      memberWelcomeTemplate({
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        churchName: user.church.name,
+      }),
+      'registration'
+    ).catch(err => console.error('Failed to queue member welcome email:', err));
+  } else {
+    // National admin registration - send full registration email
+    queueEmail(
+      user.email,
+      'Welcome to ICIMS',
+      registrationTemplate({
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        roleName: user.role?.displayName,
+      }),
+      'registration'
+    ).catch(err => console.error('Failed to queue registration email:', err));
+  }
 
   const token = signToken({
     userId: user.id,
@@ -396,6 +415,7 @@ const profileSchema = z.object({
 export async function updateProfile(req: Request, res: Response): Promise<void> {
   if (!req.user) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
+  const file = (req as any).file;
   const parsed = profileSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
@@ -408,6 +428,7 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
   if (firstName) updateData.firstName = firstName;
   if (lastName) updateData.lastName = lastName;
   if (phone !== undefined) updateData.phone = phone;
+  if (file) updateData.avatar = `/uploads/avatars/${file.filename}`;
 
   if (newPassword) {
     if (!currentPassword) { res.status(400).json({ success: false, message: 'Current password required to set new password' }); return; }

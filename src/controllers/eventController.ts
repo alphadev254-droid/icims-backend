@@ -4,13 +4,15 @@ import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { generateTicketPDF } from '../lib/ticketPDF';
 
-const eventSchema = z.object({
-  title: z.string().min(1),
+const baseEventSchema = z.object({
+  title: z.string().min(1, 'Title required'),
   description: z.string().optional().default(''),
-  date: z.string(),
-  time: z.string(),
-  location: z.string().min(1),
+  date: z.string().min(1, 'Date required'),
+  endDate: z.string().min(1, 'End date required'),
+  time: z.string().min(1, 'Time required'),
+  location: z.string().min(1, 'Location required'),
   type: z.enum(['service', 'meeting', 'conference', 'outreach', 'fellowship']),
   status: z.enum(['upcoming', 'ongoing', 'completed', 'cancelled']).optional().default('upcoming'),
   attendeeCount: z.number().optional().default(0),
@@ -20,12 +22,18 @@ const eventSchema = z.object({
   ticketPrice: z.number().optional(),
   currency: z.enum(['MWK', 'KSH']).optional(),
   totalTickets: z.number().optional(),
+  ticketSalesCutoff: z.string().optional(),
   imageUrl: z.string().optional(),
+});
+
+const eventSchema = baseEventSchema.refine(data => new Date(data.endDate) >= new Date(data.date), {
+  message: 'End date must be on or after start date',
+  path: ['endDate'],
 });
 
 const bookTicketSchema = z.object({
   eventId: z.string().min(1),
-  memberId: z.string().min(1),
+  memberId: z.string().optional(),
   paymentMethod: z.enum(['cash', 'mobile_money', 'card', 'bank_transfer']).optional().default('cash'),
   reference: z.string().optional(),
   amount: z.number().optional(),
@@ -81,17 +89,22 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const eventIds = events.map(e => e.id);
   const userTickets = await prisma.eventTicket.findMany({
     where: { eventId: { in: eventIds }, userId },
-    select: { eventId: true },
+    select: { eventId: true, id: true, ticketNumber: true },
   });
 
-  // Create a Set for O(1) lookup
-  const ticketedEventIds = new Set(userTickets.map(t => t.eventId));
+  // Create a Map for O(1) lookup
+  const ticketMap = new Map(userTickets.map(t => [t.eventId, { id: t.id, ticketNumber: t.ticketNumber }]));
 
   // Map events with ticket status
-  const eventsWithTicketStatus = events.map(event => ({
-    ...event,
-    userHasTicket: ticketedEventIds.has(event.id),
-  }));
+  const eventsWithTicketStatus = events.map(event => {
+    const ticket = ticketMap.get(event.id);
+    return {
+      ...event,
+      userHasTicket: !!ticket,
+      userTicketId: ticket?.id,
+      userTicketNumber: ticket?.ticketNumber,
+    };
+  });
 
   res.json({ success: true, data: eventsWithTicketStatus });
 }
@@ -115,10 +128,32 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const parsed = eventSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
+  // Check if event requires payment and if Kenya account has subaccount
+  if (!parsed.data.isFree && parsed.data.requiresTicket) {
+    const { getPaymentGateway } = await import('../utils/gatewayRouter');
+    const gateway = await getPaymentGateway(userId);
+    
+    if (gateway === 'paystack') {
+      // Kenya account - check for subaccount
+      const subaccount = await prisma.subaccount.findUnique({
+        where: { churchId: parsed.data.churchId }
+      });
+      
+      if (!subaccount) {
+        res.status(400).json({ 
+          success: false, 
+          message: 'To create giving campaigns, you need to set up a Paystack subaccount first. Please go to Branches > Finance account management to create your finance account..' 
+        });
+        return;
+      }
+    }
+  }
+
   const event = await prisma.event.create({
     data: {
       ...parsed.data,
       date: new Date(parsed.data.date),
+      endDate: new Date(parsed.data.endDate),
       createdById: req.user!.userId,
     },
   });
@@ -126,7 +161,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
 }
 
 export async function updateEvent(req: Request, res: Response): Promise<void> {
-  const parsed = eventSchema.partial().safeParse(req.body);
+  const parsed = baseEventSchema.partial().safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const eventId = String(req.params.id);
@@ -145,6 +180,8 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     data: {
       ...parsed.data,
       date: parsed.data.date ? new Date(parsed.data.date) : undefined,
+      endDate: parsed.data.endDate ? new Date(parsed.data.endDate) : undefined,
+      ticketSalesCutoff: parsed.data.ticketSalesCutoff ? (parsed.data.ticketSalesCutoff === '' ? null : new Date(parsed.data.ticketSalesCutoff)) : undefined,
     },
   });
   res.json({ success: true, data: event });
@@ -157,15 +194,34 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
 
 export async function bookTicket(req: Request, res: Response): Promise<void> {
   const parsed = bookTicketSchema.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+  if (!parsed.success) { 
+    console.log('Validation error:', parsed.error.errors);
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message, errors: parsed.error.errors }); 
+    return; 
+  }
 
   const { eventId, memberId, paymentMethod, reference } = parsed.data;
   const userId = req.user!.userId;
+  const roleName = req.user?.role ?? 'member';
   const churchId = req.user!.churchId;
+  
+  // If memberId not provided and user is a member, use their own ID
+  const targetUserId = !memberId && roleName === 'member' ? userId : memberId;
+  
+  if (!targetUserId) {
+    res.status(400).json({ success: false, message: 'memberId required' });
+    return;
+  }
 
   const event = await prisma.event.findUnique({ where: { id: eventId } });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
   if (!event.requiresTicket) { res.status(400).json({ success: false, message: 'Event does not require tickets' }); return; }
+  if (event.status === 'completed' || event.status === 'cancelled') {
+    res.status(400).json({ success: false, message: 'Cannot book tickets for completed or cancelled events' }); return;
+  }
+  if (event.ticketSalesCutoff && new Date(event.ticketSalesCutoff) < new Date()) {
+    res.status(400).json({ success: false, message: 'Ticket sales have ended' }); return;
+  }
   if (event.totalTickets && event.ticketsSold >= event.totalTickets) {
     res.status(400).json({ success: false, message: 'Event is sold out' }); return;
   }
@@ -193,7 +249,7 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
   }
 
   const ticket = await prisma.eventTicket.create({
-    data: { ticketNumber, eventId, userId: memberId, transactionId, status: 'confirmed' },
+    data: { ticketNumber, eventId, userId: targetUserId, transactionId, status: 'confirmed' },
   });
 
   await prisma.event.update({
@@ -274,10 +330,24 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const { memberId, paymentMethod, reference, amount, currency, transactionStatus, ticketStatus, notes, useExistingTransaction, existingTransactionId } = parsed.data;
+  
+  if (!memberId) {
+    res.status(400).json({ success: false, message: 'memberId is required for manual ticket creation' });
+    return;
+  }
 
   const event = await prisma.event.findUnique({ where: { id: eventId } });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
   if (!event.requiresTicket) { res.status(400).json({ success: false, message: 'Event does not require tickets' }); return; }
+  if (event.status === 'completed' || event.status === 'cancelled') {
+    res.status(400).json({ success: false, message: 'Cannot book tickets for completed or cancelled events' }); return;
+  }
+  if (event.ticketSalesCutoff && new Date(event.ticketSalesCutoff) < new Date()) {
+    res.status(400).json({ success: false, message: 'Ticket sales have ended' }); return;
+  }
+  if (event.totalTickets && event.ticketsSold >= event.totalTickets) {
+    res.status(400).json({ success: false, message: 'Event is sold out' }); return;
+  }
 
   const member = await prisma.user.findUnique({ 
     where: { id: memberId },
@@ -440,4 +510,42 @@ export async function getUnallocatedTransactions(req: Request, res: Response): P
   });
 
   res.json({ success: true, data: transactions });
+}
+
+export async function downloadTicket(req: Request, res: Response): Promise<void> {
+  const ticketId = String(req.params.ticketId);
+  const userId = req.user!.userId;
+  const roleName = req.user?.role ?? 'member';
+
+  const whereClause = roleName === 'member' ? { id: ticketId, userId } : { id: ticketId };
+
+  const ticket = await prisma.eventTicket.findUnique({
+    where: whereClause,
+    include: {
+      event: { include: { church: true } },
+      user: { select: { firstName: true, lastName: true } },
+      transaction: { select: { amount: true, currency: true } },
+    },
+  });
+
+  if (!ticket) {
+    res.status(404).json({ success: false, message: 'Ticket not found' });
+    return;
+  }
+
+  const pdfBuffer = await generateTicketPDF({
+    ticketNumber: ticket.ticketNumber,
+    eventTitle: ticket.event.title,
+    eventDate: new Date(ticket.event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+    eventEndDate: new Date(ticket.event.endDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+    eventLocation: ticket.event.location,
+    attendeeName: `${ticket.user.firstName} ${ticket.user.lastName}`,
+    churchName: ticket.event.church.name,
+    amount: ticket.transaction?.amount || 0,
+    currency: ticket.transaction?.currency || ticket.event.currency || 'MWK',
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename=ticket-${ticket.ticketNumber}.pdf`);
+  res.send(pdfBuffer);
 }

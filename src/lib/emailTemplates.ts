@@ -1,10 +1,12 @@
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
 const SYSTEM_NAME = process.env.SYSTEM || 'ICIMS';
 
-const baseStyle = `
+const getBaseStyle = () => `
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; background-color: #f9fafb; margin: 0; padding: 0; }
     .container { max-width: 600px; margin: 40px auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .church-header { background: white; color: #1e3a8a; padding: 20px 24px; text-align: center; border-bottom: 4px solid #d4a574; }
+    .church-header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
     .header { background: #d4a574; color: white; padding: 32px 24px; text-align: center; }
     .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
     .header p { margin: 8px 0 0 0; opacity: 0.9; font-size: 14px; }
@@ -23,12 +25,19 @@ const baseStyle = `
   </style>
 `;
 
+const getChurchHeader = (churchName?: string) => churchName ? `
+  <div class="church-header">
+    <h1>${churchName}</h1>
+  </div>
+` : '';
+
 export const userCreatedTemplate = (data: { firstName: string; lastName: string; email: string; password: string; churchName?: string; roleName?: string }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>${SYSTEM_NAME}</h1>
       <p>Welcome to the Church Management System</p>
@@ -51,19 +60,20 @@ export const userCreatedTemplate = (data: { firstName: string; lastName: string;
       <p>If you have any questions, please contact your church administrator.</p>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
 </html>
 `;
 
-export const registrationTemplate = (data: { firstName: string; lastName: string; email: string; roleName?: string }) => `
+export const registrationTemplate = (data: { firstName: string; lastName: string; email: string; roleName?: string; churchName?: string }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Welcome to ${SYSTEM_NAME}!</h1>
     </div>
@@ -89,19 +99,20 @@ export const registrationTemplate = (data: { firstName: string; lastName: string
       <p>Need help? Contact our support team or visit our documentation.</p>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
 </html>
 `;
 
-export const passwordResetTemplate = (data: { firstName: string; resetToken: string }) => `
+export const passwordResetTemplate = (data: { firstName: string; resetToken: string; churchName?: string }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Password Reset Request</h1>
     </div>
@@ -118,19 +129,20 @@ export const passwordResetTemplate = (data: { firstName: string; resetToken: str
       <p style="color: #6b7280; font-size: 14px;">For security, never share this link with anyone.</p>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
 </html>
 `;
 
-export const passwordChangedTemplate = (data: { firstName: string; email: string }) => `
+export const passwordChangedTemplate = (data: { firstName: string; email: string; churchName?: string }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Password Changed Successfully</h1>
     </div>
@@ -148,7 +160,7 @@ export const passwordChangedTemplate = (data: { firstName: string; email: string
       <a href="${FRONTEND_URL}/login" class="button">Login to Your Account</a>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
@@ -162,13 +174,16 @@ export const ticketPurchaseTemplate = (data: {
   amount: number; 
   currency: string;
   eventDate: string;
+  eventEndDate: string;
   eventLocation: string;
+  churchName?: string;
 }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Ticket Confirmation</h1>
     </div>
@@ -179,7 +194,7 @@ export const ticketPurchaseTemplate = (data: {
       <div class="info-box">
         <h3>Event Details</h3>
         <p><strong>Event:</strong> ${data.eventTitle}</p>
-        <p><strong>Date:</strong> ${data.eventDate}</p>
+        <p><strong>Date:</strong> ${data.eventDate} - ${data.eventEndDate}</p>
         <p><strong>Location:</strong> ${data.eventLocation}</p>
         <p><strong>Ticket Number:</strong> ${data.ticketNumber}</p>
         <p><strong>Amount Paid:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
@@ -192,7 +207,7 @@ export const ticketPurchaseTemplate = (data: {
       <p>We look forward to seeing you at the event!</p>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
@@ -206,12 +221,14 @@ export const donationReceiptTemplate = (data: {
   campaignName: string;
   reference: string;
   isAnonymous: boolean;
+  churchName?: string;
 }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Donation Receipt</h1>
     </div>
@@ -235,7 +252,7 @@ export const donationReceiptTemplate = (data: {
       <p style="font-style: italic; color: #6b7280;">"Each of you should give what you have decided in your heart to give, not reluctantly or under compulsion, for God loves a cheerful giver." - 2 Corinthians 9:7</p>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
       <p>This is an official receipt for your records.</p>
     </div>
   </div>
@@ -251,12 +268,14 @@ export const withdrawalRequestUserTemplate = (data: {
   currency: string;
   method: string;
   withdrawalId: string;
+  churchName?: string;
 }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Withdrawal Request Received</h1>
     </div>
@@ -279,7 +298,7 @@ export const withdrawalRequestUserTemplate = (data: {
       <a href="${FRONTEND_URL}/withdrawals" class="button">View Withdrawal Status</a>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
@@ -300,12 +319,14 @@ export const withdrawalRequestAdminTemplate = (data: {
   bankCode?: string;
   accountName?: string;
   accountNumber?: string;
+  churchName?: string;
 }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>New Withdrawal Request</h1>
     </div>
@@ -342,7 +363,7 @@ export const withdrawalRequestAdminTemplate = (data: {
       <a href="${FRONTEND_URL}/withdrawals" class="button">Review Request</a>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
@@ -357,12 +378,14 @@ export const packageSubscriptionTemplate = (data: {
   billingCycle: string;
   expiresAt: string;
   features: string[];
+  churchName?: string;
 }) => `
 <!DOCTYPE html>
 <html>
-<head>${baseStyle}</head>
+<head>${getBaseStyle()}</head>
 <body>
   <div class="container">
+    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Subscription Confirmed</h1>
     </div>
@@ -390,7 +413,118 @@ export const packageSubscriptionTemplate = (data: {
       <a href="${FRONTEND_URL}/dashboard" class="button">Go to Dashboard</a>
     </div>
     <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const subscriptionExpiringTemplate = (data: {
+  firstName: string;
+  packageName: string;
+  daysLeft: number;
+  expiresAt: string;
+  renewUrl: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="header" style="background: #f59e0b;">
+      <h1>Subscription Expiring Soon</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>Your <strong>${data.packageName}</strong> subscription will expire in <strong>${data.daysLeft} days</strong>.</p>
+      
+      <div class="info-box" style="background: #fef3c7; border-left-color: #f59e0b;">
+        <p><strong>Expiration Date:</strong> ${data.expiresAt}</p>
+        <p><strong>Package:</strong> ${data.packageName}</p>
+      </div>
+      
+      <p>To continue enjoying uninterrupted access to all features, please renew your subscription before it expires.</p>
+      
+      <a href="${data.renewUrl}" class="button" style="background: #f59e0b;">Renew Subscription</a>
+    </div>
+    <div class="footer">
       <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const subscriptionExpiredTemplate = (data: {
+  firstName: string;
+  packageName: string;
+  expiredAt: string;
+  daysSinceExpiry: number;
+  renewUrl: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="header" style="background: #dc2626;">
+      <h1>Subscription Expired</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>Your <strong>${data.packageName}</strong> subscription has expired.</p>
+      
+      <div class="info-box" style="background: #fee2e2; border-left-color: #dc2626;">
+        <p><strong>Expired On:</strong> ${data.expiredAt}</p>
+        <p><strong>Days Since Expiry:</strong> ${data.daysSinceExpiry}</p>
+        <p><strong>Package:</strong> ${data.packageName}</p>
+      </div>
+      
+      <p>Your access to premium features has been suspended. Renew now to restore full functionality.</p>
+      
+      <a href="${data.renewUrl}" class="button" style="background: #dc2626;">Renew Now</a>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const memberWelcomeTemplate = (data: { firstName: string; lastName: string; email: string; churchName: string }) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>Welcome to ${data.churchName}!</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName} ${data.lastName},</h2>
+      <p>Welcome! Your membership account has been created successfully.</p>
+      
+      <div class="info-box">
+        <h3>Your Account</h3>
+        <p><strong>Email:</strong> ${data.email}</p>
+        <p><strong>Church:</strong> ${data.churchName}</p>
+      </div>
+      
+      <p>You can now access your member dashboard to:</p>
+      <ul style="padding-left: 20px;">
+        <li style="margin: 8px 0; color: #4b5563;">View upcoming events and church activities</li>
+        <li style="margin: 8px 0; color: #4b5563;">Make donations and contributions</li>
+        <li style="margin: 8px 0; color: #4b5563;">Access church resources and announcements</li>
+        <li style="margin: 8px 0; color: #4b5563;">Stay connected with your church community</li>
+      </ul>
+      
+      <a href="${FRONTEND_URL}/login" class="button">Access Your Dashboard</a>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName}. All rights reserved.</p>
     </div>
   </div>
 </body>

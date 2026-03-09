@@ -18,21 +18,22 @@ const FEATURES = [
   
   // Communication Features
   { name: 'communication', displayName: 'Communication & Announcements', category: 'communication', sortOrder: 10 },
-  { name: 'meetings', displayName: 'Meetings Management', category: 'communication', sortOrder: 11 },
+  { name: 'teams_management', displayName: 'Teams Management', category: 'communication', sortOrder: 11 },
+  { name: 'reminders_management', displayName: 'Reminders Management', category: 'communication', sortOrder: 12 },
   
   // Reporting Features
-  { name: 'reports_analytics', displayName: 'Reports & Analytics', category: 'reporting', sortOrder: 12 },
-  { name: 'performance_dashboard', displayName: 'Performance Dashboard', category: 'reporting', sortOrder: 13 },
-  { name: 'advanced_reports', displayName: 'Advanced Reports', category: 'reporting', sortOrder: 14 },
+  { name: 'reports_analytics', displayName: 'Reports & Analytics', category: 'reporting', sortOrder: 13 },
+  { name: 'performance_dashboard', displayName: 'Performance Dashboard', category: 'reporting', sortOrder: 14 },
+  { name: 'advanced_reports', displayName: 'Advanced Reports', category: 'reporting', sortOrder: 15 },
   
   // Event Features
-  { name: 'event_ticketing', displayName: 'Event Ticketing', category: 'events', sortOrder: 15 },
-  { name: 'event_attendance', displayName: 'Event Attendance Tracking', category: 'events', sortOrder: 16 },
+  { name: 'event_ticketing', displayName: 'Event Ticketing', category: 'events', sortOrder: 16 },
+  { name: 'event_attendance', displayName: 'Event Attendance Tracking', category: 'events', sortOrder: 17 },
   
   // Limits
-  { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 17 },
-  { name: 'max_churches', displayName: 'Maximum Churches', category: 'limit', sortOrder: 18 },
-  { name: 'max_events_per_month', displayName: 'Maximum Events Per Month', category: 'limit', sortOrder: 19 },
+  { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 18 },
+  { name: 'max_churches', displayName: 'Maximum Churches', category: 'limit', sortOrder: 19 },
+  { name: 'max_events_per_month', displayName: 'Maximum Events Per Month', category: 'limit', sortOrder: 20 },
 ];
 
 const PACKAGES = [
@@ -71,7 +72,8 @@ const PACKAGES = [
       { name: 'churches_management', limit: null },
       { name: 'transactions_view', limit: null },
       { name: 'communication', limit: null },
-      { name: 'meetings', limit: null },
+      { name: 'teams_management', limit: null },
+      { name: 'reminders_management', limit: null },
       { name: 'reports_analytics', limit: null },
       { name: 'event_ticketing', limit: null },
       { name: 'event_attendance', limit: null },
@@ -98,7 +100,8 @@ const PACKAGES = [
       { name: 'users_management', limit: null },
       { name: 'roles_permissions', limit: null },
       { name: 'communication', limit: null },
-      { name: 'meetings', limit: null },
+      { name: 'teams_management', limit: null },
+      { name: 'reminders_management', limit: null },
       { name: 'reports_analytics', limit: null },
       { name: 'performance_dashboard', limit: null },
       { name: 'advanced_reports', limit: null },

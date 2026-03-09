@@ -4,6 +4,10 @@ import prisma from '../lib/prisma';
 import axios from 'axios';
 import { getPaymentGateway, getCurrency, getGatewayCountry } from '../utils/gatewayRouter';
 import { calculatePaymentFees } from '../utils/feeCalculations';
+import { queueEmail } from '../lib/emailQueue';
+import { ticketPurchaseTemplate, donationReceiptTemplate, packageSubscriptionTemplate } from '../lib/emailTemplates';
+import { generateTicketPDF } from '../lib/ticketPDF';
+import { generateReceiptPDF } from '../lib/receiptPDF';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -453,7 +457,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         });
         console.log(`[${traceId}] Payment record created: ${payment.id}`);
 
-        // Create or update subscription
+        // Create or update subscription and reset email tracking
         await prisma.subscription.upsert({
           where: { nationalAdminId: metadata.nationalAdminId },
           create: {
@@ -462,20 +466,63 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             status: 'active',
             startsAt,
             expiresAt,
+            lastEmailDay: null,
           },
           update: {
             packageId: metadata.packageId,
             status: 'active',
             startsAt,
             expiresAt,
+            lastEmailDay: null,
           },
         });
-        console.log(`[${traceId}] Subscription record created/updated`);
+        console.log(`[${traceId}] Subscription record created/updated with email tracking reset`);
 
         // Delete pending transaction
         if (pendingTx) {
           await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });
           console.log(`[${traceId}] Pending transaction deleted`);
+        }
+
+        // Send package subscription confirmation email with PDF receipt
+        const subscriberUser = await prisma.user.findUnique({ where: { id: metadata.initiatedBy } });
+        const packageFeatures = await prisma.packageFeatureLink.findMany({
+          where: { packageId: metadata.packageId },
+          include: { feature: { select: { displayName: true } } }
+        });
+        
+        if (subscriberUser && pkg) {
+          const receiptPDF = await generateReceiptPDF({
+            receiptNumber: data.reference,
+            type: 'package_subscription',
+            customerName: `${subscriberUser.firstName} ${subscriberUser.lastName}`,
+            customerEmail: subscriberUser.email,
+            amount: baseAmount,
+            currency: data.currency,
+            paidAt: new Date(data.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            paymentMethod: data.channel || 'card',
+            description: `${pkg.displayName} - ${metadata.billingCycle} subscription`,
+            itemDetails: [
+              { label: 'Package', value: pkg.displayName },
+              { label: 'Billing Cycle', value: metadata.billingCycle },
+              { label: 'Expires On', value: expiresAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) }
+            ]
+          });
+          
+          queueEmail(
+            subscriberUser.email,
+            `Subscription Confirmed - ${pkg.displayName}`,
+            packageSubscriptionTemplate({
+              firstName: subscriberUser.firstName,
+              packageName: pkg.displayName,
+              amount: baseAmount,
+              currency: data.currency,
+              billingCycle: metadata.billingCycle,
+              expiresAt: expiresAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+              features: packageFeatures.map(pf => pf.feature.displayName)
+            }),
+            [{ filename: `receipt-${data.reference}.pdf`, content: receiptPDF }]
+          );
         }
 
         console.log(`[${traceId}] Redirecting to: /payment/callback?reference=${reference}&status=success&type=package_subscription`);
@@ -535,7 +582,8 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         
         // Create tickets
         const quantity = pendingMetadata.quantity || 1;
-        const event = await prisma.event.findUnique({ where: { id: pendingMetadata.eventId } });
+        const event = await prisma.event.findUnique({ where: { id: pendingMetadata.eventId }, include: { church: true } });
+        const user = await prisma.user.findUnique({ where: { id: pendingTx.userId } });
         
         for (let i = 0; i < quantity; i++) {
           const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
@@ -552,6 +600,60 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
               status: 'confirmed'
             }
           });
+          
+          // Send email with PDF for each ticket
+          if (user && event) {
+            const ticketPDF = await generateTicketPDF({
+              ticketNumber,
+              eventTitle: event.title,
+              eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+              eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+              eventLocation: event.location,
+              attendeeName: `${user.firstName} ${user.lastName}`,
+              churchName: event.church.name,
+              amount: pendingMetadata.baseAmount,
+              currency: data.currency,
+            });
+            
+            const receiptPDF = await generateReceiptPDF({
+              receiptNumber: data.reference,
+              type: 'event_ticket',
+              customerName: `${user.firstName} ${user.lastName}`,
+              customerEmail: user.email,
+              amount: pendingMetadata.baseAmount,
+              currency: data.currency,
+              paidAt: new Date(data.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+              paymentMethod: data.channel || 'card',
+              description: `Event Ticket - ${event.title}`,
+              itemDetails: [
+                { label: 'Event', value: event.title },
+                { label: 'Church', value: event.church.name },
+                { label: 'Date', value: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+                { label: 'Location', value: event.location },
+                { label: 'Ticket Number', value: ticketNumber }
+              ]
+            });
+            
+            queueEmail(
+              user.email,
+              `Ticket Confirmation - ${event.title}`,
+              ticketPurchaseTemplate({
+                firstName: user.firstName,
+                eventTitle: event.title,
+                ticketNumber,
+                amount: pendingMetadata.baseAmount,
+                currency: data.currency,
+                eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+                eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+                eventLocation: event.location,
+                churchName: event.church.name
+              }),
+              [
+                { filename: `ticket-${ticketNumber}.pdf`, content: ticketPDF },
+                { filename: `receipt-${data.reference}.pdf`, content: receiptPDF }
+              ]
+            );
+          }
         }
         
         // Update event
@@ -634,6 +736,47 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             notes: pendingMetadata.notes,
           }
         });
+        
+        // Send donation receipt email with PDF
+        const user = await prisma.user.findUnique({ where: { id: pendingTx.userId } });
+        const campaign = await prisma.givingCampaign.findUnique({ 
+          where: { id: pendingMetadata.campaignId },
+          include: { church: { select: { name: true } } }
+        });
+        
+        if (user && campaign) {
+          const receiptPDF = await generateReceiptPDF({
+            receiptNumber: data.reference,
+            type: 'donation',
+            customerName: `${user.firstName} ${user.lastName}`,
+            customerEmail: user.email,
+            amount: pendingMetadata.baseAmount,
+            currency: data.currency,
+            paidAt: new Date(data.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            paymentMethod: data.channel || 'card',
+            description: `Donation to ${campaign.name}`,
+            itemDetails: [
+              { label: 'Campaign', value: campaign.name },
+              { label: 'Church', value: campaign.church.name },
+              { label: 'Anonymous', value: pendingMetadata.isAnonymous ? 'Yes' : 'No' }
+            ]
+          });
+          
+          queueEmail(
+            user.email,
+            `Donation Receipt - ${campaign.name}`,
+            donationReceiptTemplate({
+              firstName: user.firstName,
+              amount: pendingMetadata.baseAmount,
+              currency: data.currency,
+              campaignName: campaign.name,
+              reference: data.reference,
+              isAnonymous: pendingMetadata.isAnonymous || false,
+              churchName: campaign.church.name
+            }),
+            [{ filename: `donation-receipt-${data.reference}.pdf`, content: receiptPDF }]
+          );
+        }
         
         // Delete pending transaction
         await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });

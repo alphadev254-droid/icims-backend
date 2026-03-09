@@ -1,7 +1,9 @@
 import app from './app';
 import prisma from './lib/prisma';
 import './workers/emailWorker';
-import { startSubscriptionCron } from './workers/subscriptionCron';
+import './workers/reminderCacheWorker';
+import { startSubscriptionCron, startKPICron } from './workers/subscriptionCron';
+import { startEventStatusWorker } from './workers/eventStatusWorker';
 
 const PORT = process.env.PORT || 5000;
 
@@ -9,10 +11,13 @@ async function main() {
   await prisma.$connect();
   console.log('✅ Database connected');
   console.log('📧 Email worker initialized');
+  console.log('🔔 Reminder cache worker initialized');
   
-  // Start subscription checker cron job
+  // Start cron jobs
   startSubscriptionCron();
-  console.log('📅 Subscription checker initialized');
+  startKPICron();
+  startEventStatusWorker();
+  console.log('📅 Cron jobs initialized');
 
   app.listen(PORT, () => {
     console.log(`🚀 ICIMS API running on http://localhost:${PORT}`);

@@ -24,6 +24,9 @@ import passwordResetRoutes from './routes/passwordReset';
 import webhookRoutes from './routes/webhookRoutes';
 import walletRoutes from './routes/walletRoutes';
 import kpiRoutes from './routes/kpiRoutes';
+import teamRoutes from './routes/teams';
+import teamCommunicationRoutes from './routes/teamCommunication';
+import reminderRoutes from './routes/reminderRoutes';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
@@ -38,6 +41,9 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// ─── Serve uploaded files ──────────────────────────────────────────────────
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // ─── Health check ──────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
@@ -66,9 +72,9 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/kpis', kpiRoutes);
-
-// ─── Serve uploaded files ──────────────────────────────────────────────────
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+app.use('/api/teams', teamRoutes);
+app.use('/api/team-communications', teamCommunicationRoutes);
+app.use('/api/reminders', reminderRoutes);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────
 app.use((_req, res) => {

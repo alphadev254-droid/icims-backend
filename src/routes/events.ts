@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getEvents, getEvent, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance } from '../controllers/eventController';
+import { getEvents, getEvent, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket } from '../controllers/eventController';
 import { authenticate, authorizePermission } from '../middleware/auth';
 
 const router = Router();
@@ -8,8 +8,9 @@ router.use(authenticate);
 
 // Specific routes first (before /:id)
 router.get('/my-tickets', authorizePermission('tickets:read'), getMyTickets);
-router.post('/book-ticket', authorizePermission('tickets:create'), bookTicket);
+router.post('/book-ticket', bookTicket); // No permission check for free tickets
 router.get('/tickets/:ticketId/transaction', authorizePermission('tickets:read'), getTicketTransaction);
+router.get('/tickets/:ticketId/download', authorizePermission('tickets:read'), downloadTicket);
 
 // General CRUD routes
 router.get('/',       authorizePermission('events:read'),   getEvents);
