@@ -9,7 +9,8 @@ export type EmailType =
   | 'donation_receipt'
   | 'withdrawal_request_user'
   | 'withdrawal_request_admin'
-  | 'package_subscription';
+  | 'package_subscription'
+  | 'notification';
 
 export interface EmailAttachment {
   filename: string;

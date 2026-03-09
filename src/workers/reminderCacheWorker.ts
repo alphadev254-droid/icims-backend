@@ -156,11 +156,11 @@ export async function refreshReminderCache() {
 
     // Group members by churchId
     for (const member of allChurchMembers) {
-      if (!churchMembersMap.has(member.churchId!)) {
-        churchMembersMap.set(member.churchId!, []);
-      }
       if (member.churchId) {
-        churchMembersMap.get(member.churchId)!.push(member);
+        if (!churchMembersMap.has(member.churchId)) {
+          churchMembersMap.set(member.churchId, []);
+        }
+        churchMembersMap.get(member.churchId)!.push({ id: member.id, churchId: member.churchId });
       }
     }
   }
@@ -176,17 +176,19 @@ export async function refreshReminderCache() {
       // Use pre-fetched church members
       const churchMembers = churchMembersMap.get(event.churchId) || [];
       for (const member of churchMembers) {
-        reminders.push({
-          userId: member.id,
-          type: 'event',
-          originalDate: event.date,
-          upcomingDate: eventDate,
-          daysUntil,
-          churchId: member.churchId!,
-          nationalAdminId,
-          eventId: event.id,
-          eventTitle: event.title,
-        });
+        if (member.churchId) {
+          reminders.push({
+            userId: member.id,
+            type: 'event',
+            originalDate: event.date,
+            upcomingDate: eventDate,
+            daysUntil,
+            churchId: member.churchId,
+            nationalAdminId,
+            eventId: event.id,
+            eventTitle: event.title,
+          });
+        }
       }
     } else if (event.requiresTicket) {
       // Use tickets data already loaded
