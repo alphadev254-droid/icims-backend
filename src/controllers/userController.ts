@@ -464,3 +464,99 @@ export async function deleteUser(req: Request, res: Response): Promise<void> {
   await prisma.user.delete({ where: { id: String(req.params.id) } });
   res.json({ success: true, message: 'User deleted' });
 }
+
+// ─── POST /api/users/bulk — bulk create users ────────────────────────────────
+
+export async function bulkCreateUsers(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const role = req.user?.role ?? 'member';
+  const permissions = req.user?.permissions ?? [];
+  
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  if (!permissions.includes('users:create')) {
+    res.status(403).json({ success: false, message: 'Permission denied: users:create required' });
+    return;
+  }
+
+  const { users } = req.body;
+  if (!Array.isArray(users) || users.length === 0) {
+    res.status(400).json({ success: false, message: 'Users array required' });
+    return;
+  }
+
+  const results = { success: 0, failed: 0, errors: [] as any[] };
+
+  for (const userData of users) {
+    try {
+      const parsed = createUserSchema.safeParse(userData);
+      if (!parsed.success) {
+        results.failed++;
+        results.errors.push({ email: userData.email, error: parsed.error.errors[0].message });
+        continue;
+      }
+
+      const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, churchId } = parsed.data;
+
+      // Check if user exists
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        results.failed++;
+        results.errors.push({ email, error: 'Email already exists' });
+        continue;
+      }
+
+      // Find role
+      const roleRecord = await prisma.role.findUnique({ where: { name: roleName } });
+      if (!roleRecord) {
+        results.failed++;
+        results.errors.push({ email, error: `Role '${roleName}' not found` });
+        continue;
+      }
+
+      const hashed = await hashPassword(password);
+      
+      // Determine nationalAdminId
+      let nationalAdminIdForNewUser: string | undefined;
+      if (roleName === 'member') {
+        if (role === 'national_admin') {
+          nationalAdminIdForNewUser = userId;
+        } else {
+          const creator = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
+          nationalAdminIdForNewUser = creator?.nationalAdminId || undefined;
+        }
+      }
+
+      await prisma.user.create({
+        data: {
+          email,
+          password: hashed,
+          firstName,
+          lastName,
+          phone,
+          gender,
+          dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+          maritalStatus,
+          weddingDate: weddingDate ? new Date(weddingDate) : undefined,
+          residentialNeighbourhood,
+          membershipType,
+          serviceInterest,
+          baptizedByImmersion,
+          roleId: roleRecord.id,
+          churchId: churchId || null,
+          nationalAdminId: nationalAdminIdForNewUser,
+        },
+      });
+
+      results.success++;
+    } catch (error: any) {
+      results.failed++;
+      results.errors.push({ email: userData.email, error: error.message });
+    }
+  }
+
+  res.json({ success: true, ...results });
+}
