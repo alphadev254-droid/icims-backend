@@ -125,27 +125,35 @@ const createUserSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
   firstName: z.string().min(1, 'First name required'),
   lastName: z.string().min(1, 'Last name required'),
-  phone: z.string().optional(),
+  phone: z.string().min(1, 'Phone number is required'),
+  gender: z.enum(['male', 'female']).optional(),
+  dateOfBirth: z.string().optional(),
+  maritalStatus: z.enum(['single', 'married', 'widowed', 'divorced']).optional(),
+  weddingDate: z.string().optional(),
+  residentialNeighbourhood: z.string().optional(),
+  membershipType: z.enum(['visitor', 'member']).optional(),
+  serviceInterest: z.string().optional(),
+  baptizedByImmersion: z.boolean().optional(),
   roleName: z.string().default('member'),
-  // Geographic scope for district_overseer / local_admin / regional_leader
   districts: z.array(z.string()).optional(),
   traditionalAuthorities: z.array(z.string()).optional(),
   regions: z.array(z.string()).optional(),
-  // Church assignment for member role - MANDATORY for members
   churchId: z.string().optional(),
-  // Location selection for roles that need geographic assignment
   region: z.string().optional(),
   district: z.string().optional(),
   traditionalAuthority: z.string().optional(),
   village: z.string().optional(),
 }).refine((data) => {
-  // If creating a member, churchId is required
-  if (data.roleName === 'member' && !data.churchId) {
-    return false;
+  if (data.roleName === 'member') {
+    if (!data.churchId) return false;
+    if (!data.phone) return false;
+    if (!data.dateOfBirth) return false;
+    if (!data.residentialNeighbourhood) return false;
+    if (!data.maritalStatus) return false;
   }
   return true;
 }, {
-  message: 'Church is required for member role',
+  message: 'Church, Phone, Date of Birth, Neighbourhood, and Marital Status are required for members',
   path: ['churchId'],
 });
 
@@ -173,7 +181,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { email, password, firstName, lastName, phone, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
+  const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
 
   // Role restrictions: only national_admin can create users with roles other than 'member'
   if (role !== 'national_admin' && roleName !== 'member') {
@@ -299,6 +307,14 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       firstName,
       lastName,
       phone,
+      gender,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+      maritalStatus,
+      weddingDate: weddingDate ? new Date(weddingDate) : undefined,
+      residentialNeighbourhood,
+      membershipType,
+      serviceInterest,
+      baptizedByImmersion,
       roleId: roleRecord.id,
       churchId: assignedChurchId,
       nationalAdminId: nationalAdminIdForNewUser,
