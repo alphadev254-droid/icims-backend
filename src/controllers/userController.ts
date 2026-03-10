@@ -558,5 +558,5 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
     }
   }
 
-  res.json({ success: true, ...results });
+  res.json(results);
 }
