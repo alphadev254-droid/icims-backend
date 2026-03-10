@@ -19,7 +19,7 @@ const baseEventSchema = z.object({
   churchId: z.string().min(1, 'Church ID required'),
   requiresTicket: z.boolean().optional().default(false),
   isFree: z.boolean().optional().default(true),
-  ticketPrice: z.number().optional(),
+  ticketPrice: z.number().nullable().optional(),
   currency: z.enum(['MWK', 'KSH']).optional(),
   totalTickets: z.number().optional(),
   ticketSalesCutoff: z.string().optional(),
@@ -109,6 +109,23 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   res.json({ success: true, data: eventsWithTicketStatus });
 }
 
+export async function getPublicEvent(req: Request, res: Response): Promise<void> {
+  const eventId = String(req.params.id);
+  const event = await prisma.event.findUnique({ 
+    where: { id: eventId },
+    include: {
+      church: { select: { name: true } }
+    }
+  });
+  
+  if (!event) { 
+    res.status(404).json({ success: false, message: 'Event not found' }); 
+    return; 
+  }
+  
+  res.json({ success: true, data: event });
+}
+
 export async function getEvent(req: Request, res: Response): Promise<void> {
   const event = await prisma.event.findUnique({ where: { id: String(req.params.id) } });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
@@ -154,6 +171,9 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
       ...parsed.data,
       date: new Date(parsed.data.date),
       endDate: new Date(parsed.data.endDate),
+      ticketSalesCutoff: parsed.data.ticketSalesCutoff && parsed.data.ticketSalesCutoff !== '' 
+        ? new Date(parsed.data.ticketSalesCutoff) 
+        : null,
       createdById: req.user!.userId,
     },
   });
@@ -181,7 +201,15 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
       ...parsed.data,
       date: parsed.data.date ? new Date(parsed.data.date) : undefined,
       endDate: parsed.data.endDate ? new Date(parsed.data.endDate) : undefined,
-      ticketSalesCutoff: parsed.data.ticketSalesCutoff ? (parsed.data.ticketSalesCutoff === '' ? null : new Date(parsed.data.ticketSalesCutoff)) : undefined,
+      ticketSalesCutoff: parsed.data.ticketSalesCutoff !== undefined
+        ? (parsed.data.ticketSalesCutoff === '' ? null : new Date(parsed.data.ticketSalesCutoff))
+        : undefined,
+      totalTickets: parsed.data.totalTickets !== undefined
+        ? (parsed.data.totalTickets === 0 ? null : parsed.data.totalTickets)
+        : undefined,
+      ticketPrice: parsed.data.ticketPrice !== undefined
+        ? (parsed.data.ticketPrice === null ? null : parsed.data.ticketPrice)
+        : undefined,
     },
   });
   res.json({ success: true, data: event });

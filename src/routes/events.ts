@@ -1,8 +1,11 @@
 import { Router } from 'express';
-import { getEvents, getEvent, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket } from '../controllers/eventController';
+import { getEvents, getEvent, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, getPublicEvent } from '../controllers/eventController';
 import { authenticate, authorizePermission } from '../middleware/auth';
 
 const router = Router();
+
+// Public route (no auth required)
+router.get('/:id/public', getPublicEvent);
 
 router.use(authenticate);
 

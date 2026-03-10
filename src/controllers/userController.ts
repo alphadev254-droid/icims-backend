@@ -131,13 +131,22 @@ const createUserSchema = z.object({
   districts: z.array(z.string()).optional(),
   traditionalAuthorities: z.array(z.string()).optional(),
   regions: z.array(z.string()).optional(),
-  // Church assignment for member role
+  // Church assignment for member role - MANDATORY for members
   churchId: z.string().optional(),
   // Location selection for roles that need geographic assignment
   region: z.string().optional(),
   district: z.string().optional(),
   traditionalAuthority: z.string().optional(),
   village: z.string().optional(),
+}).refine((data) => {
+  // If creating a member, churchId is required
+  if (data.roleName === 'member' && !data.churchId) {
+    return false;
+  }
+  return true;
+}, {
+  message: 'Church is required for member role',
+  path: ['churchId'],
 });
 
 export async function createUser(req: Request, res: Response): Promise<void> {
