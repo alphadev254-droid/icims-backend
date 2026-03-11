@@ -68,7 +68,8 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     prisma.attendance.findMany({ 
       where: { churchId: { in: churchIds } },
       select: { totalAttendees: true, date: true, newVisitors: true },
-      orderBy: { date: 'desc' }
+      orderBy: { date: 'desc' },
+      take: 12 // Last 12 records for charts
     }),
   ]);
 
@@ -99,6 +100,28 @@ export async function getStats(req: Request, res: Response): Promise<void> {
   // Attendance rate
   const attendanceRate = users.length > 0 ? Number(((avgAttendance / users.length) * 100).toFixed(1)) : 0;
 
+  // Prepare weekly attendance data (last 4 weeks)
+  const weeklyAttendance = attendance.slice(0, 4).reverse().map((a, idx) => ({
+    week: `Week ${idx + 1}`,
+    attendees: a.totalAttendees,
+    date: a.date
+  }));
+
+  // Prepare monthly giving data (last 6 months)
+  const monthlyGiving: { month: string; amount: number }[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+    const monthName = monthDate.toLocaleDateString('en-US', { month: 'short' });
+    const monthTotal = donations
+      .filter(d => {
+        const dDate = new Date(d.createdAt);
+        return dDate >= monthDate && dDate < nextMonth;
+      })
+      .reduce((sum, d) => sum + d.amount, 0);
+    monthlyGiving.push({ month: monthName, amount: Math.round(monthTotal) });
+  }
+
   res.json({
     success: true,
     data: {
@@ -114,6 +137,8 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       retentionRate,
       attendanceRate,
       newMembersThisMonth: lastMonthUsers,
+      weeklyAttendance,
+      monthlyGiving,
     },
   });
 }

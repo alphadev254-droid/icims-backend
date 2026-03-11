@@ -7,6 +7,7 @@ import { teamMemberAddedTemplate, teamLeaderAppointedTemplate } from '../lib/tea
 export const getTeams = async (req: Request, res: Response) => {
   try {
     const user = req.user!;
+    const { churchId } = req.query;
     
     if (!prisma.team) {
       return res.status(500).json({ error: 'Team model not found. Please run: npx prisma generate && npx prisma migrate dev' });
@@ -16,19 +17,30 @@ export const getTeams = async (req: Request, res: Response) => {
     
     // For members, only return teams they belong to
     if (user.role === 'member') {
+      const whereClause: any = {
+        members: {
+          some: { userId: user.userId }
+        }
+      };
+      
+      // Members can also filter by church if provided
+      if (churchId && churchId !== 'all') {
+        whereClause.churchId = churchId as string;
+      }
+      
       teams = await prisma.team.findMany({
-        where: {
-          members: {
-            some: { userId: user.userId }
-          }
-        },
+        where: whereClause,
         include: {
           church: { select: { id: true, name: true } },
           members: {
+            where: { isLeader: true },
             include: {
               user: { select: { id: true, firstName: true, lastName: true, email: true } },
             },
           },
+          _count: {
+            select: { members: true }
+          }
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -43,15 +55,35 @@ export const getTeams = async (req: Request, res: Response) => {
         user.userId
       );
       
+      let whereClause: any;
+      
+      // If specific church filter is provided
+      if (churchId && churchId !== 'all') {
+        // Ensure the requested church is in accessible churches
+        if (churchIds.includes(churchId as string)) {
+          whereClause = { churchId: churchId as string };
+        } else {
+          // User doesn't have access to this church
+          return res.json([]);
+        }
+      } else {
+        // Show all accessible churches
+        whereClause = { churchId: { in: churchIds } };
+      }
+      
       teams = await prisma.team.findMany({
-        where: { churchId: { in: churchIds } },
+        where: whereClause,
         include: {
           church: { select: { id: true, name: true } },
           members: {
+            where: { isLeader: true },
             include: {
               user: { select: { id: true, firstName: true, lastName: true, email: true } },
             },
           },
+          _count: {
+            select: { members: true }
+          }
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -59,8 +91,10 @@ export const getTeams = async (req: Request, res: Response) => {
 
     const formatted = teams.map(team => ({
       ...team,
-      memberCount: team.members.length,
-      leaders: team.members.filter(m => m.isLeader).map(m => m.user),
+      memberCount: team._count.members,
+      leaders: team.members.map(m => m.user),
+      members: undefined,
+      _count: undefined,
     }));
 
     res.json(formatted);
@@ -166,7 +200,7 @@ export const deleteTeam = async (req: Request, res: Response) => {
 export const getTeamMembers = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { search, limit = '100', offset = '0' } = req.query;
+    const { search, limit = '100', offset = '0', minAge, maxAge } = req.query;
     const user = req.user!;
     const churchIds = await getAccessibleChurchIds(
       user.role,
@@ -196,6 +230,31 @@ export const getTeamMembers = async (req: Request, res: Response) => {
         { lastName: { contains: search as string, mode: 'insensitive' } },
         { email: { contains: search as string, mode: 'insensitive' } },
       ];
+    }
+    
+    // Age filtering using date calculations
+    const minAgeNum = minAge ? parseInt(minAge as string) : undefined;
+    const maxAgeNum = maxAge ? parseInt(maxAge as string) : undefined;
+    
+    if (minAgeNum !== undefined || maxAgeNum !== undefined) {
+      const today = new Date();
+      const ageFilters: any[] = [];
+      
+      if (minAgeNum !== undefined) {
+        // Max date for minimum age (born on or before this date)
+        const maxDateForMinAge = new Date(today.getFullYear() - minAgeNum, today.getMonth(), today.getDate());
+        ageFilters.push({ dateOfBirth: { lte: maxDateForMinAge } });
+      }
+      
+      if (maxAgeNum !== undefined) {
+        // Min date for maximum age (born on or after this date)
+        const minDateForMaxAge = new Date(today.getFullYear() - maxAgeNum - 1, today.getMonth(), today.getDate() + 1);
+        ageFilters.push({ dateOfBirth: { gte: minDateForMaxAge } });
+      }
+      
+      if (ageFilters.length > 0) {
+        whereClause.AND = ageFilters;
+      }
     }
 
     const [users, total] = await Promise.all([
@@ -247,7 +306,12 @@ export const getTeamMembers = async (req: Request, res: Response) => {
       isLeader: u.teams[0]?.isLeader || false,
     }));
 
-    res.json({ data: formatted, total, limit: limitNum, offset: offsetNum });
+    // Count members actually in the team
+    const teamMembersCount = await prisma.userTeam.count({
+      where: { teamId: String(id) }
+    });
+
+    res.json({ data: formatted, total, limit: limitNum, offset: offsetNum, teamMembersCount });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

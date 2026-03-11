@@ -5,7 +5,10 @@ import * as teamController from '../controllers/teamController';
 
 const router = Router();
 
-router.get('/', authenticate, requireFeature('teams_management'), authorizePermission('teams:read'), teamController.getTeams);
+// Members can view their teams without feature gate (read-only)
+router.get('/', authenticate, authorizePermission('teams:read'), teamController.getTeams);
+
+// Admin actions require feature
 router.post('/', authenticate, requireFeature('teams_management'), authorizePermission('teams:create'), teamController.createTeam);
 router.put('/:id', authenticate, requireFeature('teams_management'), authorizePermission('teams:update'), teamController.updateTeam);
 router.delete('/:id', authenticate, requireFeature('teams_management'), authorizePermission('teams:delete'), teamController.deleteTeam);

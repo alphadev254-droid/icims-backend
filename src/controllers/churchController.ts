@@ -236,6 +236,29 @@ export async function updateChurch(req: Request, res: Response): Promise<void> {
   res.json({ success: true, data: updated });
 }
 
+// ─── GET /api/churches/by-invite/:token ──────────────────────────────────────
+
+export async function getChurchByInvite(req: Request, res: Response): Promise<void> {
+  const inviteToken = String(req.params.token);
+  
+  if (!inviteToken) {
+    res.status(400).json({ success: false, message: 'Invite token required' });
+    return;
+  }
+
+  const church = await prisma.church.findUnique({
+    where: { inviteToken },
+    select: { id: true, name: true, location: true }
+  });
+
+  if (!church) {
+    res.status(404).json({ success: false, message: 'Invalid or expired invite link' });
+    return;
+  }
+
+  res.json({ success: true, data: church });
+}
+
 // ─── POST /api/churches/:id/generate-invite ──────────────────────────────────
 
 export async function generateInviteLink(req: Request, res: Response): Promise<void> {

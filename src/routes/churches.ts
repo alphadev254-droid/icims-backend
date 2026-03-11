@@ -1,8 +1,10 @@
 import { Router } from 'express';
-import { getChurches, getChurch, createChurch, updateChurch, deleteChurch, generateInviteLink } from '../controllers/churchController';
+import { getChurches, getChurch, createChurch, updateChurch, deleteChurch, generateInviteLink, getChurchByInvite } from '../controllers/churchController';
 import { authenticate, authorizePermission } from '../middleware/auth';
 
 const router = Router();
+
+router.get('/by-invite/:token', getChurchByInvite);
 router.use(authenticate);
 
 router.get('/',      authorizePermission('churches:read'),   getChurches);

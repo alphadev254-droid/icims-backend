@@ -9,7 +9,7 @@ const createCampaignSchema = z.object({
   description: z.string().optional(),
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions']),
   subcategory: z.string().optional(),
-  targetAmount: z.number().positive().optional(),
+  targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
   currency: z.enum(['MWK', 'KSH']).default('MWK'),
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),
@@ -19,7 +19,7 @@ const updateCampaignSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
   subcategory: z.string().optional(),
-  targetAmount: z.number().positive().optional(),
+  targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
   currency: z.enum(['MWK', 'KSH']).optional(),
   status: z.enum(['active', 'completed', 'cancelled']).optional(),
   endDate: z.string().optional(),
@@ -186,13 +186,15 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
         distinct: ['userId'],
       });
 
-      // Check if member has donated to this campaign
+      // Check if member has donated to this campaign and get their total
       let userHasDonated = false;
+      let userTotalDonated = 0;
       if (roleName === 'member') {
-        const userDonation = await prisma.donationTransaction.findFirst({
+        const userDonations = await prisma.donationTransaction.findMany({
           where: { campaignId: campaign.id, userId, status: 'completed' },
         });
-        userHasDonated = !!userDonation;
+        userHasDonated = userDonations.length > 0;
+        userTotalDonated = userDonations.reduce((sum, d) => sum + d.amount, 0);
       }
 
       return {
@@ -200,6 +202,7 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
         totalRaised: stats._sum.amount || 0,
         donorCount: uniqueDonors.length,
         userHasDonated,
+        userTotalDonated,
       };
     })
   );

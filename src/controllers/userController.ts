@@ -41,6 +41,8 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const search = (req.query.search as string)?.trim() || '';
   const filterChurchId = req.query.churchId as string | undefined;
   const filterRole = req.query.role as string | undefined;
+  const minAge = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
+  const maxAge = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
 
   // Build where clause based on role
   let whereClause: any = {};
@@ -88,12 +90,34 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       { email: { contains: search, mode: 'insensitive' } },
     ];
   }
+  
+  // Age filtering using date calculations
+  if (minAge !== undefined || maxAge !== undefined) {
+    const today = new Date();
+    const ageFilters: any[] = [];
+    
+    if (minAge !== undefined) {
+      // Max date for minimum age (born on or before this date)
+      const maxDateForMinAge = new Date(today.getFullYear() - minAge, today.getMonth(), today.getDate());
+      ageFilters.push({ dateOfBirth: { lte: maxDateForMinAge } });
+    }
+    
+    if (maxAge !== undefined) {
+      // Min date for maximum age (born on or after this date)
+      const minDateForMaxAge = new Date(today.getFullYear() - maxAge - 1, today.getMonth(), today.getDate() + 1);
+      ageFilters.push({ dateOfBirth: { gte: minDateForMaxAge } });
+    }
+    
+    if (ageFilters.length > 0) {
+      whereClause.AND = ageFilters;
+    }
+  }
 
   const [users, total] = await Promise.all([
     prisma.user.findMany({
       where: whereClause,
       include: { 
-        role: true, 
+        role: { select: { id: true, name: true, displayName: true, createdAt: true } }, 
         church: { select: { name: true } },
         teams: {
           include: {
@@ -110,10 +134,23 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
 
   res.json({ 
     success: true, 
-    data: users.map(u => ({
-      ...safeUser(u),
-      teams: u.teams.map(t => t.team.name)
-    })),
+    data: users.map(u => {
+      const safeUserData = safeUser(u);
+      return {
+        ...safeUserData,
+        teams: u.teams.map(t => t.team.name),
+        // Ensure all member fields are included
+        gender: u.gender,
+        dateOfBirth: u.dateOfBirth,
+        maritalStatus: u.maritalStatus,
+        weddingDate: u.weddingDate,
+        anniversary: u.anniversary,
+        residentialNeighbourhood: u.residentialNeighbourhood,
+        serviceInterest: u.serviceInterest,
+        membershipType: u.membershipType,
+        baptizedByImmersion: u.baptizedByImmersion,
+      };
+    }),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
   });
 }
