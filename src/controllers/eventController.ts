@@ -50,6 +50,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
+  const filterChurchId = req.query.churchId as string | undefined;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -79,6 +80,18 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
       return;
     }
     churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
+  }
+
+  // Apply church filter if provided
+  if (filterChurchId) {
+    // Ensure the filtered church is in the accessible churches
+    if (churchIds.includes(filterChurchId)) {
+      churchIds = [filterChurchId];
+    } else {
+      // User doesn't have access to this church
+      res.json({ success: true, data: [] });
+      return;
+    }
   }
 
   const events = await prisma.event.findMany({
