@@ -17,6 +17,7 @@ function safeUser(user: any) {
     roleName: rest.role?.name || rest.roleName,
     districts: rest.districts ? JSON.parse(rest.districts) : undefined,
     traditionalAuthorities: rest.traditionalAuthorities ? JSON.parse(rest.traditionalAuthorities) : undefined,
+    regions: rest.regions ? JSON.parse(rest.regions) : undefined,
   };
 }
 
@@ -85,9 +86,9 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   if (filterRole) whereClause.role = { name: filterRole };
   if (search) {
     whereClause.OR = [
-      { firstName: { contains: search, mode: 'insensitive' } },
-      { lastName: { contains: search, mode: 'insensitive' } },
-      { email: { contains: search, mode: 'insensitive' } },
+      { firstName: { contains: search } },
+      { lastName: { contains: search } },
+      { email: { contains: search } },
     ];
   }
   
@@ -221,6 +222,15 @@ export async function createUser(req: Request, res: Response): Promise<void> {
   const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
 
   // Role restrictions: only national_admin can create users with roles other than 'member'
+  // Additionally, prevent creation of national_admin role (only available at signup)
+  if (roleName === 'national_admin') {
+    res.status(403).json({ 
+      success: false, 
+      message: 'National admin role can only be assigned during initial signup. Please contact support.' 
+    });
+    return;
+  }
+  
   if (role !== 'national_admin' && roleName !== 'member') {
     res.status(403).json({ 
       success: false, 
@@ -394,7 +404,15 @@ const updateUserSchema = z.object({
   districts: z.array(z.string()).optional(),
   traditionalAuthorities: z.array(z.string()).optional(),
   regions: z.array(z.string()).optional(),
-  churchId: z.string().optional(),
+  churchId: z.string().nullable().optional(),
+  membershipType: z.enum(['visitor', 'member']).nullable().optional(),
+  gender: z.enum(['male', 'female']).optional(),
+  dateOfBirth: z.string().optional(),
+  maritalStatus: z.enum(['single', 'married', 'widowed', 'divorced']).optional(),
+  weddingDate: z.string().optional(),
+  residentialNeighbourhood: z.string().optional(),
+  serviceInterest: z.string().optional(),
+  baptizedByImmersion: z.boolean().optional(),
   status: z.enum(['active', 'inactive']).optional(),
 });
 
@@ -426,9 +444,18 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { firstName, lastName, phone, email, password, roleName, districts, traditionalAuthorities, regions, churchId, status } = parsed.data;
+  const { firstName, lastName, phone, email, password, roleName, districts, traditionalAuthorities, regions, churchId, membershipType, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, serviceInterest, baptizedByImmersion, status } = parsed.data;
   
   // Role restrictions: only national_admin can assign roles other than 'member'
+  // Additionally, prevent assignment of national_admin role (only available at signup)
+  if (roleName === 'national_admin') {
+    res.status(403).json({ 
+      success: false, 
+      message: 'National admin role can only be assigned during initial signup. Please contact support.' 
+    });
+    return;
+  }
+  
   if (roleName && role !== 'national_admin' && roleName !== 'member') {
     res.status(403).json({ 
       success: false, 
@@ -444,6 +471,14 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   if (email) updateData.email = email;
   if (password) updateData.password = await hashPassword(password);
   if (churchId !== undefined) updateData.churchId = churchId;
+  if (membershipType !== undefined) updateData.membershipType = membershipType;
+  if (gender !== undefined) updateData.gender = gender;
+  if (dateOfBirth !== undefined) updateData.dateOfBirth = dateOfBirth ? new Date(dateOfBirth) : null;
+  if (maritalStatus !== undefined) updateData.maritalStatus = maritalStatus;
+  if (weddingDate !== undefined) updateData.weddingDate = weddingDate ? new Date(weddingDate) : null;
+  if (residentialNeighbourhood !== undefined) updateData.residentialNeighbourhood = residentialNeighbourhood;
+  if (serviceInterest !== undefined) updateData.serviceInterest = serviceInterest;
+  if (baptizedByImmersion !== undefined) updateData.baptizedByImmersion = baptizedByImmersion;
   if (status) updateData.status = status;
   if (districts !== undefined) updateData.districts = JSON.stringify(districts);
   if (traditionalAuthorities !== undefined) updateData.traditionalAuthorities = JSON.stringify(traditionalAuthorities);
@@ -456,6 +491,13 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
       return;
     }
     updateData.roleId = roleRecord.id;
+    
+    // Clear church and membership for non-member roles
+    if (roleName !== 'member') {
+      updateData.churchId = null;
+      updateData.membershipType = null;
+    }
+    
     // Clear scope fields when role changes (let caller re-supply if needed)
     if (!districts) updateData.districts = null;
     if (!traditionalAuthorities) updateData.traditionalAuthorities = null;

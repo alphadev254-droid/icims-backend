@@ -32,12 +32,16 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
 
     if (isAdmin) {
       // For admins, get teams from accessible churches
+      const districts = user.districts ? JSON.parse(user.districts) : undefined;
+      const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
+      const regions = user.regions ? JSON.parse(user.regions) : undefined;
+      
       const accessibleChurchIds = await getAccessibleChurchIds(
         user.role!.name,
         user.churchId,
-        user.districts?.split(',').map(d => d.trim()),
-        user.traditionalAuthorities?.split(',').map(t => t.trim()),
-        user.regions?.split(',').map(r => r.trim()),
+        districts,
+        tas,
+        regions,
         userId
       );
 
@@ -92,12 +96,16 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
     // Get accessible churches for edit permission check
     let accessibleChurchIds: string[] = [];
     if (isAdmin) {
+      const districts = user.districts ? JSON.parse(user.districts) : undefined;
+      const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
+      const regions = user.regions ? JSON.parse(user.regions) : undefined;
+      
       accessibleChurchIds = await getAccessibleChurchIds(
         user.role!.name,
         user.churchId,
-        user.districts?.split(',').map(d => d.trim()),
-        user.traditionalAuthorities?.split(',').map(t => t.trim()),
-        user.regions?.split(',').map(r => r.trim()),
+        districts,
+        tas,
+        regions,
         userId
       );
     }
@@ -389,13 +397,13 @@ export const getPostableTeams = async (req: Request, res: Response) => {
       let churchFilter: any = {};
 
       if (user.role.name === 'regional_leader') {
-        const regions = user.regions ? user.regions.split(',').map(r => r.trim()) : [];
+        const regions = user.regions ? JSON.parse(user.regions) : [];
         churchFilter = { region: { in: regions } };
       } else if (user.role.name === 'district_overseer') {
-        const districts = user.districts ? user.districts.split(',').map(d => d.trim()) : [];
+        const districts = user.districts ? JSON.parse(user.districts) : [];
         churchFilter = { district: { in: districts } };
       } else if (user.role.name === 'local_admin') {
-        const tas = user.traditionalAuthorities ? user.traditionalAuthorities.split(',').map(t => t.trim()) : [];
+        const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : [];
         churchFilter = { traditionalAuthority: { in: tas } };
       }
 
@@ -454,12 +462,16 @@ async function canUserPostToTeam(userId: string, teamId: string): Promise<boolea
     if (!team) return false;
     
     // Use existing churchScope function to check access
+    const districts = user.districts ? JSON.parse(user.districts) : undefined;
+    const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
+    const regions = user.regions ? JSON.parse(user.regions) : undefined;
+    
     const accessibleChurchIds = await getAccessibleChurchIds(
       user.role.name,
       user.churchId,
-      user.districts?.split(',').map(d => d.trim()),
-      user.traditionalAuthorities?.split(',').map(t => t.trim()),
-      user.regions?.split(',').map(r => r.trim()),
+      districts,
+      tas,
+      regions,
       userId
     );
     
@@ -501,12 +513,16 @@ async function canUserEditOrDelete(userId: string, teamId: string, authorId: str
     if (!team) return false;
     
     // Use existing churchScope function to check access
+    const districts = user.districts ? JSON.parse(user.districts) : undefined;
+    const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
+    const regions = user.regions ? JSON.parse(user.regions) : undefined;
+    
     const accessibleChurchIds = await getAccessibleChurchIds(
       user.role.name,
       user.churchId,
-      user.districts?.split(',').map(d => d.trim()),
-      user.traditionalAuthorities?.split(',').map(t => t.trim()),
-      user.regions?.split(',').map(r => r.trim()),
+      districts,
+      tas,
+      regions,
       userId
     );
     
