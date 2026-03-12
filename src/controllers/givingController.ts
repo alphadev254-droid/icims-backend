@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import axios from 'axios';
 import prisma from '../lib/prisma';
+import { groupByDateRanges } from '../lib/dateGrouping';
 
 const createCampaignSchema = z.object({
   churchId: z.string().min(1),
@@ -207,7 +208,10 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
     })
   );
 
-  res.json({ success: true, data: campaignsWithStats });
+  // Group by date ranges
+  const grouped = groupByDateRanges(campaignsWithStats);
+
+  res.json({ success: true, data: grouped });
 }
 
 export async function getCampaign(req: Request, res: Response): Promise<void> {

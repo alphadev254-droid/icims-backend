@@ -5,6 +5,7 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { generateTicketPDF } from '../lib/ticketPDF';
+import { groupByDateRanges } from '../lib/dateGrouping';
 
 const baseEventSchema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -106,7 +107,10 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
     };
   });
 
-  res.json({ success: true, data: eventsWithTicketStatus });
+  // Group by date ranges
+  const grouped = groupByDateRanges(eventsWithTicketStatus);
+
+  res.json({ success: true, data: grouped });
 }
 
 export async function getPublicEvent(req: Request, res: Response): Promise<void> {

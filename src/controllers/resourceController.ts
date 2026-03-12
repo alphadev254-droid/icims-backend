@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { groupByDateRanges } from '../lib/dateGrouping';
 
 type StoredFile = { url: string; name: string; size: number; mimeType: string };
 
@@ -38,7 +39,11 @@ export async function getResources(req: Request, res: Response): Promise<void> {
     where: { churchId: { in: churchIds } },
     orderBy: { createdAt: 'desc' },
   });
-  res.json({ success: true, data: resources });
+  
+  // Group by date ranges
+  const grouped = groupByDateRanges(resources);
+  
+  res.json({ success: true, data: grouped });
 }
 
 // ─── POST /api/resources ──────────────────────────────────────────────────────

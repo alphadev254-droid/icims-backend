@@ -23,6 +23,7 @@ const schema = z.object({
 export async function getAttendance(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role ?? 'member';
+  const { churchId, serviceType } = req.query;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -67,14 +68,25 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
   }
   // national_admin sees all attendance (no filter)
 
+  const whereClause: any = accessibleChurchIds.length > 0 ? { churchId: { in: accessibleChurchIds } } : {};
+  
+  // Apply filters
+  if (churchId && typeof churchId === 'string') {
+    whereClause.churchId = churchId;
+  }
+  if (serviceType && typeof serviceType === 'string') {
+    whereClause.serviceType = serviceType;
+  }
+
   const records = await prisma.attendance.findMany({
-    where: accessibleChurchIds.length > 0 ? { churchId: { in: accessibleChurchIds } } : {},
-    select: {
-      id: true,
-      date: true,
-      totalAttendees: true,
-      serviceType: true,
-      churchId: true,
+    where: whereClause,
+    include: {
+      church: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
     },
     orderBy: { date: 'desc' },
     take: 100,
