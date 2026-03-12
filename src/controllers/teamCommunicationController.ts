@@ -30,6 +30,8 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
     let teamIds: string[] = [];
     let leaderTeamIds: string[] = [];
 
+    console.log('User role:', user.role?.name ,'Is admin:', isAdmin);
+
     if (isAdmin) {
       // For admins, get teams from accessible churches
       const districts = user.districts ? JSON.parse(user.districts) : undefined;
@@ -44,6 +46,8 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
         regions,
         userId
       );
+
+      console.log('Accessible church IDs for user:', accessibleChurchIds);
 
       const teams = await prisma.team.findMany({
         where: { churchId: { in: accessibleChurchIds } },
@@ -135,7 +139,44 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
       };
     }));
 
-    res.json(result);
+    // Group by date ranges
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const weekStart = new Date(today);
+    weekStart.setDate(weekStart.getDate() - now.getDay());
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    const grouped: { label: string; posts: any[] }[] = [];
+    const groups = {
+      today: [] as any[],
+      yesterday: [] as any[],
+      thisWeek: [] as any[],
+      thisMonth: [] as any[],
+      thisYear: [] as any[],
+      older: [] as any[]
+    };
+
+    result.forEach(post => {
+      const date = new Date(post.createdAt);
+      if (date >= today) groups.today.push(post);
+      else if (date >= yesterday) groups.yesterday.push(post);
+      else if (date >= weekStart) groups.thisWeek.push(post);
+      else if (date >= monthStart) groups.thisMonth.push(post);
+      else if (date >= yearStart) groups.thisYear.push(post);
+      else groups.older.push(post);
+    });
+
+    if (groups.today.length) grouped.push({ label: 'Today', posts: groups.today });
+    if (groups.yesterday.length) grouped.push({ label: 'Yesterday', posts: groups.yesterday });
+    if (groups.thisWeek.length) grouped.push({ label: 'This week', posts: groups.thisWeek });
+    if (groups.thisMonth.length) grouped.push({ label: 'This month', posts: groups.thisMonth });
+    if (groups.thisYear.length) grouped.push({ label: 'This year', posts: groups.thisYear });
+    if (groups.older.length) grouped.push({ label: 'Older', posts: groups.older });
+
+    res.json(grouped);
   } catch (error: any) {
     console.error('Get team communications error:', error);
     res.status(500).json({ error: 'Failed to fetch communications' });

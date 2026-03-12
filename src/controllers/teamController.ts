@@ -89,13 +89,19 @@ export const getTeams = async (req: Request, res: Response) => {
       });
     }
 
-    const formatted = teams.map(team => ({
-      ...team,
-      memberCount: team._count.members,
-      leaders: team.members.map(m => m.user),
-      members: undefined,
-      _count: undefined,
-    }));
+    const formatted = teams.map(team => {
+      // Check if current user is a leader of this team
+      const isCurrentUserLeader = team.members.some(m => m.user.id === user.userId);
+      
+      return {
+        ...team,
+        memberCount: team._count.members,
+        leaders: team.members.map(m => m.user),
+        isLeader: isCurrentUserLeader, // Add flag for current user
+        members: undefined,
+        _count: undefined,
+      };
+    });
 
     res.json(formatted);
   } catch (error: any) {
