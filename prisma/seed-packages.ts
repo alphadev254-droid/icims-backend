@@ -41,8 +41,8 @@ const PACKAGES = [
     name: 'basic',
     displayName: 'Basic',
     description: 'Essential features for small churches',
-    priceMonthly: 5000,
-    priceYearly: 50000,
+    priceMonthly: 50,
+    priceYearly: 500,
     sortOrder: 1,
     features: [
       { name: 'members_management', limit: null },
@@ -60,8 +60,8 @@ const PACKAGES = [
     name: 'standard',
     displayName: 'Standard',
     description: 'Advanced features for growing churches',
-    priceMonthly: 50000,
-    priceYearly: 500000,
+    priceMonthly: 500,
+    priceYearly: 5000,
     sortOrder: 2,
     features: [
       { name: 'members_management', limit: null },
@@ -86,8 +86,8 @@ const PACKAGES = [
     name: 'premium',
     displayName: 'Premium',
     description: 'Complete solution for large church networks',
-    priceMonthly: 100000,
-    priceYearly: 1000000,
+    priceMonthly: 1000,
+    priceYearly: 10000,
     sortOrder: 3,
     features: [
       { name: 'members_management', limit: null },

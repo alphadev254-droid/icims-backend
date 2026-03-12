@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import axios from 'axios';
 import { getPaymentGateway, getCurrency, getGatewayCountry } from '../utils/gatewayRouter';
 import { calculatePaymentFees } from '../utils/feeCalculations';
+import { convertUSDToLocal } from '../utils/currencyConversion';
 import { queueEmail } from '../lib/emailQueue';
 import { ticketPurchaseTemplate, donationReceiptTemplate, packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
@@ -92,16 +93,24 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   }
   console.log(`[${traceId}] Package: ${pkg.name} (${pkg.displayName})`);
 
-  const baseAmount = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
+  // Package prices are stored in USD, convert to local currency based on user's country
+  // - Malawi users: USD → MWK (via Paychangu gateway)
+  // - Kenya users: USD → KSH (via Paystack gateway)
+  const baseAmountUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
   
-  // Determine gateway
+  // Determine gateway based on national admin's accountCountry
   console.log(`[${traceId}] Calling getPaymentGateway for nationalAdminId: ${nationalAdminId}`);
   const gateway = await getPaymentGateway(nationalAdminId);
-  const currency = getCurrency(gateway);
+  const currency = getCurrency(gateway); // Returns 'MWK' for Malawi, 'KSH' for Kenya
   const gatewayCountry = getGatewayCountry(gateway);
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
   console.log(`[${traceId}] National Admin accountCountry: ${nationalAdmin.accountCountry}`);
+  console.log(`[${traceId}] Package price in USD: ${baseAmountUSD}`);
+  
+  // Convert USD to local currency using exchange rates
+  const baseAmount = convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KSH');
+  console.log(`[${traceId}] Converted amount: ${baseAmount} ${currency}`);
   
   // Calculate fees (Kenya has no tax, Malawi has 17.5% tax)
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
