@@ -24,7 +24,7 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
-  const { churchId: filterChurchId, serviceType } = req.query;
+  const { churchId: filterChurchId, serviceType, startDate, endDate } = req.query;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -61,6 +61,14 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
   }
   if (serviceType && typeof serviceType === 'string') {
     whereClause.serviceType = serviceType;
+  }
+  if (startDate && typeof startDate === 'string') {
+    whereClause.date = { ...whereClause.date, gte: new Date(startDate) };
+  }
+  if (endDate && typeof endDate === 'string') {
+    const endDateTime = new Date(endDate);
+    endDateTime.setHours(23, 59, 59, 999); // Include the entire end date
+    whereClause.date = { ...whereClause.date, lte: endDateTime };
   }
 
   const records = await prisma.attendance.findMany({
