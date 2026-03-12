@@ -27,6 +27,9 @@ export async function getResources(req: Request, res: Response): Promise<void> {
   const churchId = req.user?.churchId ?? '';
   const roleName = req.user?.role ?? 'member';
   
+  const filterChurchId = req.query.churchId as string | undefined;
+  const filterCategory = req.query.category as string | undefined;
+  
   const churchIds = await getAccessibleChurchIds(
     roleName, 
     churchId, 
@@ -35,8 +38,26 @@ export async function getResources(req: Request, res: Response): Promise<void> {
     req.user?.regions, 
     userId
   );
+  
+  const whereClause: any = { churchId: { in: churchIds } };
+  
+  // Apply church filter if provided
+  if (filterChurchId) {
+    // Verify user has access to this church
+    if (!churchIds.includes(filterChurchId)) {
+      res.status(403).json({ success: false, message: 'Access denied to this church' });
+      return;
+    }
+    whereClause.churchId = filterChurchId;
+  }
+  
+  // Apply category filter if provided
+  if (filterCategory && filterCategory !== 'all') {
+    whereClause.category = filterCategory;
+  }
+  
   const resources = await prisma.resource.findMany({
-    where: { churchId: { in: churchIds } },
+    where: whereClause,
     orderBy: { createdAt: 'desc' },
   });
   

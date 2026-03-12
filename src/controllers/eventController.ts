@@ -14,6 +14,8 @@ const baseEventSchema = z.object({
   endDate: z.string().min(1, 'End date required'),
   time: z.string().min(1, 'Time required'),
   location: z.string().min(1, 'Location required'),
+  contactEmail: z.string().email().optional().or(z.literal('')),
+  contactPhone: z.string().optional(),
   type: z.enum(['service', 'meeting', 'conference', 'outreach', 'fellowship']),
   status: z.enum(['upcoming', 'ongoing', 'completed', 'cancelled']).optional().default('upcoming'),
   attendeeCount: z.number().optional().default(0),
@@ -51,6 +53,8 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
   const filterChurchId = req.query.churchId as string | undefined;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -94,8 +98,20 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
     }
   }
 
+  const whereClause: any = { churchId: { in: churchIds } };
+  
+  // Apply date filters
+  if (startDate) {
+    whereClause.date = { ...whereClause.date, gte: new Date(startDate) };
+  }
+  if (endDate) {
+    const endDateTime = new Date(endDate);
+    endDateTime.setHours(23, 59, 59, 999);
+    whereClause.date = { ...whereClause.date, lte: endDateTime };
+  }
+
   const events = await prisma.event.findMany({
-    where: { churchId: { in: churchIds } },
+    where: whereClause,
     orderBy: { date: 'asc' },
   });
 

@@ -30,6 +30,7 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
+  const filterChurchId = req.query.churchId as string | undefined;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -53,8 +54,29 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
   }
 
   const churchIds = await getAccessibleChurchIds(roleName, churchId, districts, traditionalAuthorities, regions, userId);
+  
+  const whereClause: any = { churchId: { in: churchIds } };
+  
+  // Apply church filter if provided
+  if (filterChurchId) {
+    // Verify user has access to this church
+    if (!churchIds.includes(filterChurchId)) {
+      res.status(403).json({ success: false, message: 'Access denied to this church' });
+      return;
+    }
+    whereClause.churchId = filterChurchId;
+  }
+  
   const items = await prisma.announcement.findMany({
-    where: { churchId: { in: churchIds } },
+    where: whereClause,
+    include: {
+      church: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
     orderBy: { createdAt: 'desc' },
   });
   res.json({ success: true, data: items });

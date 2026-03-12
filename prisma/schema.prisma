@@ -201,6 +201,8 @@ model Event {
   endDate       DateTime
   time          String
   location      String
+  contactEmail  String?
+  contactPhone  String?
   type          String   @default("service")
   status        String   @default("upcoming")
   attendeeCount Int      @default(0)

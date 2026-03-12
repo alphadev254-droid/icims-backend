@@ -376,7 +376,7 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
-  const { page = 1, limit = 20 } = req.query;
+  const { page = 1, limit = 20, startDate, endDate } = req.query;
 
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -428,15 +428,32 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
 
   const skip = (Number(page) - 1) * Number(limit);
 
+  // Build date filter
+  const dateFilter: any = {};
+  if (startDate) {
+    dateFilter.gte = new Date(String(startDate));
+  }
+  if (endDate) {
+    const endDateTime = new Date(String(endDate));
+    endDateTime.setHours(23, 59, 59, 999);
+    dateFilter.lte = endDateTime;
+  }
+
   const [withdrawals, total] = await Promise.all([
     prisma.withdrawal.findMany({
-      where: { walletId: { in: walletIds.map(w => w.id) } },
+      where: {
+        walletId: { in: walletIds.map(w => w.id) },
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+      },
       orderBy: { createdAt: 'desc' },
       skip,
       take: Number(limit)
     }),
     prisma.withdrawal.count({
-      where: { walletId: { in: walletIds.map(w => w.id) } }
+      where: {
+        walletId: { in: walletIds.map(w => w.id) },
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+      }
     })
   ]);
 

@@ -427,6 +427,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     },
     include: {
       campaign: { select: { name: true, category: true } },
+      church: { select: { name: true } },
       user: { select: { firstName: true, lastName: true, email: true } },
     },
     orderBy: { createdAt: 'desc' },

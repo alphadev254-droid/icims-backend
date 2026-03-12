@@ -402,21 +402,21 @@ export const getPostableTeams = async (req: Request, res: Response) => {
     // If admin role, get teams in their scope
     const adminRoles = ['national_admin', 'regional_leader', 'district_overseer', 'local_admin'];
     if (user.role && adminRoles.includes(user.role.name)) {
-      let churchFilter: any = {};
-
-      if (user.role.name === 'regional_leader') {
-        const regions = user.regions ? JSON.parse(user.regions) : [];
-        churchFilter = { region: { in: regions } };
-      } else if (user.role.name === 'district_overseer') {
-        const districts = user.districts ? JSON.parse(user.districts) : [];
-        churchFilter = { district: { in: districts } };
-      } else if (user.role.name === 'local_admin') {
-        const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : [];
-        churchFilter = { traditionalAuthority: { in: tas } };
-      }
+      const districts = user.districts ? JSON.parse(user.districts) : undefined;
+      const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
+      const regions = user.regions ? JSON.parse(user.regions) : undefined;
+      
+      const accessibleChurchIds = await getAccessibleChurchIds(
+        user.role.name,
+        user.churchId,
+        districts,
+        tas,
+        regions,
+        userId
+      );
 
       const scopeTeams = await prisma.team.findMany({
-        where: user.role.name === 'national_admin' ? {} : { church: churchFilter },
+        where: { churchId: { in: accessibleChurchIds } },
         include: {
           church: { select: { id: true, name: true } }
         }
