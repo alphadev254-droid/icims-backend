@@ -22,57 +22,42 @@ const schema = z.object({
 
 export async function getAttendance(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
-  const { churchId, serviceType } = req.query;
+  const { churchId: filterChurchId, serviceType } = req.query;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
     return;
   }
 
-  let accessibleChurchIds: string[] = [];
+  // Use getAccessibleChurchIds for all roles
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (roleName === 'member') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true } });
-    if (user?.churchId) accessibleChurchIds = [user.churchId];
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      const churches = await prisma.church.findMany({
-        where: { traditionalAuthority: { in: tas } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      const churches = await prisma.church.findMany({
-        where: { district: { in: districts } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      const churches = await prisma.church.findMany({
-        where: { region: { in: regions } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
+  if (accessibleChurchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
   }
-  // national_admin sees all attendance (no filter)
 
-  const whereClause: any = accessibleChurchIds.length > 0 ? { churchId: { in: accessibleChurchIds } } : {};
+  const whereClause: any = { churchId: { in: accessibleChurchIds } };
   
   // Apply filters
-  if (churchId && typeof churchId === 'string') {
-    whereClause.churchId = churchId;
+  if (filterChurchId && typeof filterChurchId === 'string') {
+    // Ensure the filtered church is in accessible churches
+    if (accessibleChurchIds.includes(filterChurchId)) {
+      whereClause.churchId = filterChurchId;
+    } else {
+      // User doesn't have access to this church
+      res.json({ success: true, data: [] });
+      return;
+    }
   }
   if (serviceType && typeof serviceType === 'string') {
     whereClause.serviceType = serviceType;
