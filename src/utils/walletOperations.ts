@@ -14,13 +14,13 @@ export async function creditChurchWallet(
   if (!wallet) {
     const church = await prisma.church.findUnique({
       where: { id: churchId },
-      select: { nationalAdminId: true }
+      select: { ministryAdminId: true }
     });
 
     wallet = await prisma.wallet.create({
       data: {
         churchId,
-        nationalAdminId: church!.nationalAdminId!,
+        ministryAdminId: church!.ministryAdminId!,
         balance: 0,
         currency: 'MWK'
       }

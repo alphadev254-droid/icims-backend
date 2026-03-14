@@ -48,25 +48,25 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   // Build where clause based on role
   let whereClause: any = {};
 
-  if (role === 'national_admin') {
+  if (role === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     const churchIds = churches.map(c => c.id);
     
     whereClause.OR = [
       { churchId: { in: churchIds } },
-      { nationalAdminId: userId }
+      { ministryAdminId: userId }
     ];
-  } else if (role === 'district_overseer') {
+  } else if (role === 'district_admin') {
     const userDistricts = req.user?.districts ?? [];
     const churches = await prisma.church.findMany({
       where: userDistricts.includes('__all__') ? {} : { district: { in: userDistricts } },
       select: { id: true }
     });
     whereClause.churchId = { in: churches.map(c => c.id) };
-  } else if (role === 'local_admin') {
+  } else if (role === 'branch_admin') {
     const userTAs = req.user?.traditionalAuthorities ?? [];
     const churches = await prisma.church.findMany({
       where: userTAs.includes('__all__') ? {} : { traditionalAuthority: { in: userTAs } },
@@ -221,9 +221,9 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
 
-  // Role restrictions: only national_admin can create users with roles other than 'member'
-  // Additionally, prevent creation of national_admin role (only available at signup)
-  if (roleName === 'national_admin') {
+  // Role restrictions: only ministry_admin can create users with roles other than 'member'
+  // Additionally, prevent creation of ministry_admin role (only available at signup)
+  if (roleName === 'ministry_admin') {
     res.status(403).json({ 
       success: false, 
       message: 'National admin role can only be assigned during initial signup. Please contact support.' 
@@ -231,7 +231,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
     return;
   }
   
-  if (role !== 'national_admin' && roleName !== 'member') {
+  if (role !== 'ministry_admin' && roleName !== 'member') {
     res.status(403).json({ 
       success: false, 
       message: 'Only national administrators can create users with administrative roles. You can only create members.' 
@@ -257,7 +257,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
   // Determine churchId based on user's role and the new user's role
   let assignedChurchId: string | null = null;
   
-  if (role === 'national_admin') {
+  if (role === 'ministry_admin') {
     if (roleName === 'member' && churchId) {
       // National admin assigning member to specific church
       assignedChurchId = churchId;
@@ -265,7 +265,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       // Administrative roles don't need churchId initially
       assignedChurchId = null;
     }
-  } else if (role === 'district_overseer') {
+  } else if (role === 'district_admin') {
     // District overseer creating users - find church based on location
     if (district && traditionalAuthority) {
       // Check if the selected location is within their scope
@@ -293,7 +293,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, message: 'District and Traditional Authority required for user assignment' });
       return;
     }
-  } else if (role === 'local_admin') {
+  } else if (role === 'branch_admin') {
     // Local admin creating users - find church based on location
     if (traditionalAuthority) {
       // Check if the selected location is within their scope
@@ -321,7 +321,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       return;
     }
   } else {
-    // Other roles (regional_leader, member) use their own church
+    // Other roles (regional_admin, member) use their own church
     const userChurchId = req.user?.churchId;
     if (!userChurchId) {
       res.status(400).json({ success: false, message: 'Church ID required for this role' });
@@ -332,19 +332,19 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const hashed = await hashPassword(password);
   
-  // Determine nationalAdminId for the new user
-  let nationalAdminIdForNewUser: string | undefined;
+  // Determine ministryAdminId for the new user
+  let ministryAdminIdForNewUser: string | undefined;
   if (roleName === 'member') {
-    // Members inherit nationalAdminId from creator
-    if (role === 'national_admin') {
-      nationalAdminIdForNewUser = userId;
+    // Members inherit ministryAdminId from creator
+    if (role === 'ministry_admin') {
+      ministryAdminIdForNewUser = userId;
     } else {
-      // Creator is district_overseer or local_admin, use their nationalAdminId
-      const creator = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
-      nationalAdminIdForNewUser = creator?.nationalAdminId || undefined;
+      // Creator is district_admin or branch_admin, use their ministryAdminId
+      const creator = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
+      ministryAdminIdForNewUser = creator?.ministryAdminId || undefined;
     }
-  } else if (roleName === 'district_overseer' || roleName === 'local_admin') {
-    nationalAdminIdForNewUser = userId;
+  } else if (roleName === 'district_admin' || roleName === 'branch_admin') {
+    ministryAdminIdForNewUser = userId;
   }
   
   const user = await prisma.user.create({
@@ -364,7 +364,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       baptizedByImmersion,
       roleId: roleRecord.id,
       churchId: assignedChurchId,
-      nationalAdminId: nationalAdminIdForNewUser,
+      ministryAdminId: ministryAdminIdForNewUser,
       districts: districts ? JSON.stringify(districts) : undefined,
       traditionalAuthorities: traditionalAuthorities ? JSON.stringify(traditionalAuthorities) : undefined,
       regions: regions ? JSON.stringify(regions) : undefined,
@@ -446,9 +446,9 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
 
   const { firstName, lastName, phone, email, password, roleName, districts, traditionalAuthorities, regions, churchId, membershipType, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, serviceInterest, baptizedByImmersion, status } = parsed.data;
   
-  // Role restrictions: only national_admin can assign roles other than 'member'
-  // Additionally, prevent assignment of national_admin role (only available at signup)
-  if (roleName === 'national_admin') {
+  // Role restrictions: only ministry_admin can assign roles other than 'member'
+  // Additionally, prevent assignment of ministry_admin role (only available at signup)
+  if (roleName === 'ministry_admin') {
     res.status(403).json({ 
       success: false, 
       message: 'National admin role can only be assigned during initial signup. Please contact support.' 
@@ -456,7 +456,7 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
     return;
   }
   
-  if (roleName && role !== 'national_admin' && roleName !== 'member') {
+  if (roleName && role !== 'ministry_admin' && roleName !== 'member') {
     res.status(403).json({ 
       success: false, 
       message: 'Only national administrators can assign administrative roles. You can only assign member role.' 
@@ -598,14 +598,14 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
 
       const hashed = await hashPassword(password);
       
-      // Determine nationalAdminId
-      let nationalAdminIdForNewUser: string | undefined;
+      // Determine ministryAdminId
+      let ministryAdminIdForNewUser: string | undefined;
       if (roleName === 'member') {
-        if (role === 'national_admin') {
-          nationalAdminIdForNewUser = userId;
+        if (role === 'ministry_admin') {
+          ministryAdminIdForNewUser = userId;
         } else {
-          const creator = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
-          nationalAdminIdForNewUser = creator?.nationalAdminId || undefined;
+          const creator = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
+          ministryAdminIdForNewUser = creator?.ministryAdminId || undefined;
         }
       }
 
@@ -626,7 +626,7 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
           baptizedByImmersion,
           roleId: roleRecord.id,
           churchId: churchId || null,
-          nationalAdminId: nationalAdminIdForNewUser,
+          ministryAdminId: ministryAdminIdForNewUser,
         },
       });
 

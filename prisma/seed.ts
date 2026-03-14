@@ -81,10 +81,10 @@ const PERMISSIONS = [
 ];
 
 const ROLES = [
-  { name: 'national_admin', displayName: 'National Administrator' },
-  { name: 'regional_leader', displayName: 'Regional Leader' },
-  { name: 'district_overseer', displayName: 'District Overseer' },
-  { name: 'local_admin', displayName: 'Local Administrator' },
+  { name: 'ministry_admin', displayName: 'Ministry Administrator' },
+  { name: 'regional_admin', displayName: 'Regional Administrator' },
+  { name: 'district_admin', displayName: 'District Administrator' },
+  { name: 'branch_admin', displayName: 'Branch Administrator' },
   { name: 'member', displayName: 'Member' },
 ];
 
@@ -137,12 +137,12 @@ async function main() {
 
   // 3. Create admin user if not exists
   console.log('👤 Creating admin user...');
-  const nationalAdminRole = await prisma.role.findUnique({
-    where: { name: 'national_admin' },
+  const ministryAdminRole = await prisma.role.findUnique({
+    where: { name: 'ministry_admin' },
   });
 
-  if (!nationalAdminRole) {
-    throw new Error('National admin role not found');
+  if (!ministryAdminRole) {
+    throw new Error('Ministry admin role not found');
   }
 
   let adminUser = await prisma.user.findUnique({
@@ -157,7 +157,7 @@ async function main() {
         password: hashedPassword,
         firstName: 'Admin',
         lastName: 'User',
-        roleId: nationalAdminRole.id,
+        roleId: ministryAdminRole.id,
       },
     });
     console.log('✅ Created admin user: admin@icims.org\n');
@@ -165,8 +165,8 @@ async function main() {
     console.log('✅ Admin user already exists: admin@icims.org\n');
   }
 
-  // 4. Link ALL permissions to national_admin role (global)
-  console.log('🔗 Linking all permissions to national_admin role (global)...');
+  // 4. Link ALL permissions to ministry_admin role (global)
+  console.log('🔗 Linking all permissions to ministry_admin role (global)...');
   const allPermissions = await prisma.permission.findMany();
   
   let linked = 0;
@@ -174,8 +174,8 @@ async function main() {
     try {
       await prisma.rolePermission.create({
         data: {
-          nationalAdminId: 'GLOBAL',
-          roleId: nationalAdminRole.id,
+          ministryAdminId: 'GLOBAL',
+          roleId: ministryAdminRole.id,
           permissionId: permission.id,
         },
       });
@@ -185,7 +185,7 @@ async function main() {
     }
   }
 
-  console.log(`✅ Linked ${linked} permissions to national_admin\n`);
+  console.log(`✅ Linked ${linked} permissions to ministry_admin\n`);
 
   // 5. Assign member permissions to member role (global)
   console.log('🔗 Assigning member permissions to member role (global)...');
@@ -201,7 +201,7 @@ async function main() {
       try {
         await prisma.rolePermission.create({
           data: {
-            nationalAdminId: 'GLOBAL',
+            ministryAdminId: 'GLOBAL',
             roleId: memberRole.id,
             permissionId: permission.id,
           },

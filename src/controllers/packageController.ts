@@ -5,7 +5,10 @@ import prisma from '../lib/prisma';
 // ─── Packages (tiers) ─────────────────────────────────────────────────────────
 
 /** GET /api/packages — list all packages with their features */
-export async function getPackages(_req: Request, res: Response): Promise<void> {
+export async function getPackages(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const role = req.user?.role;
+
   const packages = await prisma.package.findMany({
     where: { isActive: true },
     orderBy: { sortOrder: 'asc' },
@@ -16,7 +19,46 @@ export async function getPackages(_req: Request, res: Response): Promise<void> {
       },
     },
   });
-  res.json({ success: true, data: packages });
+
+  // Determine account country
+  let accountCountry = 'Kenya';
+  if (userId) {
+    let adminId = role === 'ministry_admin' ? userId : null;
+    if (!adminId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { accountCountry: true, ministryAdminId: true },
+      });
+      if (user?.accountCountry) {
+        accountCountry = user.accountCountry;
+      } else if (user?.ministryAdminId) {
+        adminId = user.ministryAdminId;
+      }
+    }
+    if (adminId && accountCountry === 'Kenya') {
+      const admin = await prisma.user.findUnique({
+        where: { id: adminId },
+        select: { accountCountry: true },
+      });
+      if (admin?.accountCountry) accountCountry = admin.accountCountry;
+    }
+  }
+
+  const isMalawi = accountCountry === 'Malawi';
+  const currency = isMalawi ? 'MWK' : 'KES';
+  const rateKey = isMalawi ? 'USD_TO_MWK_RATE' : 'USD_TO_KSH_RATE';
+  const rateVal = process.env[rateKey];
+  if (!rateVal || isNaN(parseFloat(rateVal))) throw new Error('Payment configuration is not available. Please contact support.');
+  const rate = parseFloat(rateVal);
+
+  const convertedPackages = packages.map(pkg => ({
+    ...pkg,
+    priceMonthly: Math.round(pkg.priceMonthly * rate),
+    priceYearly: Math.round(pkg.priceYearly * rate),
+    currency,
+  }));
+
+  res.json({ success: true, data: convertedPackages });
 }
 
 /** GET /api/packages/current — current user's package with feature access */
@@ -32,28 +74,28 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
       email: true,
       firstName: true,
       lastName: true,
-      nationalAdminId: true,
-      church: { select: { nationalAdminId: true } },
+      ministryAdminId: true,
+      church: { select: { ministryAdminId: true } },
       ownedChurches: true,
     },
   });
   
   if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
-  // Determine nationalAdminId
-  let nationalAdminId: string | null = null;
-  if (role === 'national_admin') {
-    nationalAdminId = userId;
-  } else if (role === 'member' && user.church?.nationalAdminId) {
-    nationalAdminId = user.church.nationalAdminId;
-  } else if (user.nationalAdminId) {
-    nationalAdminId = user.nationalAdminId;
+  // Determine ministryAdminId
+  let ministryAdminId: string | null = null;
+  if (role === 'ministry_admin') {
+    ministryAdminId = userId;
+  } else if (role === 'member' && user.church?.ministryAdminId) {
+    ministryAdminId = user.church.ministryAdminId;
+  } else if (user.ministryAdminId) {
+    ministryAdminId = user.ministryAdminId;
   }
 
   let subscription = null;
-  if (nationalAdminId) {
+  if (ministryAdminId) {
     subscription = await prisma.subscription.findFirst({
-      where: { nationalAdminId, status: 'active' },
+      where: { ministryAdminId, status: 'active' },
       include: {
         package: {
           include: {
@@ -151,6 +193,58 @@ export async function setPackageFeatures(req: Request, res: Response): Promise<v
   res.json({ success: true, data: updated });
 }
 
+// ─── Fee Calculator ───────────────────────────────────────────────────────────
+
+/** GET /api/packages/calculate-fees?packageId=&billingCycle= */
+export async function calculateFees(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const role = req.user?.role;
+  if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const { packageId, billingCycle } = req.query as { packageId: string; billingCycle: string };
+  if (!packageId || !billingCycle) {
+    res.status(400).json({ success: false, message: 'packageId and billingCycle required' });
+    return;
+  }
+
+  const pkg = await prisma.package.findUnique({ where: { id: packageId } });
+  if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
+
+  // Resolve ministryAdminId to get accountCountry
+  let ministryAdminId = role === 'ministry_admin' ? userId : null;
+  if (!ministryAdminId) {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
+    ministryAdminId = user?.ministryAdminId ?? null;
+  }
+  const admin = ministryAdminId
+    ? await prisma.user.findUnique({ where: { id: ministryAdminId }, select: { accountCountry: true } })
+    : null;
+  const country = admin?.accountCountry || 'Kenya';
+
+  const isMalawi = country === 'Malawi';
+  const currency = isMalawi ? 'MWK' : 'KES';
+  const usdRateKey = isMalawi ? 'USD_TO_MWK_RATE' : 'USD_TO_KSH_RATE';
+  const usdRateVal = process.env[usdRateKey];
+  if (!usdRateVal || isNaN(parseFloat(usdRateVal))) throw new Error('Payment configuration is not available. Please contact support.');
+  const usdRate = parseFloat(usdRateVal);
+
+  const baseUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
+  const { calculatePaymentFees } = await import('../utils/feeCalculations');
+  const fees = calculatePaymentFees(parseFloat((baseUSD * usdRate).toFixed(2)), country);
+
+  res.json({
+    success: true,
+    data: {
+      currency,
+      baseAmount: fees.baseAmount,
+      convenienceFee: fees.convenienceFee,
+      systemFeeAmount: fees.systemFeeAmount,
+      transactionCost: parseFloat((fees.convenienceFee + fees.systemFeeAmount).toFixed(2)),
+      totalAmount: fees.totalAmount,
+    },
+  });
+}
+
 // ─── Payments ─────────────────────────────────────────────────────────────────
 
 /** GET /api/packages/payments — payment history for current user */
@@ -160,20 +254,20 @@ export async function getPayments(req: Request, res: Response): Promise<void> {
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
   // Determine national admin ID
-  let nationalAdminId: string;
-  if (role === 'national_admin') {
-    nationalAdminId = userId;
+  let ministryAdminId: string;
+  if (role === 'ministry_admin') {
+    ministryAdminId = userId;
   } else {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
-    if (!user?.nationalAdminId) {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
+    if (!user?.ministryAdminId) {
       res.status(400).json({ success: false, message: 'No national admin assigned' });
       return;
     }
-    nationalAdminId = user.nationalAdminId;
+    ministryAdminId = user.ministryAdminId;
   }
 
   const payments = await prisma.payment.findMany({
-    where: { nationalAdminId },
+    where: { ministryAdminId },
     orderBy: { createdAt: 'desc' },
     select: {
       id: true,
@@ -184,7 +278,7 @@ export async function getPayments(req: Request, res: Response): Promise<void> {
       amount: true,
       baseAmount: true,
       convenienceFee: true,
-      taxAmount: true,
+      systemFeeAmount: true,
       totalAmount: true,
       currency: true,
       reference: true,
@@ -224,22 +318,22 @@ export async function createPayment(req: Request, res: Response): Promise<void> 
   const pkg = await prisma.package.findUnique({ where: { name: packageName } });
   if (!pkg) { res.status(400).json({ success: false, message: 'Package not found' }); return; }
 
-  // Determine nationalAdminId
-  let nationalAdminId: string;
-  if (role === 'national_admin') {
-    nationalAdminId = userId;
+  // Determine ministryAdminId
+  let ministryAdminId: string;
+  if (role === 'ministry_admin') {
+    ministryAdminId = userId;
   } else {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { nationalAdminId: true } });
-    if (!user?.nationalAdminId) {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
+    if (!user?.ministryAdminId) {
       res.status(400).json({ success: false, message: 'No national admin assigned' });
       return;
     }
-    nationalAdminId = user.nationalAdminId;
+    ministryAdminId = user.ministryAdminId;
   }
 
   const payment = await prisma.payment.create({
     data: {
-      nationalAdminId,
+      ministryAdminId,
       amount, currency, type, status,
       packageName, packageId: pkg.id,
       reference, notes, createdById: userId,

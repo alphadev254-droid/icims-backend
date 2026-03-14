@@ -3,6 +3,7 @@ import { z } from 'zod';
 import axios from 'axios';
 import prisma from '../lib/prisma';
 import { groupByDateRanges } from '../lib/dateGrouping';
+import { getAccessibleChurchIds } from '../lib/churchScope';
 
 const createCampaignSchema = z.object({
   churchId: z.string().min(1),
@@ -25,10 +26,12 @@ const updateCampaignSchema = z.object({
   status: z.enum(['active', 'completed', 'cancelled']).optional(),
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),
+  allowPublicDonations: z.boolean().optional(),
 });
 
 export async function createCampaign(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role;
 
   // Check if user has giving_tracking feature
@@ -44,7 +47,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { churchId, endDate, ...data } = parsed.data;
+  const { churchId: targetChurchId, endDate, ...data } = parsed.data;
 
   // Check if Kenya account has subaccount for receiving donations
   const { getPaymentGateway } = await import('../utils/gatewayRouter');
@@ -53,7 +56,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   if (gateway === 'paystack') {
     // Kenya account - check for subaccount
     const subaccount = await prisma.subaccount.findUnique({
-      where: { churchId }
+      where: { churchId: targetChurchId }
     });
     
     if (!subaccount) {
@@ -66,34 +69,16 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   }
 
   // Verify user has access to this church
-  let hasAccess = false;
-  if (roleName === 'national_admin') {
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { nationalAdminId: true } });
-    hasAccess = church?.nationalAdminId === userId;
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { traditionalAuthority: true } });
-    if (user?.traditionalAuthorities && church) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      hasAccess = tas.includes(church.traditionalAuthority);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { district: true } });
-    if (user?.districts && church) {
-      const districts = JSON.parse(user.districts);
-      hasAccess = districts.includes(church.district);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { region: true } });
-    if (user?.regions && church) {
-      const regions = JSON.parse(user.regions);
-      hasAccess = regions.includes(church.region);
-    }
-  }
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (!hasAccess) {
+  if (!accessibleChurchIds.includes(targetChurchId)) {
     res.status(403).json({ success: false, message: 'Access denied to this church' });
     return;
   }
@@ -101,8 +86,9 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   const campaign = await prisma.givingCampaign.create({
     data: {
       ...data,
-      churchId,
+      churchId: targetChurchId,
       endDate: endDate ? new Date(endDate) : null,
+      allowPublicDonations: (req.body.allowPublicDonations === true || req.body.allowPublicDonations === 'true') ? true : false,
     },
   });
 
@@ -115,47 +101,14 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
   const { churchId, category, status } = req.query;
 
   // Get user's accessible churches based on role
-  let accessibleChurchIds: string[] = [];
-
-  if (roleName === 'member') {
-    // Members see only their church's campaigns
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true } });
-    if (user?.churchId) accessibleChurchIds = [user.churchId];
-  } else if (roleName === 'local_admin') {
-    // Local admin sees churches in their traditional authorities
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      const churches = await prisma.church.findMany({
-        where: { traditionalAuthority: { in: tas } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  } else if (roleName === 'district_overseer') {
-    // District overseer sees churches in their district
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      const churches = await prisma.church.findMany({
-        where: { district: { in: districts } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  } else if (roleName === 'regional_leader') {
-    // Regional leader sees churches in their region
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      const churches = await prisma.church.findMany({
-        where: { region: { in: regions } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  }
-  // national_admin sees all churches (no filter)
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
@@ -255,6 +208,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
 export async function updateCampaign(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role;
 
   const parsed = updateCampaignSchema.safeParse(req.body);
@@ -273,30 +227,17 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  let hasAccess = false;
-  if (roleName === 'national_admin') {
-    hasAccess = existingCampaign.church.nationalAdminId === userId;
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      hasAccess = tas.includes(existingCampaign.church.traditionalAuthority);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      hasAccess = districts.includes(existingCampaign.church.district);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      hasAccess = regions.includes(existingCampaign.church.region);
-    }
-  }
+  // Verify user has access to this church
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (!hasAccess) {
+  if (!accessibleChurchIds.includes(existingCampaign.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
@@ -317,6 +258,7 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
 export async function deleteCampaign(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role;
 
   // Check if campaign exists and user has access
@@ -329,30 +271,17 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  let hasAccess = false;
-  if (roleName === 'national_admin') {
-    hasAccess = existingCampaign.church.nationalAdminId === userId;
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      hasAccess = tas.includes(existingCampaign.church.traditionalAuthority);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      hasAccess = districts.includes(existingCampaign.church.district);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      hasAccess = regions.includes(existingCampaign.church.region);
-    }
-  }
+  // Verify user has access to this church
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (!hasAccess) {
+  if (!accessibleChurchIds.includes(existingCampaign.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
@@ -365,13 +294,10 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
 export async function getDonations(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;
-  const { campaignId } = req.query;
+  const { campaignId, churchId } = req.query;
 
-  // Get user's accessible churches based on role
-  let accessibleChurchIds: string[] = [];
-
+  // Members see only their own donations
   if (roleName === 'member') {
-    // Members see only their own donations
     const donations = await prisma.donationTransaction.findMany({
       where: {
         userId,
@@ -387,45 +313,36 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      const churches = await prisma.church.findMany({
-        where: { traditionalAuthority: { in: tas } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      const churches = await prisma.church.findMany({
-        where: { district: { in: districts } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      const churches = await prisma.church.findMany({
-        where: { region: { in: regions } },
-        select: { id: true },
-      });
-      accessibleChurchIds = churches.map(c => c.id);
-    }
-  }
-  // national_admin sees all donations (no filter)
+  // Get user's accessible churches based on role
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
   const donations = await prisma.donationTransaction.findMany({
     where: {
       ...(campaignId && { campaignId: String(campaignId) }),
+      ...(churchId && { churchId: String(churchId) }),
       ...(accessibleChurchIds.length > 0 && { churchId: { in: accessibleChurchIds } }),
     },
-    include: {
+    select: {
+      id: true,
+      amount: true,
+      currency: true,
+      status: true,
+      isAnonymous: true,
+      donorName: true,
+      donorEmail: true,
+      isGuest: true,
+      guestName: true,
+      guestEmail: true,
+      guestPhone: true,
+      notes: true,
+      createdAt: true,
       campaign: { select: { name: true, category: true } },
       church: { select: { name: true } },
       user: { select: { firstName: true, lastName: true, email: true } },
@@ -486,7 +403,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
   // Calculate fees
   const fees = calculatePaymentFees(amount, gatewayCountry);
   
-  console.log(`[${traceId}] Fees - Base: ${fees.baseAmount}, Convenience: ${fees.convenienceFee}, Tax: ${fees.taxAmount}, Total: ${fees.totalAmount}`);
+  console.log(`[${traceId}] Fees - Base: ${fees.baseAmount}, Convenience: ${fees.convenienceFee}, Tax: ${fees.systemFeeAmount}, Total: ${fees.totalAmount}`);
 
   // Create pending transaction
   const expiresAt = new Date();
@@ -510,7 +427,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
         notes,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
         gateway,
         gatewayCountry,
@@ -547,6 +464,10 @@ async function initiatePaystackDonation(
   try {
     const metadata = JSON.parse(pendingTx.metadata);
     const amountInKobo = Math.round(fees.totalAmount * 100);
+    const isGuest = metadata.isGuest === true;
+    const callbackUrl = isGuest
+      ? `${BACKEND_URL}/api/payments/verify?guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&isGuest=true&type=donation`
+      : `${BACKEND_URL}/api/payments/verify`;
     
     // Get church subaccount
     const subaccount = await prisma.subaccount.findUnique({
@@ -560,7 +481,7 @@ async function initiatePaystackDonation(
       email: donorEmail || userEmail,
       amount: amountInKobo,
       currency: 'KES',
-      callback_url: `${BACKEND_URL}/api/payments/verify`,
+      callback_url: callbackUrl,
       metadata: {
         ...metadata,
         type: 'donation',
@@ -600,7 +521,7 @@ async function initiatePaystackDonation(
         reference: response.data.data.reference,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
         currency,
       },
@@ -632,6 +553,10 @@ async function initiatePaychanguDonation(
 
   try {
     const metadata = JSON.parse(pendingTx.metadata);
+    const isGuest = metadata.isGuest === true;
+    const returnUrl = isGuest
+      ? `${FRONTEND_URL}/payment/callback?status=success&type=donation&isGuest=true&reference=${tx_ref}&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=MWK`
+      : `${FRONTEND_URL}/payment/callback?status=success&type=donation&reference=${tx_ref}`;
     
     const paychanguPayload = {
       amount: fees.totalAmount,
@@ -639,7 +564,7 @@ async function initiatePaychanguDonation(
       email: donorEmail || userEmail,
       tx_ref,
       callback_url: `${BACKEND_URL}/api/webhooks/paychangu/callback`,
-      return_url: `${BACKEND_URL}/api/webhooks/paychangu/callback`,
+      return_url: returnUrl,
       customization: {
         title: `Donation: ${metadata.campaignName}`,
         description: 'Campaign donation'
@@ -670,7 +595,7 @@ async function initiatePaychanguDonation(
         reference: tx_ref,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
         currency: 'MWK',
       },
@@ -682,6 +607,144 @@ async function initiatePaychanguDonation(
       success: false,
       message: error.response?.data?.message || 'Failed to initialize payment',
     });
+  }
+}
+
+export async function getGuestDonationFees(req: Request, res: Response): Promise<void> {
+  const { campaignId, amount } = req.query as { campaignId: string; amount: string };
+  if (!campaignId || !amount) {
+    res.status(400).json({ success: false, message: 'campaignId and amount required' });
+    return;
+  }
+  const parsedAmount = parseFloat(amount);
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ success: false, message: 'Invalid amount' });
+    return;
+  }
+
+  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
+  if (!campaign || !campaign.allowPublicDonations) {
+    res.status(404).json({ success: false, message: 'Campaign not found' });
+    return;
+  }
+
+  const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
+  const { calculatePaymentFees } = await import('../utils/feeCalculations');
+
+  const gateway = await getPaymentGatewayByChurch(campaign.churchId);
+  const currency = getCurrency(gateway);
+  const gatewayCountry = getGatewayCountry(gateway);
+  const fees = calculatePaymentFees(parsedAmount, gatewayCountry);
+
+  res.json({
+    success: true,
+    data: {
+      currency,
+      baseAmount: fees.baseAmount,
+      convenienceFee: fees.convenienceFee,
+      systemFeeAmount: fees.systemFeeAmount,
+      totalAmount: fees.totalAmount,
+    },
+  });
+}
+
+export async function getPublicCampaign(req: Request, res: Response): Promise<void> {
+  const { id } = req.params;
+
+  const campaign = await prisma.givingCampaign.findUnique({
+    where: { id: String(id) },
+    include: { church: { select: { name: true } } },
+  });
+
+  if (!campaign || !campaign.allowPublicDonations) {
+    res.status(404).json({ success: false, message: 'Campaign not found or not publicly available' });
+    return;
+  }
+
+  if (campaign.status !== 'active') {
+    res.status(400).json({ success: false, message: 'This campaign is no longer active' });
+    return;
+  }
+
+  const { targetAmount, ...publicFields } = campaign;
+
+  res.json({ success: true, data: publicFields });
+}
+
+const guestDonationSchema = z.object({
+  campaignId: z.string().min(1),
+  amount: z.number().positive(),
+  guestName: z.string().min(1),
+  guestEmail: z.string().email(),
+  guestPhone: z.string().optional(),
+});
+
+export async function createGuestDonation(req: Request, res: Response): Promise<void> {
+  const traceId = `GDON-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`[${traceId}] ========== GUEST DONATION INITIATED ==========`);
+
+  const parsed = guestDonationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const { campaignId, amount, guestName, guestEmail, guestPhone } = parsed.data;
+
+  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
+  if (!campaign || !campaign.allowPublicDonations) {
+    res.status(404).json({ success: false, message: 'Campaign not found or not publicly available' });
+    return;
+  }
+  if (campaign.status !== 'active') {
+    res.status(400).json({ success: false, message: 'Campaign is not active' });
+    return;
+  }
+
+  const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
+  const { calculatePaymentFees } = await import('../utils/feeCalculations');
+
+  const gateway = await getPaymentGatewayByChurch(campaign.churchId);
+  const currency = getCurrency(gateway);
+  const gatewayCountry = getGatewayCountry(gateway);
+  const fees = calculatePaymentFees(amount, gatewayCountry);
+
+  const expiresAt = new Date();
+  expiresAt.setMinutes(expiresAt.getMinutes() + 30);
+
+  const pendingTx = await prisma.pendingTransaction.create({
+    data: {
+      amount: fees.totalAmount,
+      currency,
+      userId: null,
+      churchId: campaign.churchId,
+      type: 'donation',
+      expiresAt,
+      metadata: JSON.stringify({
+        traceId,
+        campaignId,
+        campaignName: campaign.name,
+        isGuest: true,
+        guestName,
+        guestEmail,
+        guestPhone: guestPhone || null,
+        isAnonymous: false,
+        baseAmount: fees.baseAmount,
+        convenienceFee: fees.convenienceFee,
+        systemFeeAmount: fees.systemFeeAmount,
+        totalAmount: fees.totalAmount,
+        gateway,
+        gatewayCountry,
+      }),
+    },
+  });
+
+  console.log(`[${traceId}] Pending transaction created: ${pendingTx.id}`);
+
+  if (gateway === 'paychangu') {
+    return await initiatePaychanguDonation(pendingTx, guestEmail, guestEmail, fees, traceId, res);
+  } else {
+    return await initiatePaystackDonation(pendingTx, guestEmail, guestEmail, campaign, fees, currency, traceId, res);
   }
 }
 
@@ -726,7 +789,7 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
         channel: true,
         baseAmount: true,
         convenienceFee: true,
-        taxAmount: true,
+        systemFeeAmount: true,
         totalAmount: true,
         gateway: true,
       },
@@ -752,10 +815,9 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
         notes: true,
         createdAt: true,
         subaccountName: true,
-        feeRate: true,
-        baseAmount: true,
+          baseAmount: true,
         convenienceFee: true,
-        taxAmount: true,
+        systemFeeAmount: true,
         totalAmount: true,
         gateway: true,
       },

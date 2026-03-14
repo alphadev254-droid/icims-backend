@@ -23,9 +23,9 @@ export async function getWalletBalance(req: Request, res: Response): Promise<voi
   // Get accessible churches based on role
   let churchIds: string[] = [];
   
-  if (roleName === 'national_admin') {
+  if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -79,9 +79,9 @@ export async function getWalletTransactions(req: Request, res: Response): Promis
   // Get accessible churches based on role
   let churchIds: string[] = [];
   
-  if (roleName === 'national_admin') {
+  if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -183,28 +183,28 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   const { amount, method, mobileOperator, mobileNumber, bankCode, accountName, accountNumber } = parsed.data;
 
   // Get national admin to check account country
-  let nationalAdminId: string;
-  if (roleName === 'national_admin') {
-    nationalAdminId = userId;
+  let ministryAdminId: string;
+  if (roleName === 'ministry_admin') {
+    ministryAdminId = userId;
   } else {
     const currentUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { nationalAdminId: true }
+      select: { ministryAdminId: true }
     });
-    nationalAdminId = currentUser?.nationalAdminId || '';
+    ministryAdminId = currentUser?.ministryAdminId || '';
   }
 
-  if (!nationalAdminId) {
+  if (!ministryAdminId) {
     res.status(400).json({ success: false, message: 'No national admin found' });
     return;
   }
 
-  const nationalAdmin = await prisma.user.findUnique({
-    where: { id: nationalAdminId },
+  const ministryAdmin = await prisma.user.findUnique({
+    where: { id: ministryAdminId },
     select: { accountCountry: true }
   });
 
-  if (nationalAdmin?.accountCountry !== 'Malawi') {
+  if (ministryAdmin?.accountCountry !== 'Malawi') {
     res.status(403).json({ success: false, message: 'Withdrawals are only available for Malawi accounts' });
     return;
   }
@@ -212,9 +212,9 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   // Get accessible churches based on role
   let churchIds: string[] = [];
   
-  if (roleName === 'national_admin') {
+  if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -239,7 +239,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   // Get all wallets from accessible churches
   const wallets = await prisma.wallet.findMany({
     where: { churchId: { in: churchIds } },
-    include: { church: { select: { name: true, nationalAdminId: true } } }
+    include: { church: { select: { name: true, ministryAdminId: true } } }
   });
 
   console.log('Wallets found:', wallets.length);
@@ -271,7 +271,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   const withdrawal = await prisma.withdrawal.create({
     data: {
       walletId: selectedWallet.id,
-      nationalAdminId: userId,
+      ministryAdminId: userId,
       amount: fees.amount,
       fee: fees.fee,
       netAmount: fees.netAmount,
@@ -301,7 +301,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   // Get user details for email
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { firstName: true, lastName: true, email: true, nationalAdminId: true }
+    select: { firstName: true, lastName: true, email: true, ministryAdminId: true }
   });
 
   // Send email to user
@@ -319,14 +319,14 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   }
 
   // Send email to national admin (only if requester is not the national admin)
-  const adminId = roleName === 'national_admin' ? userId : (user?.nationalAdminId || selectedWallet.church.nationalAdminId);
+  const adminId = roleName === 'ministry_admin' ? userId : (user?.ministryAdminId || selectedWallet.church.ministryAdminId);
   if (adminId && adminId !== userId) {
-    const nationalAdmin = await prisma.user.findUnique({
+    const ministryAdmin = await prisma.user.findUnique({
       where: { id: adminId },
       select: { email: true }
     });
 
-    if (nationalAdmin?.email && user) {
+    if (ministryAdmin?.email && user) {
       const adminEmailHtml = withdrawalRequestAdminTemplate({
         userName: `${user.firstName} ${user.lastName}`,
         userEmail: user.email,
@@ -342,7 +342,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
         accountName,
         accountNumber
       });
-      await queueEmail(nationalAdmin.email, 'New Withdrawal Request', adminEmailHtml, 'withdrawal_request_admin');
+      await queueEmail(ministryAdmin.email, 'New Withdrawal Request', adminEmailHtml, 'withdrawal_request_admin');
     }
   }
 
@@ -399,9 +399,9 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
   // Get accessible churches based on role
   let churchIds: string[] = [];
   
-  if (roleName === 'national_admin') {
+  if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);

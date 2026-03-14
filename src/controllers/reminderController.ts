@@ -29,9 +29,9 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
     if (roleName === 'member') {
       // Members see only their own reminders
       whereClause.userId = userId;
-    } else if (roleName === 'national_admin') {
+    } else if (roleName === 'ministry_admin') {
       // National admin sees reminders from their churches
-      whereClause.nationalAdminId = userId;
+      whereClause.ministryAdminId = userId;
     } else {
       // Other roles use churchScope
       const churchIds = await getAccessibleChurchIds(
@@ -53,16 +53,16 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
         return;
       }
       whereClause.userId = userId;
-    } else if (roleName === 'national_admin') {
+    } else if (roleName === 'ministry_admin') {
       // Verify church belongs to this national admin
       const church = await prisma.church.findFirst({
-        where: { id: filterChurchId, nationalAdminId: userId },
+        where: { id: filterChurchId, ministryAdminId: userId },
       });
       if (!church) {
         res.status(403).json({ success: false, message: 'Access denied to this church' });
         return;
       }
-      whereClause.nationalAdminId = userId;
+      whereClause.ministryAdminId = userId;
     } else {
       // Verify church is in accessible scope
       const churchIds = await getAccessibleChurchIds(
@@ -122,14 +122,14 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
     if (reminder.type === 'event' && reminder.eventId) {
       if (!seenEvents.has(reminder.eventId)) {
         seenEvents.add(reminder.eventId);
-        // For event reminders, exclude user object and nationalAdminId
-        const { user, nationalAdminId, ...eventReminderData } = reminder;
+        // For event reminders, exclude user object and ministryAdminId
+        const { user, ministryAdminId, ...eventReminderData } = reminder;
         uniqueReminders.push(eventReminderData);
       }
     } else {
       // For other reminders, only include if user is the person with the birthday/wedding/anniversary
       if (reminder.userId !== userId) {
-        const { user, nationalAdminId, ...reminderData } = reminder;
+        const { user, ministryAdminId, ...reminderData } = reminder;
         uniqueReminders.push(reminderData);
       } else {
         uniqueReminders.push(reminder);
@@ -165,8 +165,8 @@ export async function getTodayReminders(req: Request, res: Response): Promise<vo
   // Scope-based filtering
   if (roleName === 'member') {
     whereClause.userId = userId;
-  } else if (roleName === 'national_admin') {
-    whereClause.nationalAdminId = userId;
+  } else if (roleName === 'ministry_admin') {
+    whereClause.ministryAdminId = userId;
   } else {
     const churchIds = await getAccessibleChurchIds(
       roleName,

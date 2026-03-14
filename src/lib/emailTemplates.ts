@@ -177,6 +177,7 @@ export const ticketPurchaseTemplate = (data: {
   eventEndDate: string;
   eventLocation: string;
   churchName?: string;
+  viewUrl?: string;
 }) => `
 <!DOCTYPE html>
 <html>
@@ -202,7 +203,9 @@ export const ticketPurchaseTemplate = (data: {
       
       <p>Please present this ticket number at the event entrance.</p>
       
-      <a href="${FRONTEND_URL}/dashboard/my-tickets" class="button">View My Tickets</a>
+      <p>Your ticket and payment receipt are attached to this email.</p>
+      
+      <a href="${data.viewUrl || `${FRONTEND_URL}/dashboard/my-tickets`}" class="button">View My Tickets</a>
       
       <p>We look forward to seeing you at the event!</p>
     </div>
@@ -221,6 +224,7 @@ export const donationReceiptTemplate = (data: {
   campaignName: string;
   reference: string;
   isAnonymous: boolean;
+  isGuest?: boolean;
   churchName?: string;
 }) => `
 <!DOCTYPE html>
@@ -247,7 +251,7 @@ export const donationReceiptTemplate = (data: {
       
       <p>Your contribution makes a difference in our community. May God bless you abundantly!</p>
       
-      <a href="${FRONTEND_URL}/dashboard/donations" class="button">View Donation History</a>
+      ${!data.isGuest ? `<a href="${FRONTEND_URL}/dashboard/donations" class="button">View Donation History</a>` : ''}
       
       <p style="font-style: italic; color: #6b7280;">"Each of you should give what you have decided in your heart to give, not reluctantly or under compulsion, for God loves a cheerful giver." - 2 Corinthians 9:7</p>
     </div>

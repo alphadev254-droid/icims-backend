@@ -31,10 +31,10 @@ export async function getMembers(req: Request, res: Response): Promise<void> {
 
   let churchIds: string[] = [];
 
-  if (role === 'national_admin') {
+  if (role === 'ministry_admin') {
     // National admin sees members from their churches
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);

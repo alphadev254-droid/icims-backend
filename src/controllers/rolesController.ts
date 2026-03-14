@@ -16,9 +16,9 @@ export async function getRoles(req: Request, res: Response): Promise<void> {
     orderBy: { name: 'asc' },
   });
 
-  // Get permissions - use GLOBAL for national_admin and member
+  // Get permissions - use GLOBAL for ministry_admin and member
   const rolePermissions = await prisma.rolePermission.findMany({
-    where: { nationalAdminId: 'GLOBAL' },
+    where: { ministryAdminId: 'GLOBAL' },
     include: { permission: true },
   });
 
@@ -81,13 +81,13 @@ export async function updateRolePermissions(req: Request, res: Response): Promis
   });
 
   await prisma.rolePermission.deleteMany({
-    where: { nationalAdminId: 'GLOBAL', roleId },
+    where: { ministryAdminId: 'GLOBAL', roleId },
   });
 
   for (const perm of permRecords) {
     await prisma.rolePermission.create({
       data: {
-        nationalAdminId: 'GLOBAL',
+        ministryAdminId: 'GLOBAL',
         roleId,
         permissionId: perm.id,
       },
@@ -118,7 +118,7 @@ export async function assignRole(req: Request, res: Response): Promise<void> {
   }
 
   // Only national admins can assign roles
-  if (currentUserRole !== 'national_admin') {
+  if (currentUserRole !== 'ministry_admin') {
     res.status(403).json({ success: false, message: 'Only national administrators can assign roles' });
     return;
   }

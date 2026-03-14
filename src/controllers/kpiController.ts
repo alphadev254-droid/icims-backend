@@ -60,13 +60,13 @@ export const kpiController = {
         return;
       }
 
-      // Get nationalAdminId from the church
+      // Get ministryAdminId from the church
       const church = await prisma.church.findUnique({
         where: { id: data.churchId },
-        select: { nationalAdminId: true },
+        select: { ministryAdminId: true },
       });
 
-      if (!church?.nationalAdminId) {
+      if (!church?.ministryAdminId) {
         res.status(400).json({ error: 'Church has no national admin' });
         return;
       }
@@ -76,7 +76,7 @@ export const kpiController = {
           ...data,
           startDate: new Date(data.startDate),
           endDate: new Date(data.endDate),
-          nationalAdminId: church.nationalAdminId,
+          ministryAdminId: church.ministryAdminId,
         },
         include: { church: { select: { id: true, name: true } } },
       });

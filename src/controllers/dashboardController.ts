@@ -42,10 +42,10 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  if (roleName === 'national_admin') {
-    // For national admin, get churches where they are the nationalAdminId
+  if (roleName === 'ministry_admin') {
+    // For national admin, get churches where they are the ministryAdminId
     const churches = await prisma.church.findMany({ 
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true } 
     });
     churchIds = churches.map(c => c.id);

@@ -43,13 +43,13 @@ async function getUserWithPackage(userId: string) {
   if (roleName === 'member' && user.churchId) {
     const church = await prisma.church.findUnique({
       where: { id: user.churchId },
-      select: { nationalAdminId: true },
+      select: { ministryAdminId: true },
     });
     
-    if (church?.nationalAdminId) {
+    if (church?.ministryAdminId) {
       const subscription = await prisma.subscription.findFirst({
         where: { 
-          nationalAdminId: church.nationalAdminId,
+          ministryAdminId: church.ministryAdminId,
           status: 'active',
         },
         include: {
@@ -71,11 +71,11 @@ async function getUserWithPackage(userId: string) {
     }
   }
   
-  // For district_overseer, local_admin, regional_leader: get package from their National Admin subscription
-  if ((roleName === 'district_overseer' || roleName === 'local_admin' || roleName === 'regional_leader') && user.nationalAdminId) {
+  // For district_admin, branch_admin, regional_admin: get package from their National Admin subscription
+  if ((roleName === 'district_admin' || roleName === 'branch_admin' || roleName === 'regional_admin') && user.ministryAdminId) {
     const subscription = await prisma.subscription.findFirst({
       where: { 
-        nationalAdminId: user.nationalAdminId,
+        ministryAdminId: user.ministryAdminId,
         status: 'active',
       },
       include: {
@@ -96,11 +96,11 @@ async function getUserWithPackage(userId: string) {
     }
   }
   
-  // For national_admin: get their own subscription
-  if (roleName === 'national_admin') {
+  // For ministry_admin: get their own subscription
+  if (roleName === 'ministry_admin') {
     const subscription = await prisma.subscription.findFirst({
       where: { 
-        nationalAdminId: userId,
+        ministryAdminId: userId,
         status: 'active',
       },
       include: {
@@ -130,14 +130,14 @@ async function getUserPermissions(user: any): Promise<string[]> {
   
   const roleName = user.role?.name;
   
-  // National admin: check both their own nationalAdminId and GLOBAL
-  if (roleName === 'national_admin') {
+  // National admin: check both their own ministryAdminId and GLOBAL
+  if (roleName === 'ministry_admin') {
     const permissions = await prisma.rolePermission.findMany({
       where: {
         roleId: user.roleId,
         OR: [
-          { nationalAdminId: user.id },
-          { nationalAdminId: 'GLOBAL' },
+          { ministryAdminId: user.id },
+          { ministryAdminId: 'GLOBAL' },
         ],
       },
       include: { permission: { select: { name: true } } },
@@ -150,18 +150,18 @@ async function getUserPermissions(user: any): Promise<string[]> {
     const permissions = await prisma.rolePermission.findMany({
       where: {
         roleId: user.roleId,
-        nationalAdminId: 'GLOBAL',
+        ministryAdminId: 'GLOBAL',
       },
       include: { permission: { select: { name: true } } },
     });
     return permissions.map(rp => rp.permission.name);
   }
   
-  // Tenant-specific roles: district_overseer, local_admin - use nationalAdminId
-  if (user.nationalAdminId) {
+  // Tenant-specific roles: district_admin, branch_admin - use ministryAdminId
+  if (user.ministryAdminId) {
     const permissions = await prisma.rolePermission.findMany({
       where: {
-        nationalAdminId: user.nationalAdminId,
+        ministryAdminId: user.ministryAdminId,
         roleId: user.roleId,
       },
       include: { permission: { select: { name: true } } },
@@ -278,14 +278,14 @@ export async function register(req: Request, res: Response): Promise<void> {
   }
 
   let churchId: string | null = null;
-  let nationalAdminId: string | null = null;
+  let ministryAdminId: string | null = null;
   let roleId: string;
 
   // Check if registering via church invite link
   if (data.inviteToken) {
     const church = await prisma.church.findUnique({ 
       where: { inviteToken: data.inviteToken },
-      select: { id: true, nationalAdminId: true }
+      select: { id: true, ministryAdminId: true }
     });
     
     if (!church) {
@@ -295,10 +295,10 @@ export async function register(req: Request, res: Response): Promise<void> {
     
     // Member registration via invite link:
     // - Assign churchId so member belongs to this church
-    // - nationalAdminId stays null for members (they get package access via church.nationalAdminId lookup)
+    // - ministryAdminId stays null for members (they get package access via church.ministryAdminId lookup)
     // - Assign member role
     churchId = church.id;
-    nationalAdminId = null; // Members don't have direct nationalAdminId
+    ministryAdminId = null; // Members don't have direct ministryAdminId
     
     const memberRole = await prisma.role.findFirst({ where: { name: 'member' } });
     if (!memberRole) {
@@ -308,12 +308,12 @@ export async function register(req: Request, res: Response): Promise<void> {
     roleId = memberRole.id;
   } else {
     // Regular registration as national admin (no invite link)
-    const nationalAdminRole = await prisma.role.findFirst({ where: { name: 'national_admin' } });
-    if (!nationalAdminRole) {
+    const ministryAdminRole = await prisma.role.findFirst({ where: { name: 'ministry_admin' } });
+    if (!ministryAdminRole) {
       res.status(500).json({ success: false, message: 'System not properly configured. Please contact support.' });
       return;
     }
-    roleId = nationalAdminRole.id;
+    roleId = ministryAdminRole.id;
   }
 
   const hashed = await hashPassword(data.password);
@@ -326,7 +326,7 @@ export async function register(req: Request, res: Response): Promise<void> {
       lastName: data.lastName,
       roleId,
       churchId,
-      nationalAdminId,
+      ministryAdminId,
       accountCountry: data.accountCountry,
       phone: data.phone,
       gender: data.gender,

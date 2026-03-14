@@ -45,7 +45,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   const { packageId, billingCycle } = parsed.data;
   console.log(`[${traceId}] Package ID: ${packageId}, Billing: ${billingCycle}`);
 
-  // Get current user with nationalAdminId field
+  // Get current user with ministryAdminId field
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
     console.log(`[${traceId}] ERROR: User not found`);
@@ -55,31 +55,31 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   console.log(`[${traceId}] User found: ${user.email}`);
 
   // Determine national admin
-  let nationalAdminId: string;
-  let nationalAdmin: any;
+  let ministryAdminId: string;
+  let ministryAdmin: any;
   
-  if (role === 'national_admin') {
-    nationalAdminId = userId;
-    nationalAdmin = user;
+  if (role === 'ministry_admin') {
+    ministryAdminId = userId;
+    ministryAdmin = user;
     console.log(`[${traceId}] User is national admin`);
   } else {
-    // Other roles: get national admin from nationalAdminId field
-    if (!user.nationalAdminId) {
+    // Other roles: get national admin from ministryAdminId field
+    if (!user.ministryAdminId) {
       console.log(`[${traceId}] ERROR: No national admin assigned`);
       res.status(400).json({ success: false, message: 'No national admin assigned to your account' });
       return;
     }
-    nationalAdminId = user.nationalAdminId;
-    nationalAdmin = await prisma.user.findUnique({ where: { id: nationalAdminId } });
-    if (!nationalAdmin) {
-      console.log(`[${traceId}] ERROR: National admin not found: ${nationalAdminId}`);
+    ministryAdminId = user.ministryAdminId;
+    ministryAdmin = await prisma.user.findUnique({ where: { id: ministryAdminId } });
+    if (!ministryAdmin) {
+      console.log(`[${traceId}] ERROR: National admin not found: ${ministryAdminId}`);
       res.status(404).json({ success: false, message: 'National admin not found' });
       return;
     }
-    console.log(`[${traceId}] National admin found: ${nationalAdmin.email}`);
+    console.log(`[${traceId}] National admin found: ${ministryAdmin.email}`);
   }
 
-  if (!nationalAdmin.email) {
+  if (!ministryAdmin.email) {
     console.log(`[${traceId}] ERROR: National admin email missing`);
     res.status(400).json({ success: false, message: 'National admin email required for payment' });
     return;
@@ -99,13 +99,13 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   const baseAmountUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
   
   // Determine gateway based on national admin's accountCountry
-  console.log(`[${traceId}] Calling getPaymentGateway for nationalAdminId: ${nationalAdminId}`);
-  const gateway = await getPaymentGateway(nationalAdminId);
+  console.log(`[${traceId}] Calling getPaymentGateway for ministryAdminId: ${ministryAdminId}`);
+  const gateway = await getPaymentGateway(ministryAdminId);
   const currency = getCurrency(gateway); // Returns 'MWK' for Malawi, 'KSH' for Kenya
   const gatewayCountry = getGatewayCountry(gateway);
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
-  console.log(`[${traceId}] National Admin accountCountry: ${nationalAdmin.accountCountry}`);
+  console.log(`[${traceId}] National Admin accountCountry: ${ministryAdmin.accountCountry}`);
   console.log(`[${traceId}] Package price in USD: ${baseAmountUSD}`);
   
   // Convert USD to local currency using exchange rates
@@ -115,7 +115,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   // Calculate fees (Kenya has no tax, Malawi has 17.5% tax)
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
   
-  console.log(`[${traceId}] Fees - Base: ${fees.baseAmount}, Convenience: ${fees.convenienceFee}, Tax: ${fees.taxAmount}, Total: ${fees.totalAmount}`);
+  console.log(`[${traceId}] Fees - Base: ${fees.baseAmount}, Convenience: ${fees.convenienceFee}, System Fee: ${fees.systemFeeAmount}, Total: ${fees.totalAmount}`);
   console.log(`[${traceId}] Routing to: ${gateway === 'paychangu' ? 'PAYCHANGU (Malawi)' : 'PAYSTACK (Kenya)'}`);
   
   const amountInKobo = Math.round(fees.totalAmount * 100);
@@ -136,14 +136,16 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
       expiresAt,
       metadata: JSON.stringify({
         traceId,
-        nationalAdminId,
+        ministryAdminId,
         packageId,
         packageName: pkg.name,
         billingCycle,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
+        gatewayFeeRate: fees.systemGatewayFeeRate,
+        systemFeeRate: fees.systemFeeRate,
         gateway,
         gatewayCountry,
       }),
@@ -155,16 +157,16 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   // Route to appropriate gateway
   if (gateway === 'paychangu') {
     console.log(`[${traceId}] ========== ROUTING TO PAYCHANGU ==========`);
-    return await initiatePaychanguPayment(pendingTx, nationalAdmin, fees, traceId, res);
+    return await initiatePaychanguPayment(pendingTx, ministryAdmin, fees, traceId, res);
   } else {
     console.log(`[${traceId}] ========== ROUTING TO PAYSTACK ==========`);
-    return await initiatePaystackPayment(pendingTx, nationalAdmin, fees, traceId, res);
+    return await initiatePaystackPayment(pendingTx, ministryAdmin, fees, traceId, res);
   }
 }
 
 async function initiatePaystackPayment(
   pendingTx: any,
-  nationalAdmin: any,
+  ministryAdmin: any,
   fees: any,
   traceId: string,
   res: Response
@@ -176,7 +178,7 @@ async function initiatePaystackPayment(
   try {
     const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
     const paystackPayload = {
-      email: nationalAdmin.email,
+      email: ministryAdmin.email,
       amount: amountInKobo,
       callback_url: `${BACKEND_URL}/api/payments/verify`,
       metadata: {
@@ -251,7 +253,7 @@ async function initiatePaystackPayment(
 
 async function initiatePaychanguPayment(
   pendingTx: any,
-  nationalAdmin: any,
+  ministryAdmin: any,
   fees: any,
   traceId: string,
   res: Response
@@ -267,7 +269,7 @@ async function initiatePaychanguPayment(
     const paychanguPayload = {
       amount: fees.totalAmount,
       currency: 'MWK',
-      email: nationalAdmin.email,
+      email: ministryAdmin.email,
       tx_ref,
       callback_url: `${BACKEND_URL}/api/webhooks/paychangu/callback`,
       return_url: `${process.env.FRONTEND_URL}/dashboard/packages?status=cancelled`,
@@ -375,10 +377,17 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
       // Handle package subscription
       if (type === 'package_subscription') {
         console.log(`[${traceId}] Processing package subscription...`);
+
+        const existingPayment = await prisma.payment.findFirst({ where: { reference: data.reference } });
+        if (existingPayment) {
+          console.log(`[${traceId}] Payment already processed: ${existingPayment.id}`);
+          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=package_subscription`);
+          return;
+        }
         
         const pkg = await prisma.package.findUnique({ where: { id: metadata.packageId } });
         console.log(`[${traceId}] Package: ${pkg?.name} (${pkg?.displayName})`);
-        console.log(`[${traceId}] National Admin ID: ${metadata.nationalAdminId}`);
+        console.log(`[${traceId}] National Admin ID: ${metadata.ministryAdminId}`);
 
         // Get pending transaction
         const pendingTx = await prisma.pendingTransaction.findUnique({
@@ -390,40 +399,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const pendingMetadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
         const baseAmount = pendingMetadata.baseAmount || amount;
         const convenienceFee = pendingMetadata.convenienceFee || 0;
-        const taxAmount = pendingMetadata.taxAmount || 0;
+        const systemFeeAmount = pendingMetadata.systemFeeAmount || 0;
         const totalAmount = pendingMetadata.totalAmount || amount;
         const gateway = pendingMetadata.gateway || 'paystack';
         const gatewayCountry = pendingMetadata.gatewayCountry || 'Kenya';
-
-        // Create full transaction record with all Paystack data
-        const transaction = await prisma.transaction.create({
-          data: {
-            amount,
-            currency: data.currency,
-            status: 'completed',
-            paymentMethod: data.channel || 'card',
-            reference: data.reference,
-            userId: metadata.initiatedBy,
-            churchId: pendingTx?.churchId || null,
-            type: 'package_subscription',
-            paidAt: new Date(data.paid_at),
-            channel: data.channel,
-            customerEmail: data.customer?.email,
-            customerPhone: data.customer?.phone,
-            cardLast4: data.authorization?.last4,
-            cardBank: data.authorization?.bank,
-            baseAmount,
-            convenienceFee,
-            taxAmount,
-            totalAmount,
-            gateway,
-            gatewayCountry,
-            systemFeeAmount: data.fees || 0,
-            gatewayResponse: JSON.stringify(data),
-            subaccountName: 'ICIMS System',
-          },
-        });
-        console.log(`[${traceId}] Transaction record created: ${transaction.id}`);
+        const systemGatewayFeeRate = pendingMetadata.gatewayFeeRate || 0;
+        const systemFeeRate = pendingMetadata.systemFeeRate || 0;
 
         // Create payment record
         const startsAt = new Date(data.paid_at);
@@ -436,7 +417,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
         const payment = await prisma.payment.create({
           data: {
-            nationalAdminId: metadata.nationalAdminId,
+            ministryAdminId: metadata.ministryAdminId,
             packageId: metadata.packageId,
             amount,
             currency: data.currency,
@@ -448,7 +429,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             billingCycle: metadata.billingCycle,
             baseAmount,
             convenienceFee,
-            taxAmount,
+            systemFeeAmount,
             totalAmount,
             gateway,
             paymentMethod: data.channel || 'card',
@@ -460,6 +441,9 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             cardBank: data.authorization?.bank,
             subaccountCode: data.subaccount?.subaccount_code || SYSTEM_SUBACCOUNT_CODE,
             subaccountName: data.subaccount?.business_name || 'ICIMS System',
+            gatewayCharge: data.fees ? data.fees / 100 : 0,
+            systemGatewayFeeRate,
+            systemFeeRate,
             gatewayResponse: JSON.stringify(data),
             expiresAt,
           },
@@ -468,9 +452,9 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
         // Create or update subscription and reset email tracking
         await prisma.subscription.upsert({
-          where: { nationalAdminId: metadata.nationalAdminId },
+          where: { ministryAdminId: metadata.ministryAdminId },
           create: {
-            nationalAdminId: metadata.nationalAdminId,
+            ministryAdminId: metadata.ministryAdminId,
             packageId: metadata.packageId,
             status: 'active',
             startsAt,
@@ -549,9 +533,16 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
+
+        const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
+        if (existingTransaction) {
+          console.log(`[${traceId}] Transaction already processed: ${existingTransaction.id}`);
+          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket`);
+          return;
+        }
         
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
-        console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, Tax: ${pendingMetadata.taxAmount}, Total: ${pendingMetadata.totalAmount}`);
+        console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
         
         // Create transaction
         const transaction = await prisma.transaction.create({
@@ -563,7 +554,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             amount: data.amount / 100,
             baseAmount: pendingMetadata.baseAmount,
             convenienceFee: pendingMetadata.convenienceFee,
-            taxAmount: pendingMetadata.taxAmount,
+            systemFeeAmount: pendingMetadata.systemFeeAmount,
             totalAmount: pendingMetadata.totalAmount,
             currency: data.currency,
             status: 'completed',
@@ -577,7 +568,9 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             customerPhone: data.customer?.phone,
             cardLast4: data.authorization?.last4,
             cardBank: data.authorization?.bank,
-            systemFeeAmount: data.fees || 0,
+            gatewayCharge: data.fees ? data.fees / 100 : 0,
+            systemGatewayFeeRate: pendingMetadata.gatewayFeeRate || 0,
+            systemFeeRate: pendingMetadata.systemFeeRate || 0,
             subaccountCode: metadata.subaccountCode || data.subaccount?.subaccount_code,
             subaccountName: metadata.subaccountName || data.subaccount?.business_name,
             gatewayResponse: JSON.stringify(data),
@@ -586,8 +579,8 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         
         console.log(`[${traceId}] Transaction created: ${transaction.id}`);
         console.log(`[${traceId}] Subaccount: ${transaction.subaccountCode} - ${transaction.subaccountName}`);
-        console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, Tax: ${transaction.taxAmount}`);
-        console.log(`[${traceId}] Tax applied: ${pendingMetadata.taxAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
+        console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, System Fee: ${transaction.systemFeeAmount}, Gateway Charge: ${transaction.gatewayCharge}`);
+        console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
         
         // Create tickets
         const quantity = pendingMetadata.quantity || 1;
@@ -688,20 +681,27 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
+
+        const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
+        if (existingTransaction) {
+          console.log(`[${traceId}] Transaction already processed: ${existingTransaction.id}`);
+          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`);
+          return;
+        }
         
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
-        console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, Tax: ${pendingMetadata.taxAmount}, Total: ${pendingMetadata.totalAmount}`);
+        console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
         
         // Create transaction
         const transaction = await prisma.transaction.create({
           data: {
-            userId: metadata.userId || pendingTx.userId,
+            userId: pendingMetadata.isGuest ? null : (metadata.userId || pendingTx.userId),
             churchId: pendingTx.churchId,
             type: 'donation',
             amount: data.amount / 100,
             baseAmount: pendingMetadata.baseAmount,
             convenienceFee: pendingMetadata.convenienceFee,
-            taxAmount: pendingMetadata.taxAmount,
+            systemFeeAmount: pendingMetadata.systemFeeAmount,
             totalAmount: pendingMetadata.totalAmount,
             currency: data.currency,
             status: 'completed',
@@ -715,24 +715,29 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             customerPhone: data.customer?.phone,
             cardLast4: data.authorization?.last4,
             cardBank: data.authorization?.bank,
-            systemFeeAmount: data.fees || 0,
+            gatewayCharge: data.fees ? data.fees / 100 : 0,
+            systemGatewayFeeRate: pendingMetadata.gatewayFeeRate || 0,
+            systemFeeRate: pendingMetadata.systemFeeRate || 0,
             subaccountCode: metadata.subaccountCode || data.subaccount?.subaccount_code,
             subaccountName: metadata.subaccountName || data.subaccount?.business_name,
             gatewayResponse: JSON.stringify(data),
+            isGuest: pendingMetadata.isGuest === true,
+            guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
+            guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
+            guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
           }
         });
         
         console.log(`[${traceId}] Transaction created: ${transaction.id}`);
         console.log(`[${traceId}] Subaccount: ${transaction.subaccountCode} - ${transaction.subaccountName}`);
-        console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, Tax: ${transaction.taxAmount}`);
-        console.log(`[${traceId}] Paystack gateway fee (data.fees): ${data.fees || 0} (currency: ${data.currency})`);
-        console.log(`[${traceId}] Tax applied: ${pendingMetadata.taxAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
+        console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, System Fee: ${transaction.systemFeeAmount}, Gateway Charge: ${transaction.gatewayCharge}`);
+        console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
         
         // Create donation record
         await prisma.donationTransaction.create({
           data: {
             campaignId: pendingMetadata.campaignId,
-            userId: pendingTx.userId,
+            userId: pendingMetadata.isGuest ? null : pendingTx.userId,
             churchId: pendingTx.churchId,
             amount: pendingMetadata.baseAmount,
             currency: data.currency,
@@ -740,6 +745,10 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             reference: data.reference,
             status: 'completed',
             isAnonymous: pendingMetadata.isAnonymous || false,
+            isGuest: pendingMetadata.isGuest === true,
+            guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
+            guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
+            guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
             donorName: pendingMetadata.donorName,
             donorPhone: pendingMetadata.donorPhone,
             notes: pendingMetadata.notes,
@@ -747,18 +756,21 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         });
         
         // Send donation receipt email with PDF
-        const user = await prisma.user.findUnique({ where: { id: pendingTx.userId } });
+        const isGuestDonation = pendingMetadata.isGuest === true;
+        const donorEmail = isGuestDonation ? pendingMetadata.guestEmail : (await prisma.user.findUnique({ where: { id: pendingTx.userId! } }))?.email;
+        const donorFirstName = isGuestDonation ? pendingMetadata.guestName.split(' ')[0] : (await prisma.user.findUnique({ where: { id: pendingTx.userId! } }))?.firstName;
+        const donorFullName = isGuestDonation ? pendingMetadata.guestName : `${donorFirstName} ${(await prisma.user.findUnique({ where: { id: pendingTx.userId! } }))?.lastName || ''}`;
         const campaign = await prisma.givingCampaign.findUnique({ 
           where: { id: pendingMetadata.campaignId },
           include: { church: { select: { name: true } } }
         });
         
-        if (user && campaign) {
+        if (donorEmail && campaign) {
           const receiptPDF = await generateReceiptPDF({
             receiptNumber: data.reference,
             type: 'donation',
-            customerName: `${user.firstName} ${user.lastName}`,
-            customerEmail: user.email,
+            customerName: donorFullName || '',
+            customerEmail: donorEmail,
             amount: pendingMetadata.baseAmount,
             currency: data.currency,
             paidAt: new Date(data.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
@@ -772,15 +784,16 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           });
           
           queueEmail(
-            user.email,
+            donorEmail,
             `Donation Receipt - ${campaign.name}`,
             donationReceiptTemplate({
-              firstName: user.firstName,
+              firstName: donorFirstName || 'Donor',
               amount: pendingMetadata.baseAmount,
               currency: data.currency,
               campaignName: campaign.name,
               reference: data.reference,
               isAnonymous: pendingMetadata.isAnonymous || false,
+              isGuest: pendingMetadata.isGuest === true,
               churchName: campaign.church.name
             }),
             [{ filename: `donation-receipt-${data.reference}.pdf`, content: receiptPDF }]
@@ -791,7 +804,10 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });
         
         console.log(`[${traceId}] Donation created`);
-        res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`);
+        const donationCallbackUrl = isGuestDonation
+          ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(pendingMetadata.guestEmail)}&guestName=${encodeURIComponent(pendingMetadata.guestName)}&amount=${pendingMetadata.baseAmount}&currency=${data.currency}`
+          : `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`;
+        res.redirect(donationCallbackUrl);
       } else {
         // Handle other payment types (event tickets, donations, etc.)
         console.log(`[${traceId}] Other payment type, redirecting to callback`);

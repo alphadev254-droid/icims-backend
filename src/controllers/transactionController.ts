@@ -28,9 +28,9 @@ export async function getTransactions(req: Request, res: Response): Promise<void
 
   let churchIds: string[] = [];
 
-  if (roleName === 'national_admin') {
+  if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -64,15 +64,17 @@ export async function getTransactions(req: Request, res: Response): Promise<void
           type: true,
           paymentMethod: true,
           isManual: true,
-          systemFeeAmount: true,
           subaccountName: true,
           cardLast4: true,
           cardBank: true,
           baseAmount: true,
           convenienceFee: true,
-          taxAmount: true,
+          systemFeeAmount: true,
           totalAmount: true,
           gateway: true,
+          isGuest: true,
+          guestName: true,
+          guestEmail: true,
           createdAt: true,
           church: { select: { name: true } },
         },
@@ -122,15 +124,17 @@ export async function getTransactions(req: Request, res: Response): Promise<void
         type: true,
         paymentMethod: true,
         isManual: true,
-        systemFeeAmount: true,
         subaccountName: true,
         cardLast4: true,
         cardBank: true,
         baseAmount: true,
         convenienceFee: true,
-        taxAmount: true,
+        systemFeeAmount: true,
         totalAmount: true,
         gateway: true,
+        isGuest: true,
+        guestName: true,
+        guestEmail: true,
         createdAt: true,
         user: { select: { firstName: true, lastName: true, email: true } },
         church: { select: { name: true } },

@@ -9,32 +9,32 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
     where: { id: userId },
     select: { 
       id: true,
-      nationalAdminId: true,
+      ministryAdminId: true,
       role: { select: { name: true } },
-      church: { select: { nationalAdminId: true } },
+      church: { select: { ministryAdminId: true } },
     },
   });
 
   if (!user) return {};
 
-  // Determine which nationalAdminId to use
-  let nationalAdminId: string | null = null;
+  // Determine which ministryAdminId to use
+  let ministryAdminId: string | null = null;
   const roleName = user.role?.name;
 
-  if (roleName === 'national_admin') {
-    nationalAdminId = userId;
-  } else if (roleName === 'member' && user.church?.nationalAdminId) {
-    nationalAdminId = user.church.nationalAdminId;
-  } else if (user.nationalAdminId) {
-    nationalAdminId = user.nationalAdminId;
+  if (roleName === 'ministry_admin') {
+    ministryAdminId = userId;
+  } else if (roleName === 'member' && user.church?.ministryAdminId) {
+    ministryAdminId = user.church.ministryAdminId;
+  } else if (user.ministryAdminId) {
+    ministryAdminId = user.ministryAdminId;
   }
 
-  if (!nationalAdminId) return {};
+  if (!ministryAdminId) return {};
 
   // Get active subscription
   const subscription = await prisma.subscription.findFirst({
     where: { 
-      nationalAdminId,
+      ministryAdminId,
       status: 'active',
     },
     include: {

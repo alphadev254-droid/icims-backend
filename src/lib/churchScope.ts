@@ -3,10 +3,10 @@ import prisma from './prisma';
 /**
  * Returns churchIds accessible to a user based on their role + location scope.
  *
- * national_admin      → churches where nationalAdminId = userId
- * regional_leader     → churches where church.region IN user.regions  (["__all__"] = all)
- * district_overseer   → churches where church.district IN user.districts  (["__all__"] = all)
- * local_admin         → churches where church.traditionalAuthority IN user.traditionalAuthorities (["__all__"] = all)
+ * ministry_admin      → churches where ministryAdminId = userId
+ * regional_admin     → churches where church.region IN user.regions  (["__all__"] = all)
+ * district_admin   → churches where church.district IN user.districts  (["__all__"] = all)
+ * branch_admin         → churches where church.traditionalAuthority IN user.traditionalAuthorities (["__all__"] = all)
  * member              → only their own churchId (if set)
  */
 export async function getAccessibleChurchIds(
@@ -18,10 +18,10 @@ export async function getAccessibleChurchIds(
   userId?: string,
 ): Promise<string[]> {
 
-  if (roleName === 'national_admin') {
+  if (roleName === 'ministry_admin') {
     if (userId) {
       const churches = await prisma.church.findMany({ 
-        where: { nationalAdminId: userId },
+        where: { ministryAdminId: userId },
         select: { id: true } 
       });
       return churches.map(c => c.id);
@@ -31,24 +31,24 @@ export async function getAccessibleChurchIds(
     return churches.map(c => c.id);
   }
 
-  // Get nationalAdminId for non-national_admin roles
-  let nationalAdminId: string | null = null;
+  // Get ministryAdminId for non-ministry_admin roles
+  let ministryAdminId: string | null = null;
   if (userId) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { nationalAdminId: true },
+      select: { ministryAdminId: true },
     });
-    nationalAdminId = user?.nationalAdminId || null;
+    ministryAdminId = user?.ministryAdminId || null;
   }
 
-  if (roleName === 'regional_leader') {
+  if (roleName === 'regional_admin') {
     if (!regions || regions.length === 0) return churchId ? [churchId] : [];
     const whereClause: any = { region: { in: regions } };
-    if (nationalAdminId) whereClause.nationalAdminId = nationalAdminId;
+    if (ministryAdminId) whereClause.ministryAdminId = ministryAdminId;
     
     if (regions.includes('__all__')) {
       const churches = await prisma.church.findMany({ 
-        where: nationalAdminId ? { nationalAdminId } : {},
+        where: ministryAdminId ? { ministryAdminId } : {},
         select: { id: true } 
       });
       return churches.map(c => c.id);
@@ -60,14 +60,14 @@ export async function getAccessibleChurchIds(
     return churches.map(c => c.id);
   }
 
-  if (roleName === 'district_overseer') {
+  if (roleName === 'district_admin') {
     if (!districts || districts.length === 0) return churchId ? [churchId] : [];
     const whereClause: any = { district: { in: districts } };
-    if (nationalAdminId) whereClause.nationalAdminId = nationalAdminId;
+    if (ministryAdminId) whereClause.ministryAdminId = ministryAdminId;
     
     if (districts.includes('__all__')) {
       const churches = await prisma.church.findMany({ 
-        where: nationalAdminId ? { nationalAdminId } : {},
+        where: ministryAdminId ? { ministryAdminId } : {},
         select: { id: true } 
       });
       return churches.map(c => c.id);
@@ -79,14 +79,14 @@ export async function getAccessibleChurchIds(
     return churches.map(c => c.id);
   }
 
-  if (roleName === 'local_admin') {
+  if (roleName === 'branch_admin') {
     if (!traditionalAuthorities || traditionalAuthorities.length === 0) return churchId ? [churchId] : [];
     const whereClause: any = { traditionalAuthority: { in: traditionalAuthorities } };
-    if (nationalAdminId) whereClause.nationalAdminId = nationalAdminId;
+    if (ministryAdminId) whereClause.ministryAdminId = ministryAdminId;
     
     if (traditionalAuthorities.includes('__all__')) {
       const churches = await prisma.church.findMany({ 
-        where: nationalAdminId ? { nationalAdminId } : {},
+        where: ministryAdminId ? { ministryAdminId } : {},
         select: { id: true } 
       });
       return churches.map(c => c.id);

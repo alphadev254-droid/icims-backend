@@ -86,7 +86,7 @@ export async function processKPIRecurrence() {
             recurringActive: true,
             parentKpiId: kpi.parentKpiId || kpi.id,
             recurrenceCount: kpi.recurrenceCount + 1,
-            nationalAdminId: kpi.nationalAdminId,
+            ministryAdminId: kpi.ministryAdminId,
             churchId: kpi.churchId,
           },
         });

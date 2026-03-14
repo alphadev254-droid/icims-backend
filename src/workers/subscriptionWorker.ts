@@ -88,7 +88,7 @@ export async function checkExpiringSubscriptions() {
 
 async function sendExpiringEmail(subscription: any, daysLeft: number) {
   const user = await prisma.user.findUnique({ 
-    where: { id: subscription.nationalAdminId },
+    where: { id: subscription.ministryAdminId },
     select: { firstName: true, email: true }
   });
   const pkg = subscription.package;
@@ -117,7 +117,7 @@ async function sendExpiringEmail(subscription: any, daysLeft: number) {
 
 async function sendExpiredEmail(subscription: any, daysSinceExpiry: number) {
   const user = await prisma.user.findUnique({ 
-    where: { id: subscription.nationalAdminId },
+    where: { id: subscription.ministryAdminId },
     select: { firstName: true, email: true }
   });
   const pkg = subscription.package;

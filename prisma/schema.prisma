@@ -37,14 +37,14 @@ model Role {
 // ─── Role ↔ Permission junction ────────────────────────────────────────────────
 
 model RolePermission {
-  nationalAdminId String   @default("GLOBAL")
+  ministryAdminId String   @default("GLOBAL")
   roleId          String
   permissionId    String
 
   role          Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission    Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
-  @@id([nationalAdminId, roleId, permissionId])
+  @@id([ministryAdminId, roleId, permissionId])
   @@map("role_permissions")
 }
 
@@ -75,7 +75,7 @@ model User {
   phone                  String?
   avatar                 String?
   churchId               String?
-  nationalAdminId        String?
+  ministryAdminId        String?
   accountCountry         String?  @map("account_country")
   regions                String?  @db.Text
   districts              String?  @db.Text
@@ -96,7 +96,7 @@ model User {
 
   role                   Role?    @relation(fields: [roleId], references: [id])
   church                 Church?  @relation(fields: [churchId], references: [id])
-  ownedChurches          Church[] @relation("NationalAdminChurches")
+  ownedChurches          Church[] @relation("MinistryAdminChurches")
   createdSubaccounts     Subaccount[] @relation("SubaccountCreator")
   tickets                EventTicket[]
   transactions           Transaction[]
@@ -144,13 +144,13 @@ model Church {
   memberCount          Int      @default(0)
   yearFounded          Int?
   branchCode           String?  @unique
-  nationalAdminId      String?
+  ministryAdminId      String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
   inviteToken   String?  @unique
 
-  nationalAdmin User?          @relation("NationalAdminChurches", fields: [nationalAdminId], references: [id])
+  ministryAdmin User?          @relation("MinistryAdminChurches", fields: [ministryAdminId], references: [id])
   users         User[]
   events        Event[]
   givingCampaigns GivingCampaign[]
@@ -174,7 +174,7 @@ model Church {
 model Subaccount {
   id               String   @id @default(cuid())
   churchId         String   @unique
-  nationalAdminId  String
+  ministryAdminId  String
   subaccountCode   String   @unique
   businessName     String
   settlementBank   String
@@ -186,7 +186,7 @@ model Subaccount {
   updatedAt        DateTime @updatedAt
 
   church           Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
-  nationalAdmin    User     @relation("SubaccountCreator", fields: [nationalAdminId], references: [id])
+  ministryAdmin    User     @relation("SubaccountCreator", fields: [ministryAdminId], references: [id])
 
   @@map("subaccounts")
 }
@@ -214,6 +214,7 @@ model Event {
   totalTickets  Int?
   ticketsSold   Int      @default(0)
   ticketSalesCutoff DateTime?
+  allowPublicTicketing Boolean @default(false)
   imageUrl      String?
   churchId      String
   createdById   String
@@ -234,19 +235,24 @@ model EventTicket {
   id            String   @id @default(cuid())
   ticketNumber  String   @unique
   eventId       String
-  userId        String
+  userId        String?  // null for guest tickets
   transactionId String?
   status        String   @default("confirmed") // reserved | confirmed | cancelled | used
   isManual      Boolean  @default(false) // true if created manually by admin
+  isGuest       Boolean  @default(false)
+  guestName     String?
+  guestEmail    String?
+  guestPhone    String?
   attended      Boolean  @default(false)
   attendedAt    DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   event         Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  user          User         @relation(fields: [userId], references: [id])
+  user          User?        @relation(fields: [userId], references: [id])
   transaction   Transaction? @relation(fields: [transactionId], references: [id])
 
+  @@index([isGuest])
   @@map("event_tickets")
 }
 
@@ -259,7 +265,7 @@ model Transaction {
   status        String   @default("pending") // pending | completed | failed | refunded
   paymentMethod String   @default("cash") // cash | mobile_money | card | bank_transfer
   reference     String?  @unique
-  userId        String
+  userId        String?  // null for guest transactions
   churchId      String?
   eventId       String?  // For quick event filtering
   type          String   @default("event_ticket") // event_ticket | donation | subscription
@@ -272,31 +278,33 @@ model Transaction {
   gatewayResponse String?  @db.LongText
   // Fee breakdown
   baseAmount      Float?   // Original amount (what church gets)
-  convenienceFee  Float?   // 2% convenience fee
-  taxAmount       Float?   // 17.5% tax on convenience fee
-  totalAmount     Float?   // baseAmount + convenienceFee + taxAmount
-  totalFees     Float?   // Total fees charged
-  paystackFee   Float?   // Paystack's fee
-  subaccountFee Float?   // Subaccount's fee
-  feeBearer     String?  // account | subaccount | customer
-  feeRate       Float?   // Fee rate used for calculation (e.g. 0.029 for 2.9%)
-  systemFeeAmount Float? // Calculated fee amount based on feeRate
+  convenienceFee  Float?   // Gateway processing fee (2% Paychangu, 2.9% Paystack)
+  systemFeeAmount Float?   // Platform system fee (17.5% Malawi, 16% Kenya of baseAmount)
+  totalAmount     Float?   // baseAmount + convenienceFee + systemFeeAmount
+  gatewayCharge   Float?   // Actual charge reported by gateway (Paychangu: charge field, Paystack: fees field)
+  systemGatewayFeeRate Float?   // Gateway fee rate used e.g. 0.02 for Malawi, 0.029 for Kenya
+  systemFeeRate   Float?   // Platform fee rate used e.g. 0.005 for both
   // Gateway routing
   gateway         String?  // paystack | paychangu
   gatewayCountry  String?  // Kenya | Malawi
   // Subaccount info
   subaccountCode String?
   subaccountName String?
-  // Customer info
+  // Customer info (from payment gateway)
   customerEmail String?
   customerPhone String?
   authorizationCode String?
   cardLast4     String?
   cardBank      String?
+  // Guest info (typed by user on frontend)
+  isGuest       Boolean  @default(false)
+  guestName     String?
+  guestEmail    String?
+  guestPhone    String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  user          User          @relation(fields: [userId], references: [id])
+  user          User?         @relation(fields: [userId], references: [id])
   church        Church?       @relation(fields: [churchId], references: [id])
   tickets       EventTicket[]
 
@@ -318,7 +326,7 @@ model PendingTransaction {
   amount    Float
   currency  String   @default("NGN")
   status    String   @default("pending") // pending | completed | failed | abandoned
-  userId    String
+  userId    String?
   churchId  String
   eventId   String?
   type      String   @default("event_ticket")
@@ -350,6 +358,7 @@ model GivingCampaign {
   startDate     DateTime @default(now())
   endDate       DateTime?
   imageUrl      String?
+  allowPublicDonations Boolean @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -365,7 +374,7 @@ model GivingCampaign {
 model DonationTransaction {
   id            String   @id @default(cuid())
   campaignId    String
-  userId        String
+  userId        String?
   churchId      String
   amount        Float
   currency      String   @default("MWK")
@@ -374,6 +383,10 @@ model DonationTransaction {
   reference     String?  @unique
   status        String   @default("pending") // pending | completed | failed
   isAnonymous   Boolean  @default(false)
+  isGuest       Boolean  @default(false)
+  guestName     String?
+  guestEmail    String?
+  guestPhone    String?
   donorName     String?
   donorEmail    String?
   donorPhone    String?
@@ -382,7 +395,7 @@ model DonationTransaction {
   updatedAt     DateTime @updatedAt
 
   campaign      GivingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  user          User     @relation(fields: [userId], references: [id])
+  user          User?    @relation(fields: [userId], references: [id])
   church        Church   @relation(fields: [churchId], references: [id])
 
   @@index([campaignId])
@@ -495,7 +508,7 @@ model Resource {
 
 model Subscription {
   id              String   @id @default(cuid())
-  nationalAdminId String   @unique
+  ministryAdminId String   @unique
   packageId       String
   status          String   @default("active") // active | expired | cancelled
   startsAt        DateTime
@@ -507,7 +520,7 @@ model Subscription {
 
   package         Package  @relation(fields: [packageId], references: [id])
 
-  @@index([nationalAdminId])
+  @@index([ministryAdminId])
   @@index([status])
   @@index([expiresAt])
   @@map("subscriptions")
@@ -561,7 +574,7 @@ model PackageFeatureLink {
 
 model Payment {
   id              String   @id @default(cuid())
-  nationalAdminId String
+  ministryAdminId String
   packageId       String?
   amount          Float
   currency        String   @default("MWK")
@@ -581,10 +594,11 @@ model Payment {
   // Fee breakdown
   baseAmount      Float?   // Original package price
   convenienceFee  Float?   // 2% convenience fee
-  taxAmount       Float?   // 17.5% tax on convenience fee
-  totalAmount     Float?   // baseAmount + convenienceFee + taxAmount
-  systemFeeAmount Float?   // Fee charged to user
-  feeRate         Float?   // Fee rate used (e.g. 0.029)
+  systemFeeAmount Float?   // Platform system fee on convenience fee
+  totalAmount     Float?   // baseAmount + convenienceFee + systemFeeAmount
+  gatewayCharge   Float?   // Actual charge reported by gateway
+  systemGatewayFeeRate Float?  // Gateway fee rate used e.g. 0.02 Malawi, 0.029 Kenya
+  systemFeeRate   Float?   // Platform fee rate used e.g. 0.005
   // Gateway routing
   gateway         String?  // paystack | paychangu
   // Subaccount info
@@ -605,7 +619,7 @@ model Payment {
 
   package         Package? @relation(fields: [packageId], references: [id])
 
-  @@index([nationalAdminId])
+  @@index([ministryAdminId])
   @@index([status])
   @@index([paidAt])
   @@index([reference])
@@ -619,7 +633,7 @@ model Payment {
 model Wallet {
   id              String   @id @default(cuid())
   churchId        String   @unique
-  nationalAdminId String
+  ministryAdminId String
   balance         Float    @default(0)
   currency        String   @default("MWK")
   createdAt       DateTime @default(now())
@@ -654,7 +668,7 @@ model WalletTransaction {
 model Withdrawal {
   id              String   @id @default(cuid())
   walletId        String
-  nationalAdminId String
+  ministryAdminId String
   initiatedBy     String?  // User who initiated the withdrawal
   amount          Float
   fee             Float
@@ -702,14 +716,14 @@ model KPI {
   recurringActive Boolean  @default(true)
   parentKpiId     String?
   recurrenceCount Int      @default(0)
-  nationalAdminId String
+  ministryAdminId String
   churchId        String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   church          Church   @relation(fields: [churchId], references: [id])
 
-  @@index([nationalAdminId])
+  @@index([ministryAdminId])
   @@index([churchId])
   @@index([category])
   @@index([status])
@@ -780,7 +794,7 @@ model EmailQueue {
   to          String
   subject     String
   html        String   @db.Text
-  attachments String?  @db.Text  // JSON array of {filename, content(base64)}
+  attachments String?  @db.LongText // JSON array of {filename, content(base64)}
   type        String   // user_created | registration | password_reset | password_changed | ticket_purchase | donation_receipt
   status      String   @default("pending") // pending | sent | failed
   attempts    Int      @default(0)
@@ -805,7 +819,7 @@ model ReminderCache {
   age             Int?
   years           Int?
   churchId        String
-  nationalAdminId String?
+  ministryAdminId String?
   eventId         String?  // For event reminders
   eventTitle      String?  // Denormalized for quick display
   lastNotified    DateTime?
@@ -820,7 +834,7 @@ model ReminderCache {
   @@unique([userId, type, upcomingDate, eventId])
   @@index([upcomingDate])
   @@index([churchId])
-  @@index([nationalAdminId])
+  @@index([ministryAdminId])
   @@index([type])
   @@index([notifyAt])
   @@index([daysUntil])

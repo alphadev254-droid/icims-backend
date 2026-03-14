@@ -30,16 +30,16 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
   // Check if user's account country is Kenya
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true }
+    select: { accountCountry: true, ministryAdminId: true }
   });
 
   let accountCountry = user?.accountCountry;
-  if (!accountCountry && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!accountCountry && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    accountCountry = nationalAdmin?.accountCountry;
+    accountCountry = ministryAdmin?.accountCountry;
   }
 
   if (accountCountry !== 'Kenya') {
@@ -72,12 +72,12 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
     return;
   }
 
-  // Get nationalAdminId from user or church
-  let nationalAdminId = userId;
-  if (roleName === 'district_overseer' || roleName === 'local_admin') {
+  // Get ministryAdminId from user or church
+  let ministryAdminId = userId;
+  if (roleName === 'district_admin' || roleName === 'branch_admin') {
     const userRecord = await prisma.user.findUnique({ where: { id: userId } });
-    if (userRecord?.nationalAdminId) {
-      nationalAdminId = userRecord.nationalAdminId;
+    if (userRecord?.ministryAdminId) {
+      ministryAdminId = userRecord.ministryAdminId;
     }
   }
 
@@ -106,7 +106,7 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
     const subaccount = await prisma.subaccount.create({
       data: {
         churchId,
-        nationalAdminId,
+        ministryAdminId,
         subaccountCode: subaccount_code,
         businessName,
         settlementBank,
@@ -134,16 +134,16 @@ export async function updateSubaccount(req: Request, res: Response): Promise<voi
   // Check if user's account country is Kenya
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true }
+    select: { accountCountry: true, ministryAdminId: true }
   });
 
   let accountCountry = user?.accountCountry;
-  if (!accountCountry && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!accountCountry && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    accountCountry = nationalAdmin?.accountCountry;
+    accountCountry = ministryAdmin?.accountCountry;
   }
 
   if (accountCountry !== 'Kenya') {
@@ -207,16 +207,16 @@ export async function getSubaccount(req: Request, res: Response): Promise<void> 
   // Check if user's account country is Kenya
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true }
+    select: { accountCountry: true, ministryAdminId: true }
   });
 
   let accountCountry = user?.accountCountry;
-  if (!accountCountry && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!accountCountry && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    accountCountry = nationalAdmin?.accountCountry;
+    accountCountry = ministryAdmin?.accountCountry;
   }
 
   if (accountCountry !== 'Kenya') {

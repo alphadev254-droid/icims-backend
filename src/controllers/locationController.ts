@@ -12,32 +12,32 @@ export async function getRegions(req: Request, res: Response): Promise<void> {
   // Get user's country
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true, churchId: true }
+    select: { accountCountry: true, ministryAdminId: true, churchId: true }
   });
 
   let country = user?.accountCountry;
 
   // If user doesn't have accountCountry, get it from their national admin
-  if (!country && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!country && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    country = nationalAdmin?.accountCountry;
+    country = ministryAdmin?.accountCountry;
   }
 
   // If still no country and user is a member, get it from church's national admin
   if (!country && user?.churchId) {
     const church = await prisma.church.findUnique({
       where: { id: user.churchId },
-      select: { nationalAdminId: true }
+      select: { ministryAdminId: true }
     });
-    if (church?.nationalAdminId) {
-      const nationalAdmin = await prisma.user.findUnique({
-        where: { id: church.nationalAdminId },
+    if (church?.ministryAdminId) {
+      const ministryAdmin = await prisma.user.findUnique({
+        where: { id: church.ministryAdminId },
         select: { accountCountry: true }
       });
-      country = nationalAdmin?.accountCountry;
+      country = ministryAdmin?.accountCountry;
     }
   }
 
@@ -68,32 +68,32 @@ export async function getDistricts(req: Request, res: Response): Promise<void> {
   // Get user's country
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true, churchId: true }
+    select: { accountCountry: true, ministryAdminId: true, churchId: true }
   });
 
   let country = user?.accountCountry;
 
   // If user doesn't have accountCountry, get it from their national admin
-  if (!country && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!country && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    country = nationalAdmin?.accountCountry;
+    country = ministryAdmin?.accountCountry;
   }
 
   // If still no country and user is a member, get it from church's national admin
   if (!country && user?.churchId) {
     const church = await prisma.church.findUnique({
       where: { id: user.churchId },
-      select: { nationalAdminId: true }
+      select: { ministryAdminId: true }
     });
-    if (church?.nationalAdminId) {
-      const nationalAdmin = await prisma.user.findUnique({
-        where: { id: church.nationalAdminId },
+    if (church?.ministryAdminId) {
+      const ministryAdmin = await prisma.user.findUnique({
+        where: { id: church.ministryAdminId },
         select: { accountCountry: true }
       });
-      country = nationalAdmin?.accountCountry;
+      country = ministryAdmin?.accountCountry;
     }
   }
 
@@ -124,32 +124,32 @@ export async function getTraditionalAuthorities(req: Request, res: Response): Pr
   // Get user's country
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true, churchId: true }
+    select: { accountCountry: true, ministryAdminId: true, churchId: true }
   });
 
   let country = user?.accountCountry;
 
   // If user doesn't have accountCountry, get it from their national admin
-  if (!country && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!country && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    country = nationalAdmin?.accountCountry;
+    country = ministryAdmin?.accountCountry;
   }
 
   // If still no country and user is a member, get it from church's national admin
   if (!country && user?.churchId) {
     const church = await prisma.church.findUnique({
       where: { id: user.churchId },
-      select: { nationalAdminId: true }
+      select: { ministryAdminId: true }
     });
-    if (church?.nationalAdminId) {
-      const nationalAdmin = await prisma.user.findUnique({
-        where: { id: church.nationalAdminId },
+    if (church?.ministryAdminId) {
+      const ministryAdmin = await prisma.user.findUnique({
+        where: { id: church.ministryAdminId },
         select: { accountCountry: true }
       });
-      country = nationalAdmin?.accountCountry;
+      country = ministryAdmin?.accountCountry;
     }
   }
 
@@ -181,32 +181,32 @@ export async function getVillages(req: Request, res: Response): Promise<void> {
   // Get user's country
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountCountry: true, nationalAdminId: true, churchId: true }
+    select: { accountCountry: true, ministryAdminId: true, churchId: true }
   });
 
   let country = user?.accountCountry;
 
   // If user doesn't have accountCountry, get it from their national admin
-  if (!country && user?.nationalAdminId) {
-    const nationalAdmin = await prisma.user.findUnique({
-      where: { id: user.nationalAdminId },
+  if (!country && user?.ministryAdminId) {
+    const ministryAdmin = await prisma.user.findUnique({
+      where: { id: user.ministryAdminId },
       select: { accountCountry: true }
     });
-    country = nationalAdmin?.accountCountry;
+    country = ministryAdmin?.accountCountry;
   }
 
   // If still no country and user is a member, get it from church's national admin
   if (!country && user?.churchId) {
     const church = await prisma.church.findUnique({
       where: { id: user.churchId },
-      select: { nationalAdminId: true }
+      select: { ministryAdminId: true }
     });
-    if (church?.nationalAdminId) {
-      const nationalAdmin = await prisma.user.findUnique({
-        where: { id: church.nationalAdminId },
+    if (church?.ministryAdminId) {
+      const ministryAdmin = await prisma.user.findUnique({
+        where: { id: church.ministryAdminId },
         select: { accountCountry: true }
       });
-      country = nationalAdmin?.accountCountry;
+      country = ministryAdmin?.accountCountry;
     }
   }
 

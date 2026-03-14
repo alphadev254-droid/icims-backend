@@ -29,6 +29,14 @@ import teamCommunicationRoutes from './routes/teamCommunication';
 import reminderRoutes from './routes/reminderRoutes';
 import { errorHandler } from './middleware/errorHandler';
 
+declare global {
+  namespace Express {
+    interface Request {
+      rawBody?: Buffer;
+    }
+  }
+}
+
 const app = express();
 
 // ─── CORS — allow frontend origin with credentials ─────────────────────────
@@ -36,6 +44,13 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:8080',
   credentials: true,   // needed for cookies
 }));
+
+// ─── Raw body capture for webhook signature verification ──────────────────
+app.use('/api/webhooks/paystack', express.raw({ type: 'application/json' }), (req, _res, next) => {
+  req.rawBody = req.body as Buffer;
+  req.body = JSON.parse(req.body.toString());
+  next();
+});
 
 // ─── Body parsing & cookies ────────────────────────────────────────────────
 app.use(express.json());

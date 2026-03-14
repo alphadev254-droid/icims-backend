@@ -26,7 +26,8 @@ const baseEventSchema = z.object({
   currency: z.enum(['MWK', 'KSH']).optional(),
   totalTickets: z.number().optional(),
   ticketSalesCutoff: z.string().optional(),
-  imageUrl: z.string().optional(),
+  allowPublicTicketing: z.boolean().optional().default(false),
+  imageUrl: z.string().nullable().optional(),
 });
 
 const eventSchema = baseEventSchema.refine(data => new Date(data.endDate) >= new Date(data.date), {
@@ -70,10 +71,10 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
       return;
     }
     churchIds = [churchId];
-  } else if (roleName === 'national_admin') {
+  } else if (roleName === 'ministry_admin') {
     // National admin sees events from their churches
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -357,8 +358,12 @@ export async function getEventTickets(req: Request, res: Response): Promise<void
       attended: true,
       attendedAt: true,
       createdAt: true,
+      isGuest: true,
+      guestName: true,
+      guestEmail: true,
+      guestPhone: true,
       user: { select: { id: true, firstName: true, lastName: true, email: true } },
-      transaction: { select: { amount: true, currency: true, paymentMethod: true } },
+      transaction: { select: { amount: true, baseAmount: true, currency: true, paymentMethod: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -495,7 +500,7 @@ export async function getTicketTransaction(req: Request, res: Response): Promise
             channel: true,
             baseAmount: true,
             convenienceFee: true,
-            taxAmount: true,
+            systemFeeAmount: true,
             totalAmount: true,
             gateway: true,
           },
@@ -529,10 +534,9 @@ export async function getTicketTransaction(req: Request, res: Response): Promise
             notes: true,
             createdAt: true,
             subaccountName: true,
-            feeRate: true,
             baseAmount: true,
             convenienceFee: true,
-            taxAmount: true,
+            systemFeeAmount: true,
             totalAmount: true,
             gateway: true,
           },
@@ -594,13 +598,17 @@ export async function downloadTicket(req: Request, res: Response): Promise<void>
     return;
   }
 
+  const attendeeName = ticket.isGuest
+    ? (ticket.guestName || 'Guest')
+    : `${ticket.user!.firstName} ${ticket.user!.lastName}`;
+
   const pdfBuffer = await generateTicketPDF({
     ticketNumber: ticket.ticketNumber,
     eventTitle: ticket.event.title,
     eventDate: new Date(ticket.event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
     eventEndDate: new Date(ticket.event.endDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
     eventLocation: ticket.event.location,
-    attendeeName: `${ticket.user.firstName} ${ticket.user.lastName}`,
+    attendeeName,
     churchName: ticket.event.church.name,
     amount: ticket.transaction?.amount || 0,
     currency: ticket.transaction?.currency || ticket.event.currency || 'MWK',

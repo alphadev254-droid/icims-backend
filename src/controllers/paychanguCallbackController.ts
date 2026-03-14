@@ -1,49 +1,100 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import axios from 'axios';
 
 export async function paychanguCallback(req: Request, res: Response): Promise<void> {
-  const { tx_ref, status } = req.query;
+  const { tx_ref } = req.query;
   const traceId = `CALLBACK-${Date.now()}`;
-  
+
   console.log(`[${traceId}] ========== PAYCHANGU CALLBACK ==========`);
-  console.log(`[${traceId}] Query params:`, req.query);
-  console.log(`[${traceId}] tx_ref: ${tx_ref}, status: ${status}`);
-  
+  console.log(`[${traceId}] tx_ref: ${tx_ref}`);
+
   const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
-  
-   // Get transaction type from completed transaction or pending transaction
-  let transactionType = 'package_subscription';
+  const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
+
+  if (!tx_ref) {
+    res.redirect(`${FRONTEND_URL}/payment/callback?status=failed`);
+    return;
+  }
+
   try {
-    // First check completed transaction (webhook may have already processed)
+    // 1. Check if webhook already processed this — Transaction exists
     const completedTx = await prisma.transaction.findFirst({
       where: { reference: String(tx_ref) },
-      select: { type: true }
+      select: {
+        type: true,
+        isGuest: true,
+        guestEmail: true,
+        guestName: true,
+        baseAmount: true,
+        currency: true,
+        reference: true,
+        eventId: true,
+      },
     });
-    
+
     if (completedTx) {
-      transactionType = completedTx.type;
-      console.log(`[${traceId}] Transaction type from completed: ${transactionType}`);
-    } else {
-      // Fallback to pending transaction
-      const pendingTx = await prisma.pendingTransaction.findUnique({
-        where: { reference: String(tx_ref) },
-        select: { type: true }
+      console.log(`[${traceId}] Webhook already processed — redirecting to success`);
+      const params = new URLSearchParams({
+        status: 'success',
+        type: completedTx.type,
+        reference: String(tx_ref),
+        ...(completedTx.isGuest && {
+          isGuest: 'true',
+          guestEmail: completedTx.guestEmail || '',
+          guestName: completedTx.guestName || '',
+          amount: String(completedTx.baseAmount || ''),
+          currency: completedTx.currency || '',
+          eventId: completedTx.eventId || '',
+        }),
       });
-      if (pendingTx) {
-        transactionType = pendingTx.type;
-        console.log(`[${traceId}] Transaction type from pending: ${transactionType}`);
-      }
+      res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
+      return;
     }
-  } catch (error) {
-    console.error(`[${traceId}] Error fetching transaction type:`, error);
-  }
-  
-  // Redirect user to frontend with transaction reference
-  if (status === 'success' || !status) {
-    console.log(`[${traceId}] Redirecting to success page`);
-    res.redirect(`${FRONTEND_URL}/payment/callback?reference=${tx_ref}&status=success&type=${transactionType}`);
-  } else {
-    console.log(`[${traceId}] Redirecting to failure page`);
-    res.redirect(`${FRONTEND_URL}/payment/callback?reference=${tx_ref}&status=failed&type=${transactionType}`);
+
+    // 2. Webhook hasn't fired yet — verify with Paychangu API
+    console.log(`[${traceId}] Verifying with Paychangu API...`);
+    const verifyResponse = await axios.get(
+      `https://api.paychangu.com/verify-payment/${tx_ref}`,
+      { headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}` } }
+    );
+
+    const verified = verifyResponse.data.data?.status === 'success';
+    console.log(`[${traceId}] Paychangu verification: ${verified}`);
+
+    if (!verified) {
+      res.redirect(`${FRONTEND_URL}/payment/callback?status=failed&reference=${tx_ref}`);
+      return;
+    }
+
+    // 3. Verified — get guest info from pending transaction metadata
+    const pendingTx = await prisma.pendingTransaction.findUnique({
+      where: { reference: String(tx_ref) },
+      select: { type: true, metadata: true, eventId: true },
+    });
+
+    const type = pendingTx?.type || 'event_ticket';
+    const metadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
+    const isGuest = metadata.isGuest === true;
+
+    const params = new URLSearchParams({
+      status: 'success',
+      type,
+      reference: String(tx_ref),
+      ...(isGuest && {
+        isGuest: 'true',
+        guestEmail: metadata.guestEmail || '',
+        guestName: metadata.guestName || '',
+        amount: String(metadata.baseAmount || ''),
+        currency: metadata.currency || '',
+        eventId: pendingTx?.eventId || '',
+      }),
+    });
+
+    res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
+
+  } catch (error: any) {
+    console.error(`[${traceId}] Callback error:`, error.message);
+    res.redirect(`${FRONTEND_URL}/payment/callback?status=failed&reference=${tx_ref}`);
   }
 }

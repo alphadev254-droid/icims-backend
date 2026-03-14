@@ -10,10 +10,10 @@ export async function getChurches(req: Request, res: Response): Promise<void> {
 
   let churchIds: string[] = [];
 
-  if (role === 'national_admin' && userId) {
+  if (role === 'ministry_admin' && userId) {
     // National admin sees churches they own
     const churches = await prisma.church.findMany({
-      where: { nationalAdminId: userId },
+      where: { ministryAdminId: userId },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -115,7 +115,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  if (role !== 'national_admin') {
+  if (role !== 'ministry_admin') {
     res.status(403).json({ success: false, message: 'Only national admins can create churches' });
     return;
   }
@@ -147,7 +147,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
       region, district, traditionalAuthority, village,
       address, phone, email: email || undefined, website, pastorName, yearFounded,
       branchCode,
-      nationalAdminId: adminUserId,
+      ministryAdminId: adminUserId,
     },
     include: { _count: { select: { users: true } } },
   });
@@ -191,9 +191,9 @@ export async function updateChurch(req: Request, res: Response): Promise<void> {
   // Check access permissions
   let hasAccess = false;
   
-  if (role === 'national_admin') {
+  if (role === 'ministry_admin') {
     // National admin can update churches they own
-    hasAccess = church.nationalAdminId === userId;
+    hasAccess = church.ministryAdminId === userId;
   } else {
     // Other roles use the existing scope logic
     const churchId = req.user?.churchId;
@@ -263,6 +263,7 @@ export async function getChurchByInvite(req: Request, res: Response): Promise<vo
 
 export async function generateInviteLink(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const role = req.user?.role ?? 'member';
   
   if (!userId) { 
@@ -276,27 +277,17 @@ export async function generateInviteLink(req: Request, res: Response): Promise<v
     return; 
   }
 
-  // Check access permissions based on role
-  let hasAccess = false;
+  // Check access permissions using getAccessibleChurchIds
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    role,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
   
-  if (role === 'national_admin') {
-    // National admin can only generate links for churches they own
-    hasAccess = church.nationalAdminId === userId;
-  } else if (role === 'regional_leader') {
-    // Regional leader can generate links for churches in their regions
-    const regions = req.user?.regions || [];
-    hasAccess = regions.includes('__all__') || !!(church.region && regions.includes(church.region));
-  } else if (role === 'district_overseer') {
-    // District overseer can generate links for churches in their districts
-    const districts = req.user?.districts || [];
-    hasAccess = districts.includes('__all__') || !!(church.district && districts.includes(church.district));
-  } else if (role === 'local_admin') {
-    // Local admin can generate links for churches in their traditional authorities
-    const tas = req.user?.traditionalAuthorities || [];
-    hasAccess = tas.includes('__all__') || !!(church.traditionalAuthority && tas.includes(church.traditionalAuthority));
-  }
-  
-  if (!hasAccess) { 
+  if (!accessibleChurchIds.includes(church.id)) { 
     res.status(403).json({ success: false, message: 'Access denied' }); 
     return; 
   }
@@ -334,9 +325,9 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
   // Check access permissions
   let hasAccess = false;
   
-  if (role === 'national_admin') {
+  if (role === 'ministry_admin') {
     // National admin can delete churches they own
-    hasAccess = church.nationalAdminId === userId;
+    hasAccess = church.ministryAdminId === userId;
   } else {
     // Other roles use the existing scope logic
     const churchId = req.user?.churchId;
@@ -371,8 +362,8 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
     await tx.meeting.deleteMany({ where: { churchId: church.id } });
     await tx.announcement.deleteMany({ where: { churchId: church.id } });
     await tx.resource.deleteMany({ where: { churchId: church.id } });
-    // Payment model uses nationalAdminId, not churchId
-    await tx.payment.deleteMany({ where: { nationalAdminId: church.nationalAdminId || undefined } });
+    // Payment model uses ministryAdminId, not churchId
+    await tx.payment.deleteMany({ where: { ministryAdminId: church.ministryAdminId || undefined } });
     await tx.transaction.deleteMany({ where: { churchId: church.id } });
     
     // Update users to remove church association (but don't delete the users)

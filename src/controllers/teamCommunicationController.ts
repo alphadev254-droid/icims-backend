@@ -25,7 +25,7 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    const adminRoles = ['national_admin', 'regional_leader', 'district_overseer', 'local_admin'];
+    const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
     const isAdmin = user.role && adminRoles.includes(user.role.name);
 
     let teamIds: string[] = [];
@@ -400,7 +400,7 @@ export const getPostableTeams = async (req: Request, res: Response) => {
     teams = [...leaderTeams];
 
     // If admin role, get teams in their scope
-    const adminRoles = ['national_admin', 'regional_leader', 'district_overseer', 'local_admin'];
+    const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
     if (user.role && adminRoles.includes(user.role.name)) {
       const districts = user.districts ? JSON.parse(user.districts) : undefined;
       const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
@@ -460,7 +460,7 @@ async function canUserPostToTeam(userId: string, teamId: string): Promise<boolea
   if (isLeader) return true;
 
   // Admin roles can post to teams in their scope
-  const adminRoles = ['national_admin', 'regional_leader', 'district_overseer', 'local_admin'];
+  const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
   if (user.role && adminRoles.includes(user.role.name)) {
     const team = await prisma.team.findUnique({
       where: { id: teamId },
@@ -511,7 +511,7 @@ async function canUserEditOrDelete(userId: string, teamId: string, authorId: str
   if (isLeader) return true;
 
   // Admin with scope can edit/delete
-  const adminRoles = ['national_admin', 'regional_leader', 'district_overseer', 'local_admin'];
+  const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
   if (user.role && adminRoles.includes(user.role.name)) {
     const team = await prisma.team.findUnique({
       where: { id: teamId },

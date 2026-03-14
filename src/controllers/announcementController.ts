@@ -42,13 +42,13 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
   let traditionalAuthorities: string[] | undefined;
   let regions: string[] | undefined;
 
-  if (roleName === 'district_overseer') {
+  if (roleName === 'district_admin') {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
     districts = user?.districts ? JSON.parse(user.districts) : undefined;
-  } else if (roleName === 'local_admin') {
+  } else if (roleName === 'branch_admin') {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
     traditionalAuthorities = user?.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
-  } else if (roleName === 'regional_leader') {
+  } else if (roleName === 'regional_admin') {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
     regions = user?.regions ? JSON.parse(user.regions) : undefined;
   }
@@ -84,6 +84,7 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
 
 export async function createAnnouncement(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role;
   
   const parsed = schema.safeParse(req.body);
@@ -92,37 +93,19 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { churchId } = parsed.data;
+  const { churchId: targetChurchId } = parsed.data;
 
   // Verify user has access to this church
-  let hasAccess = false;
-  if (roleName === 'national_admin') {
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { nationalAdminId: true } });
-    hasAccess = church?.nationalAdminId === userId;
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { traditionalAuthority: true } });
-    if (user?.traditionalAuthorities && church) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      hasAccess = tas.includes('__all__') || tas.includes(church.traditionalAuthority);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { district: true } });
-    if (user?.districts && church) {
-      const districts = JSON.parse(user.districts);
-      hasAccess = districts.includes('__all__') || districts.includes(church.district);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    const church = await prisma.church.findUnique({ where: { id: churchId }, select: { region: true } });
-    if (user?.regions && church) {
-      const regions = JSON.parse(user.regions);
-      hasAccess = regions.includes('__all__') || regions.includes(church.region);
-    }
-  }
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (!hasAccess) {
+  if (!accessibleChurchIds.includes(targetChurchId)) {
     res.status(403).json({ success: false, message: 'Access denied to this church' });
     return;
   }
@@ -138,6 +121,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
 
 export async function updateAnnouncement(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role;
   const id = String(req.params.id);
 
@@ -151,30 +135,16 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
   }
   
   // Verify user has access to this church
-  let hasAccess = false;
-  if (roleName === 'national_admin') {
-    hasAccess = item.church.nationalAdminId === userId;
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      hasAccess = tas.includes('__all__') || tas.includes(item.church.traditionalAuthority);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      hasAccess = districts.includes('__all__') || districts.includes(item.church.district);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      hasAccess = regions.includes('__all__') || regions.includes(item.church.region);
-    }
-  }
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (!hasAccess) {
+  if (!accessibleChurchIds.includes(item.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
@@ -194,6 +164,7 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
 
 export async function deleteAnnouncement(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
   const roleName = req.user?.role;
   const id = String(req.params.id);
 
@@ -207,30 +178,16 @@ export async function deleteAnnouncement(req: Request, res: Response): Promise<v
   }
   
   // Verify user has access to delete
-  let hasAccess = false;
-  if (roleName === 'national_admin') {
-    hasAccess = item.church.nationalAdminId === userId;
-  } else if (roleName === 'local_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    if (user?.traditionalAuthorities) {
-      const tas = JSON.parse(user.traditionalAuthorities);
-      hasAccess = tas.includes('__all__') || tas.includes(item.church.traditionalAuthority);
-    }
-  } else if (roleName === 'district_overseer') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    if (user?.districts) {
-      const districts = JSON.parse(user.districts);
-      hasAccess = districts.includes('__all__') || districts.includes(item.church.district);
-    }
-  } else if (roleName === 'regional_leader') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    if (user?.regions) {
-      const regions = JSON.parse(user.regions);
-      hasAccess = regions.includes('__all__') || regions.includes(item.church.region);
-    }
-  }
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
 
-  if (!hasAccess) {
+  if (!accessibleChurchIds.includes(item.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }

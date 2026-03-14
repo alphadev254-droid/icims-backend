@@ -5,6 +5,7 @@ import {
   getPackages, getCurrentPackage,
   getFeatures, createFeature, deleteFeature,
   setPackageFeatures,
+  calculateFees,
   getPayments, createPayment, updatePayment,
 } from '../controllers/packageController';
 
@@ -14,8 +15,9 @@ const router = Router();
 router.use(authenticate);
 
 // ─── Package tiers ────────────────────────────────────────────────────────────
-router.get('/',          getPackages);  // Public - no permission needed
-router.get('/current',   getCurrentPackage);  // User's own package
+router.get('/',                getPackages);
+router.get('/current',         getCurrentPackage);
+router.get('/calculate-fees',  calculateFees);
 
 // ─── Package features (manage which features each package includes) ───────────
 router.get('/features',           getFeatures);  // Public - no permission needed

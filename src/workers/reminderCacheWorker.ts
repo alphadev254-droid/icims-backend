@@ -38,14 +38,14 @@ export async function refreshReminderCache() {
       churchId: true,
       maritalStatus: true,
       role: { select: { name: true } },
-      church: { select: { nationalAdminId: true } },
+      church: { select: { ministryAdminId: true } },
     },
   });
 
   const reminders = [];
 
   for (const user of users) {
-    const nationalAdminId = user.church?.nationalAdminId || null;
+    const ministryAdminId = user.church?.ministryAdminId || null;
 
     // Birthday
     if (user.dateOfBirth) {
@@ -60,7 +60,7 @@ export async function refreshReminderCache() {
           daysUntil,
           age: next.getFullYear() - user.dateOfBirth.getFullYear(),
           churchId: user.churchId!,
-          nationalAdminId,
+          ministryAdminId,
         });
       }
     }
@@ -78,7 +78,7 @@ export async function refreshReminderCache() {
           daysUntil,
           years: next.getFullYear() - user.weddingDate.getFullYear(),
           churchId: user.churchId!,
-          nationalAdminId,
+          ministryAdminId,
         });
       }
     }
@@ -96,12 +96,12 @@ export async function refreshReminderCache() {
         daysUntil: daysUntilMember,
         years: memberYears,
         churchId: user.churchId!,
-        nationalAdminId,
+        ministryAdminId,
       });
     }
 
     // Church Founded (National Admin only)
-    if (user.anniversary && user.role?.name === 'national_admin') {
+    if (user.anniversary && user.role?.name === 'ministry_admin') {
       const next = getNextOccurrence(user.anniversary, today);
       const daysUntil = Math.floor((next.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
       if (daysUntil <= 30) {
@@ -113,7 +113,7 @@ export async function refreshReminderCache() {
           daysUntil,
           years: next.getFullYear() - user.anniversary.getFullYear(),
           churchId: user.churchId!,
-          nationalAdminId,
+          ministryAdminId,
         });
       }
     }
@@ -133,7 +133,7 @@ export async function refreshReminderCache() {
       isFree: true,
       requiresTicket: true,
       tickets: { select: { userId: true, user: { select: { churchId: true } } } },
-      church: { select: { nationalAdminId: true } },
+      church: { select: { ministryAdminId: true } },
     },
   });
 
@@ -170,7 +170,7 @@ export async function refreshReminderCache() {
     const eventDate = new Date(event.date);
     eventDate.setHours(0, 0, 0, 0);
     const daysUntil = Math.floor((eventDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    const nationalAdminId = event.church?.nationalAdminId || null;
+    const ministryAdminId = event.church?.ministryAdminId || null;
 
     if (event.isFree && !event.requiresTicket) {
       // Use pre-fetched church members
@@ -184,7 +184,7 @@ export async function refreshReminderCache() {
             upcomingDate: eventDate,
             daysUntil,
             churchId: member.churchId,
-            nationalAdminId,
+            ministryAdminId,
             eventId: event.id,
             eventTitle: event.title,
           });
@@ -207,7 +207,7 @@ export async function refreshReminderCache() {
           upcomingDate: eventDate,
           daysUntil,
           churchId,
-          nationalAdminId,
+          ministryAdminId,
           eventId: event.id,
           eventTitle: event.title,
         });

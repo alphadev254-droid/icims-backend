@@ -69,7 +69,7 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
 
   const baseAmount = event.ticketPrice! * quantity;
   
-  // Determine gateway using existing function (handles member → church → nationalAdmin → country)
+  // Determine gateway using existing function (handles member → church → ministryAdmin → country)
   const gateway = await getPaymentGateway(userId);
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
@@ -79,7 +79,7 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
   // Calculate fees
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
   
-  console.log(`[${traceId}] Fees - Base: ${fees.baseAmount}, Convenience: ${fees.convenienceFee}, Tax: ${fees.taxAmount}, Total: ${fees.totalAmount}`);
+  console.log(`[${traceId}] Fees - Base: ${fees.baseAmount}, Convenience: ${fees.convenienceFee}, Tax: ${fees.systemFeeAmount}, Total: ${fees.totalAmount}`);
 
   // Create pending transaction
   const expiresAt = new Date();
@@ -101,7 +101,7 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
         quantity,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
         gateway,
         gatewayCountry,
@@ -185,7 +185,7 @@ async function initiatePaystackTicketPayment(
         reference: response.data.data.reference,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
         currency: pendingTx.currency,
       },
@@ -251,7 +251,7 @@ async function initiatePaychanguTicketPayment(
         reference: tx_ref,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
-        taxAmount: fees.taxAmount,
+        systemFeeAmount: fees.systemFeeAmount,
         totalAmount: fees.totalAmount,
         currency: pendingTx.currency,
       },

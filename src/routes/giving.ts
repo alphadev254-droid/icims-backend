@@ -4,6 +4,10 @@ import * as givingController from '../controllers/givingController';
 
 const router = Router();
 
+// Public routes (no auth)
+router.get('/campaigns/:id/public', givingController.getPublicCampaign);
+router.post('/guest-donate', givingController.createGuestDonation);
+
 // Campaigns
 router.post('/campaigns', authenticate, authorizePermission('campaigns:create'), givingController.createCampaign);
 router.get('/campaigns', authenticate, authorizePermission('campaigns:read'), givingController.getCampaigns);
