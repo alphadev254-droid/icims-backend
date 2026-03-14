@@ -585,7 +585,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         // Create tickets
         const quantity = pendingMetadata.quantity || 1;
         const event = await prisma.event.findUnique({ where: { id: pendingMetadata.eventId }, include: { church: true } });
-        const user = await prisma.user.findUnique({ where: { id: pendingTx.userId } });
+        const user = await prisma.user.findUnique({ where: { id: pendingTx.userId! } });
         
         for (let i = 0; i < quantity; i++) {
           const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');

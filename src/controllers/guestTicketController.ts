@@ -25,7 +25,7 @@ export async function getTransactionByReference(req: Request, res: Response): Pr
   const { reference } = req.params;
 
   const tx = await prisma.transaction.findFirst({
-    where: { reference },
+    where: { reference: String(reference) },
     select: {
       type: true,
       isGuest: true,
@@ -62,10 +62,16 @@ export async function getTransactionByReference(req: Request, res: Response): Pr
   let campaignName: string | null = null;
   if (tx.type === 'donation') {
     const donation = await prisma.donationTransaction.findFirst({
-      where: { reference },
-      select: { campaign: { select: { name: true } } },
+      where: { reference: String(reference) },
+      select: { campaignId: true, guestName: true },
     });
-    campaignName = donation?.campaign?.name || null;
+    if (donation?.campaignId) {
+      const campaign = await prisma.givingCampaign.findUnique({
+        where: { id: donation.campaignId },
+        select: { name: true },
+      });
+      campaignName = campaign?.name || null;
+    }
   }
 
   res.json({
@@ -82,7 +88,7 @@ export async function getTransactionByReference(req: Request, res: Response): Pr
       paidAt: tx.paidAt,
       eventTitle,
       campaignName,
-      tickets: tx.tickets.map(t => t.ticketNumber),
+      tickets: (tx.tickets ?? []).map((t: { ticketNumber: string }) => t.ticketNumber),
     },
   });
 }

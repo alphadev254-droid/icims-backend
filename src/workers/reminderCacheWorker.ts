@@ -132,7 +132,7 @@ export async function refreshReminderCache() {
       churchId: true,
       isFree: true,
       requiresTicket: true,
-      tickets: { select: { userId: true, user: { select: { churchId: true } } } },
+      tickets: { select: { userId: true, user: { select: { churchId: true } } }, where: { isGuest: false } },
       church: { select: { ministryAdminId: true } },
     },
   });
@@ -194,7 +194,7 @@ export async function refreshReminderCache() {
       // Use tickets data already loaded
       const uniqueTickets = new Map<string, string>();
       for (const ticket of event.tickets) {
-        if (ticket.user.churchId) {
+        if (ticket.userId && ticket.user?.churchId) {
           uniqueTickets.set(ticket.userId, ticket.user.churchId);
         }
       }

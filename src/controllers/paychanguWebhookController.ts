@@ -173,7 +173,7 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
           customerPhone: req.body.customer?.phone_number || null,
           systemGatewayFeeRate: metadata.gatewayFeeRate || 0,
           systemFeeRate: metadata.systemFeeRate || 0,
-          createdById: pendingTx.userId
+          createdById: pendingTx.userId ?? metadata.ministryAdminId,
         }
       });
       
@@ -209,7 +209,7 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
 
       // Send confirmation email to user
       const user = await prisma.user.findUnique({
-        where: { id: pendingTx.userId },
+        where: { id: pendingTx.userId! },
         select: { firstName: true, email: true, ministryAdminId: true }
       });
 
