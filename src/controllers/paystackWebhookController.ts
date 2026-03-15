@@ -13,27 +13,41 @@ const SYSTEM_SUBACCOUNT_CODE = process.env.SYSTEM_SUBACCOUNT_CODE!;
 
 function verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {
   const hash = crypto
-    .createHmac('sha256', PAYSTACK_SECRET_KEY)
+    .createHmac('sha512', PAYSTACK_SECRET_KEY)
     .update(rawBody)
     .digest('hex');
-  return hash === signature;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(signature, 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 export async function paystackWebhook(req: Request, res: Response): Promise<void> {
   const traceId = `PAYSTACK-WEBHOOK-${Date.now()}`;
 
-  console.log(`[${traceId}] ========== PAYSTACK WEBHOOK ==========`);
+  console.log(`[${traceId}] ========== PAYSTACK WEBHOOK HIT ==========`);
+  console.log(`[${traceId}] Timestamp: ${new Date().toISOString()}`);
+  console.log(`[${traceId}] URL: ${req.originalUrl}`);
+  console.log(`[${traceId}] Method: ${req.method}`);
+  console.log(`[${traceId}] Headers:`, JSON.stringify(req.headers, null, 2));
+  console.log(`[${traceId}] Body:`, JSON.stringify(req.body, null, 2));
+  console.log(`[${traceId}] Raw body exists: ${!!req.rawBody}`);
 
   const signature = req.headers['x-paystack-signature'] as string;
+  console.log(`[${traceId}] Signature header: ${signature || 'MISSING'}`);
+
   if (!signature || !req.rawBody || !verifyWebhookSignature(req.rawBody, signature)) {
-    console.error(`[${traceId}] Invalid webhook signature`);
+    console.error(`[${traceId}] ❌ Invalid webhook signature — signature: ${signature}, rawBody: ${!!req.rawBody}`);
     res.status(401).json({ received: false });
     return;
   }
 
   const { event, data } = req.body;
+  console.log(`[${traceId}] ✅ Signature valid — event: ${event}`);
 
   if (event !== 'charge.success') {
+    console.log(`[${traceId}] Ignoring event type: ${event}`);
     res.json({ received: true });
     return;
   }

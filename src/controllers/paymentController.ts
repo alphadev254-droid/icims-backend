@@ -523,21 +523,25 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=package_subscription`);
       } else if (type === 'event_ticket') {
         console.log(`[${traceId}] Processing event ticket...`);
-        
-        const pendingTx = await prisma.pendingTransaction.findUnique({
-          where: { reference: String(reference) }
-        });
-        
-        if (!pendingTx) {
-          console.log(`[${traceId}] Pending transaction not found`);
-          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
-          return;
-        }
 
         const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
         if (existingTransaction) {
-          console.log(`[${traceId}] Transaction already processed: ${existingTransaction.id}`);
-          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket`);
+          console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
+          const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
+          const callbackUrl = isGuest
+            ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}&eventId=${metadata.eventId}`
+            : `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket`;
+          res.redirect(callbackUrl);
+          return;
+        }
+
+        const pendingTx = await prisma.pendingTransaction.findUnique({
+          where: { reference: String(reference) }
+        });
+
+        if (!pendingTx) {
+          console.log(`[${traceId}] Pending transaction not found and no existing transaction`);
+          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
         
@@ -547,7 +551,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         // Create transaction
         const transaction = await prisma.transaction.create({
           data: {
-            userId: metadata.userId || pendingTx.userId,
+            userId: pendingMetadata.isGuest ? null : (metadata.userId || pendingTx.userId),
             churchId: pendingTx.churchId,
             eventId: pendingMetadata.eventId,
             type: 'event_ticket',
@@ -574,6 +578,10 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             subaccountCode: metadata.subaccountCode || data.subaccount?.subaccount_code,
             subaccountName: metadata.subaccountName || data.subaccount?.business_name,
             gatewayResponse: JSON.stringify(data),
+            isGuest: pendingMetadata.isGuest === true,
+            guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
+            guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
+            guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
           }
         });
         
@@ -585,7 +593,8 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         // Create tickets
         const quantity = pendingMetadata.quantity || 1;
         const event = await prisma.event.findUnique({ where: { id: pendingMetadata.eventId }, include: { church: true } });
-        const user = await prisma.user.findUnique({ where: { id: pendingTx.userId! } });
+        const isGuestTicket = pendingMetadata.isGuest === true;
+        const user = isGuestTicket ? null : await prisma.user.findUnique({ where: { id: pendingTx.userId! } });
         
         for (let i = 0; i < quantity; i++) {
           const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
@@ -597,14 +606,73 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             data: {
               ticketNumber,
               eventId: pendingMetadata.eventId,
-              userId: pendingTx.userId,
+              userId: isGuestTicket ? null : pendingTx.userId,
               transactionId: transaction.id,
-              status: 'confirmed'
+              status: 'confirmed',
+              isGuest: isGuestTicket,
+              guestName: isGuestTicket ? pendingMetadata.guestName : null,
+              guestEmail: isGuestTicket ? pendingMetadata.guestEmail : null,
+              guestPhone: isGuestTicket ? pendingMetadata.guestPhone : null,
             }
           });
           
-          // Send email with PDF for each ticket
-          if (user && event) {
+          // Send email — guest path
+          if (isGuestTicket && event) {
+            const attendeeName = pendingMetadata.guestName;
+            const emailTo = pendingMetadata.guestEmail;
+            const ticketPDF = await generateTicketPDF({
+              ticketNumber,
+              eventTitle: event.title,
+              eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+              eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+              eventLocation: event.location,
+              attendeeName,
+              churchName: event.church.name,
+              amount: pendingMetadata.baseAmount,
+              currency: data.currency,
+            });
+            const receiptPDF = await generateReceiptPDF({
+              receiptNumber: data.reference,
+              type: 'event_ticket',
+              customerName: attendeeName,
+              customerEmail: emailTo,
+              amount: pendingMetadata.baseAmount,
+              currency: data.currency,
+              paidAt: new Date(data.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+              paymentMethod: data.channel || 'card',
+              description: `Event Ticket - ${event.title}`,
+              itemDetails: [
+                { label: 'Event', value: event.title },
+                { label: 'Church', value: event.church.name },
+                { label: 'Date', value: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+                { label: 'Location', value: event.location },
+                { label: 'Ticket Number', value: ticketNumber },
+              ],
+            });
+            queueEmail(
+              emailTo,
+              `Ticket Confirmation - ${event.title}`,
+              ticketPurchaseTemplate({
+                firstName: attendeeName.split(' ')[0],
+                eventTitle: event.title,
+                ticketNumber,
+                amount: pendingMetadata.baseAmount,
+                currency: data.currency,
+                eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+                eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+                eventLocation: event.location,
+                churchName: event.church.name,
+                viewUrl: `${process.env.FRONTEND_URL}/payment/callback?status=success&type=event_ticket&isGuest=true&reference=${data.reference}&guestEmail=${encodeURIComponent(emailTo)}&guestName=${encodeURIComponent(attendeeName)}&amount=${pendingMetadata.baseAmount}&currency=${data.currency}&eventId=${pendingMetadata.eventId}`,
+              }),
+              [
+                { filename: `ticket-${ticketNumber}.pdf`, content: ticketPDF },
+                { filename: `receipt-${data.reference}.pdf`, content: receiptPDF },
+              ]
+            );
+          }
+
+          // Send email — registered user path
+          if (!isGuestTicket && user && event) {
             const ticketPDF = await generateTicketPDF({
               ticketNumber,
               eventTitle: event.title,
@@ -616,7 +684,6 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
               amount: pendingMetadata.baseAmount,
               currency: data.currency,
             });
-            
             const receiptPDF = await generateReceiptPDF({
               receiptNumber: data.reference,
               type: 'event_ticket',
@@ -632,10 +699,9 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
                 { label: 'Church', value: event.church.name },
                 { label: 'Date', value: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
                 { label: 'Location', value: event.location },
-                { label: 'Ticket Number', value: ticketNumber }
-              ]
+                { label: 'Ticket Number', value: ticketNumber },
+              ],
             });
-            
             queueEmail(
               user.email,
               `Ticket Confirmation - ${event.title}`,
@@ -648,11 +714,11 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
                 eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
                 eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
                 eventLocation: event.location,
-                churchName: event.church.name
+                churchName: event.church.name,
               }),
               [
                 { filename: `ticket-${ticketNumber}.pdf`, content: ticketPDF },
-                { filename: `receipt-${data.reference}.pdf`, content: receiptPDF }
+                { filename: `receipt-${data.reference}.pdf`, content: receiptPDF },
               ]
             );
           }
@@ -668,24 +734,31 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });
         
         console.log(`[${traceId}] ${quantity} ticket(s) created`);
-        res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket`);
+        const ticketCallbackUrl = pendingMetadata.isGuest
+          ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket&isGuest=true&guestEmail=${encodeURIComponent(pendingMetadata.guestEmail)}&guestName=${encodeURIComponent(pendingMetadata.guestName)}&amount=${pendingMetadata.baseAmount}&currency=${data.currency}&eventId=${pendingMetadata.eventId}`
+          : `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket`;
+        res.redirect(ticketCallbackUrl);
       } else if (type === 'donation') {
         console.log(`[${traceId}] Processing donation...`);
-        
-        const pendingTx = await prisma.pendingTransaction.findUnique({
-          where: { reference: String(reference) }
-        });
-        
-        if (!pendingTx) {
-          console.log(`[${traceId}] Pending transaction not found`);
-          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
-          return;
-        }
 
         const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
         if (existingTransaction) {
-          console.log(`[${traceId}] Transaction already processed: ${existingTransaction.id}`);
-          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`);
+          console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
+          const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
+          const callbackUrl = isGuest
+            ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}`
+            : `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`;
+          res.redirect(callbackUrl);
+          return;
+        }
+
+        const pendingTx = await prisma.pendingTransaction.findUnique({
+          where: { reference: String(reference) }
+        });
+
+        if (!pendingTx) {
+          console.log(`[${traceId}] Pending transaction not found and no existing transaction`);
+          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
         
