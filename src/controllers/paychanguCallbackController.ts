@@ -18,7 +18,19 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
   }
 
   try {
-    // 1. Check if webhook already processed this — Transaction exists
+    // 1. Check if webhook already processed this
+    // package_subscription → Payment table, event_ticket/donation → Transaction table
+    const completedPayment = await prisma.payment.findFirst({
+      where: { reference: String(tx_ref) },
+      select: { reference: true },
+    });
+
+    if (completedPayment) {
+      console.log(`[${traceId}] Webhook already processed (Payment record found) — redirecting to success`);
+      res.redirect(`${FRONTEND_URL}/payment/callback?status=success&type=package_subscription&reference=${tx_ref}`);
+      return;
+    }
+
     const completedTx = await prisma.transaction.findFirst({
       where: { reference: String(tx_ref) },
       select: {
@@ -34,7 +46,7 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
     });
 
     if (completedTx) {
-      console.log(`[${traceId}] Webhook already processed — redirecting to success`);
+      console.log(`[${traceId}] Webhook already processed (Transaction record found) — redirecting to success`);
       const params = new URLSearchParams({
         status: 'success',
         type: completedTx.type,
@@ -76,6 +88,7 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
     const type = pendingTx?.type || 'event_ticket';
     const metadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
     const isGuest = metadata.isGuest === true;
+    console.log(`[${traceId}] PendingTx type: ${type}, isGuest: ${isGuest}, pendingTx found: ${!!pendingTx}`);
 
     const params = new URLSearchParams({
       status: 'success',
