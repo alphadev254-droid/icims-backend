@@ -3,7 +3,7 @@
 // For now, using approximate rates as of 2024
 const EXCHANGE_RATES = {
   MWK: parseFloat(process.env.USD_TO_MWK_RATE || '1730'), // 1 USD = 1730 MWK
-  KSH: parseFloat(process.env.USD_TO_KSH_RATE || '129'),  // 1 USD = 129 KSH
+  KES: parseFloat(process.env.USD_TO_KES_RATE || '129'),  // 1 USD = 129 KES
 };
 
 /**
@@ -12,7 +12,7 @@ const EXCHANGE_RATES = {
  * @param currency Target currency (MWK or KSH)
  * @returns Converted amount in local currency
  */
-export function convertUSDToLocal(usdAmount: number, currency: 'MWK' | 'KSH'): number {
+export function convertUSDToLocal(usdAmount: number, currency: 'MWK' | 'KES'): number {
   const rate = EXCHANGE_RATES[currency];
   const converted = usdAmount * rate;
   
@@ -26,7 +26,7 @@ export function convertUSDToLocal(usdAmount: number, currency: 'MWK' | 'KSH'): n
  * @param currency Source currency (MWK or KSH)
  * @returns Converted amount in USD
  */
-export function convertLocalToUSD(localAmount: number, currency: 'MWK' | 'KSH'): number {
+export function convertLocalToUSD(localAmount: number, currency: 'MWK' | 'KES'): number {
   const rate = EXCHANGE_RATES[currency];
   return parseFloat((localAmount / rate).toFixed(2));
 }
@@ -36,6 +36,6 @@ export function convertLocalToUSD(localAmount: number, currency: 'MWK' | 'KSH'):
  * @param currency Currency code (MWK or KSH)
  * @returns Exchange rate (1 USD = X local currency)
  */
-export function getExchangeRate(currency: 'MWK' | 'KSH'): number {
+export function getExchangeRate(currency: 'MWK' | 'KES'): number {
   return EXCHANGE_RATES[currency];
 }

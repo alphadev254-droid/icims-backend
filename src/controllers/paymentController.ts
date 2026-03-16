@@ -109,7 +109,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   console.log(`[${traceId}] Package price in USD: ${baseAmountUSD}`);
   
   // Convert USD to local currency using exchange rates
-  const baseAmount = convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KSH');
+  const baseAmount = convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES');
   console.log(`[${traceId}] Converted amount: ${baseAmount} ${currency}`);
   
   // Calculate fees (Kenya has no tax, Malawi has 17.5% tax)
