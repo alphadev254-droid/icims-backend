@@ -75,15 +75,25 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
     console.log(`[${traceId}] Verified - type: ${type}, amount: ${amount}`);
 
     if (type === 'package_subscription') {
+      console.log(`[${traceId}] ========== PACKAGE SUBSCRIPTION ==========`);
+      console.log(`[${traceId}] ministryAdminId: ${metadata.ministryAdminId}`);
+      console.log(`[${traceId}] packageId: ${metadata.packageId}`);
+      console.log(`[${traceId}] billingCycle: ${metadata.billingCycle}`);
+      console.log(`[${traceId}] pendingTxId: ${metadata.pendingTxId}`);
+      console.log(`[${traceId}] initiatedBy: ${metadata.initiatedBy}`);
+
       const existingPayment = await prisma.payment.findFirst({ where: { reference: txData.reference } });
       if (existingPayment) {
         console.log(`[${traceId}] Already processed: ${existingPayment.id}`);
         res.json({ received: true });
         return;
       }
+      console.log(`[${traceId}] No duplicate found — proceeding`);
 
       const pendingTx = await prisma.pendingTransaction.findUnique({ where: { id: metadata.pendingTxId } });
+      console.log(`[${traceId}] PendingTransaction found: ${pendingTx ? pendingTx.id : 'NOT FOUND'}`);
       const pendingMetadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
+      console.log(`[${traceId}] PendingMetadata:`, pendingMetadata);
 
       const baseAmount = pendingMetadata.baseAmount || amount;
       const convenienceFee = pendingMetadata.convenienceFee || 0;
@@ -93,6 +103,8 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
       const systemGatewayFeeRate = pendingMetadata.gatewayFeeRate || 0;
       const systemFeeRate = pendingMetadata.systemFeeRate || 0;
 
+      console.log(`[${traceId}] Fee breakdown — base: ${baseAmount}, convenience: ${convenienceFee}, systemFee: ${systemFeeAmount}, total: ${totalAmount}`);
+
       const startsAt = new Date(txData.paid_at);
       const expiresAt = new Date(startsAt);
       if (metadata.billingCycle === 'monthly') {
@@ -100,8 +112,10 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
       } else {
         expiresAt.setFullYear(expiresAt.getFullYear() + 1);
       }
+      console.log(`[${traceId}] Subscription period — startsAt: ${startsAt.toISOString()}, expiresAt: ${expiresAt.toISOString()}`);
 
       const pkg = await prisma.package.findUnique({ where: { id: metadata.packageId } });
+      console.log(`[${traceId}] Package: ${pkg ? pkg.name : 'NOT FOUND'}`);
 
       const payment = await prisma.payment.create({
         data: {

@@ -376,7 +376,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
       // Handle package subscription
       if (type === 'package_subscription') {
-        console.log(`[${traceId}] Processing package subscription...`);
+        console.log(`[${traceId}] ========== PACKAGE SUBSCRIPTION ==========`);
+        console.log(`[${traceId}] ministryAdminId: ${metadata.ministryAdminId}`);
+        console.log(`[${traceId}] packageId: ${metadata.packageId}`);
+        console.log(`[${traceId}] billingCycle: ${metadata.billingCycle}`);
+        console.log(`[${traceId}] pendingTxId: ${metadata.pendingTxId}`);
+        console.log(`[${traceId}] initiatedBy: ${metadata.initiatedBy}`);
 
         const existingPayment = await prisma.payment.findFirst({ where: { reference: data.reference } });
         if (existingPayment) {
@@ -384,19 +389,20 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=package_subscription`);
           return;
         }
+        console.log(`[${traceId}] No duplicate found — proceeding`);
         
         const pkg = await prisma.package.findUnique({ where: { id: metadata.packageId } });
-        console.log(`[${traceId}] Package: ${pkg?.name} (${pkg?.displayName})`);
-        console.log(`[${traceId}] National Admin ID: ${metadata.ministryAdminId}`);
+        console.log(`[${traceId}] Package: ${pkg ? pkg.name : 'NOT FOUND'}`);
 
         // Get pending transaction
         const pendingTx = await prisma.pendingTransaction.findUnique({
           where: { id: metadata.pendingTxId },
         });
-        console.log(`[${traceId}] Pending transaction: ${pendingTx?.id}`);
+        console.log(`[${traceId}] PendingTransaction: ${pendingTx ? pendingTx.id : 'NOT FOUND'}`);
 
         // Parse metadata from pending transaction
         const pendingMetadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
+        console.log(`[${traceId}] PendingMetadata:`, pendingMetadata);
         const baseAmount = pendingMetadata.baseAmount || amount;
         const convenienceFee = pendingMetadata.convenienceFee || 0;
         const systemFeeAmount = pendingMetadata.systemFeeAmount || 0;
@@ -405,6 +411,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const gatewayCountry = pendingMetadata.gatewayCountry || 'Kenya';
         const systemGatewayFeeRate = pendingMetadata.gatewayFeeRate || 0;
         const systemFeeRate = pendingMetadata.systemFeeRate || 0;
+        console.log(`[${traceId}] Fee breakdown — base: ${baseAmount}, convenience: ${convenienceFee}, systemFee: ${systemFeeAmount}, total: ${totalAmount}`);
 
         // Create payment record
         const startsAt = new Date(data.paid_at);
@@ -414,6 +421,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         } else {
           expiresAt.setFullYear(expiresAt.getFullYear() + 1);
         }
+        console.log(`[${traceId}] Subscription period — startsAt: ${startsAt.toISOString()}, expiresAt: ${expiresAt.toISOString()}`);
 
         const payment = await prisma.payment.create({
           data: {
@@ -449,6 +457,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           },
         });
         console.log(`[${traceId}] Payment record created: ${payment.id}`);
+        console.log(`[${traceId}] Payment — amount: ${payment.amount}, currency: ${payment.currency}, gateway: ${payment.gateway}, gatewayCharge: ${payment.gatewayCharge}`);
 
         // Create or update subscription and reset email tracking
         await prisma.subscription.upsert({
@@ -469,7 +478,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             lastEmailDay: null,
           },
         });
-        console.log(`[${traceId}] Subscription record created/updated with email tracking reset`);
+        console.log(`[${traceId}] Subscription upserted — ministryAdminId: ${metadata.ministryAdminId}, expiresAt: ${expiresAt.toISOString()}`);
 
         // Delete pending transaction
         if (pendingTx) {
