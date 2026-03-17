@@ -492,7 +492,7 @@ async function initiatePaystackDonation(
       },
       ...(subaccount && {
         subaccount: subaccount.subaccountCode,
-        transaction_charge: Math.round(fees.convenienceFee * 100),
+        transaction_charge: Math.round((fees.convenienceFee + fees.systemFeeAmount) * 100),
         bearer: 'account',
       }),
     };
