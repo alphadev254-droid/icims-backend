@@ -141,6 +141,7 @@ model Church {
   email                String?
   website              String?
   pastorName           String?
+  logoUrl              String?
   memberCount          Int      @default(0)
   yearFounded          Int?
   branchCode           String?  @unique

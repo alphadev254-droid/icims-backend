@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import path from 'path';
+import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
@@ -141,12 +143,16 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
 
   const branchCode = `${name.replace(/\s+/g, '').substring(0, 6).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
 
+  // Handle logo upload
+  const logoUrl = req.file ? `/uploads/churches/${req.file.filename}` : undefined;
+
   const church = await prisma.church.create({
     data: {
       name, location, country,
       region, district, traditionalAuthority, village,
       address, phone, email: email || undefined, website, pastorName, yearFounded,
       branchCode,
+      logoUrl,
       ministryAdminId: adminUserId,
     },
     include: { _count: { select: { users: true } } },
@@ -227,6 +233,23 @@ export async function updateChurch(req: Request, res: Response): Promise<void> {
   const updateData: Record<string, unknown> = { ...parsed.data };
   if (updateData.email === '') updateData.email = null;
 
+  // Handle logo: new upload takes priority, then removeLogo flag, otherwise leave unchanged
+  if (req.file) {
+    // Delete old logo file if it exists
+    if (church.logoUrl) {
+      const oldPath = path.join(process.cwd(), church.logoUrl.replace(/^\//, ''));
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    }
+    updateData.logoUrl = `/uploads/churches/${req.file.filename}`;
+  } else if (req.body.removeLogo === 'true') {
+    // User explicitly removed the logo — delete file and clear DB field
+    if (church.logoUrl) {
+      const oldPath = path.join(process.cwd(), church.logoUrl.replace(/^\//, ''));
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    }
+    updateData.logoUrl = null;
+  }
+
   const updated = await prisma.church.update({
     where: { id: String(req.params.id) },
     data: updateData,
@@ -248,7 +271,7 @@ export async function getChurchByInvite(req: Request, res: Response): Promise<vo
 
   const church = await prisma.church.findUnique({
     where: { inviteToken },
-    select: { id: true, name: true, location: true }
+    select: { id: true, name: true, location: true, logoUrl: true }
   });
 
   if (!church) {
@@ -350,6 +373,12 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
   if (!hasAccess) { 
     res.status(403).json({ success: false, message: 'Access denied' }); 
     return; 
+  }
+
+  // Delete logo file if exists
+  if (church.logoUrl) {
+    const logoPath = path.join(process.cwd(), church.logoUrl.replace(/^\//, ''));
+    if (fs.existsSync(logoPath)) fs.unlinkSync(logoPath);
   }
 
   // Delete related records first to avoid foreign key constraint violations

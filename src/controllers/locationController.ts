@@ -221,5 +221,5 @@ export async function getVillages(req: Request, res: Response): Promise<void> {
     distinct: ['village'],
     orderBy: { village: 'asc' }
   });
-  res.json({ success: true, data: villages.map(v => v.village) });
+  res.json({ success: true, data: villages.map(v => v.village).filter(v => v !== '') });
 }
