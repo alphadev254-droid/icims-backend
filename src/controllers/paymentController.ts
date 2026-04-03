@@ -94,23 +94,26 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   console.log(`[${traceId}] Package: ${pkg.name} (${pkg.displayName})`);
 
   // Package prices are stored in USD, convert to local currency based on user's country
-  // - Malawi users: USD → MWK (via Paychangu gateway)
-  // - Kenya users: USD → KSH (via Paystack gateway)
+  // - Malawi users: USD → MWK ÷ 2 (50% discount) via Paychangu gateway
+  // - Kenya users: USD → KSH (full price) via Paystack gateway
   const baseAmountUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
   
   // Determine gateway based on national admin's accountCountry
   console.log(`[${traceId}] Calling getPaymentGateway for ministryAdminId: ${ministryAdminId}`);
   const gateway = await getPaymentGateway(ministryAdminId);
-  const currency = getCurrency(gateway); // Returns 'MWK' for Malawi, 'KSH' for Kenya
+  const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
   console.log(`[${traceId}] National Admin accountCountry: ${ministryAdmin.accountCountry}`);
   console.log(`[${traceId}] Package price in USD: ${baseAmountUSD}`);
   
-  // Convert USD to local currency using exchange rates
-  const baseAmount = convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES');
-  console.log(`[${traceId}] Converted amount: ${baseAmount} ${currency}`);
+  // Convert USD to local currency, then apply country discount from env
+  const isMalawi = gatewayCountry === 'Malawi';
+  const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
+  const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
+  const baseAmount = Math.round(convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES') * discount);
+  console.log(`[${traceId}] Converted amount: ${convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES')} ${currency} → after ${isMalawi ? `${discount * 100}% Malawi discount` : 'no discount'}: ${baseAmount} ${currency}`);
   
   // Calculate fees (Kenya has no tax, Malawi has 17.5% tax)
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);

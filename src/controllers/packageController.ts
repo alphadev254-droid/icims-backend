@@ -50,11 +50,13 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   const rateVal = process.env[rateKey];
   if (!rateVal || isNaN(parseFloat(rateVal))) throw new Error('Payment configuration is not available. Please contact support.');
   const rate = parseFloat(rateVal);
+  const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
+  const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
 
   const convertedPackages = packages.map(pkg => ({
     ...pkg,
-    priceMonthly: Math.round(pkg.priceMonthly * rate),
-    priceYearly: Math.round(pkg.priceYearly * rate),
+    priceMonthly: Math.round(pkg.priceMonthly * rate * discount),
+    priceYearly: Math.round(pkg.priceYearly * rate * discount),
     currency,
   }));
 
@@ -229,8 +231,10 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
   const usdRate = parseFloat(usdRateVal);
 
   const baseUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
+  const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
+  const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
-  const fees = calculatePaymentFees(parseFloat((baseUSD * usdRate).toFixed(2)), country);
+  const fees = calculatePaymentFees(parseFloat((baseUSD * usdRate * discount).toFixed(2)), country);
 
   res.json({
     success: true,
