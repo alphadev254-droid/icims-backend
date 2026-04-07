@@ -20,29 +20,18 @@ function tryParse(val: string) {
 
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
 
-export async function getAdminStats(req: Request, res: Response): Promise<void> {
-  // Resolve role IDs first to avoid Prisma relation filter issues in count()
+export async function getAdminStats(_req: Request, res: Response): Promise<void> {
   const [ministryAdminRole, memberRole] = await Promise.all([
     prisma.role.findUnique({ where: { name: 'ministry_admin' }, select: { id: true } }),
     prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } }),
   ]);
 
   const [
-    totalUsers,
-    totalChurches,
-    totalMinistryAdmins,
-    totalMembers,
-    malawiUsers,
-    kenyaUsers,
-    activeUsers,
-    suspendedUsers,
-    activeSubscriptions,
-    expiredSubscriptions,
-    revenueResult,
-    malawiRevenueResult,
-    kenyaRevenueResult,
-    recentRegistrations,
-    recentPayments,
+    totalUsers, totalChurches, totalMinistryAdmins, totalMembers,
+    malawiUsers, kenyaUsers, activeUsers, suspendedUsers,
+    activeSubscriptions, expiredSubscriptions,
+    revenueResult, malawiRevenueResult, kenyaRevenueResult,
+    recentRegistrations, recentPayments,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.church.count(),
@@ -75,7 +64,6 @@ export async function getAdminStats(req: Request, res: Response): Promise<void> 
     }),
   ]);
 
-  // Enrich recent payments with admin info
   const adminIds = [...new Set(recentPayments.map((p: any) => p.ministryAdminId))];
   const admins = await prisma.user.findMany({
     where: { id: { in: adminIds } },
@@ -86,16 +74,9 @@ export async function getAdminStats(req: Request, res: Response): Promise<void> 
   res.json({
     success: true,
     data: {
-      totalUsers,
-      totalChurches,
-      totalMinistryAdmins,
-      totalMembers,
-      malawiUsers,
-      kenyaUsers,
-      activeUsers,
-      suspendedUsers,
-      activeSubscriptions,
-      expiredSubscriptions,
+      totalUsers, totalChurches, totalMinistryAdmins, totalMembers,
+      malawiUsers, kenyaUsers, activeUsers, suspendedUsers,
+      activeSubscriptions, expiredSubscriptions,
       totalRevenue: revenueResult._sum.amount ?? 0,
       totalPayments: revenueResult._count,
       malawiRevenue: malawiRevenueResult._sum.amount ?? 0,
@@ -103,16 +84,13 @@ export async function getAdminStats(req: Request, res: Response): Promise<void> 
       kenyaRevenue: kenyaRevenueResult._sum.amount ?? 0,
       kenyaPayments: kenyaRevenueResult._count,
       recentRegistrations,
-      recentPayments: recentPayments.map((p: any) => ({
-        ...p,
-        ministryAdmin: adminMap[p.ministryAdminId] ?? null,
-      })),
+      recentPayments: recentPayments.map((p: any) => ({ ...p, ministryAdmin: adminMap[p.ministryAdminId] ?? null })),
     },
   });
 }
 
-// ─── Helper: resolve user IDs belonging to a country ────────────────────────
-// 1 query to get admin IDs, then 2 parallel IN queries — O(1) round trips.
+// ─── Helper: resolve user IDs belonging to a country ─────────────────────────
+
 async function getUserIdsByCountry(country: string): Promise<string[]> {
   const admins = await prisma.user.findMany({
     where: { accountCountry: country },
@@ -121,23 +99,12 @@ async function getUserIdsByCountry(country: string): Promise<string[]> {
   const adminIds = admins.map((a: any) => a.id);
   if (adminIds.length === 0) return [];
 
-  // Parallel: users linked via ministryAdminId OR via church owned by those admins
   const [linkedUsers, churchUsers] = await Promise.all([
-    prisma.user.findMany({
-      where: { ministryAdminId: { in: adminIds } },
-      select: { id: true },
-    }),
-    prisma.user.findMany({
-      where: { church: { ministryAdminId: { in: adminIds } } },
-      select: { id: true },
-    }),
+    prisma.user.findMany({ where: { ministryAdminId: { in: adminIds } }, select: { id: true } }),
+    prisma.user.findMany({ where: { church: { ministryAdminId: { in: adminIds } } }, select: { id: true } }),
   ]);
 
-  return [...new Set([
-    ...adminIds,
-    ...linkedUsers.map((u: any) => u.id),
-    ...churchUsers.map((u: any) => u.id),
-  ])];
+  return [...new Set([...adminIds, ...linkedUsers.map((u: any) => u.id), ...churchUsers.map((u: any) => u.id)])];
 }
 
 // ─── GET /api/admin/users ─────────────────────────────────────────────────────
@@ -168,9 +135,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     else { res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } }); return; }
   }
   if (countryFilter) {
-    const countryUserIds = await getUserIdsByCountry(countryFilter);
-    // Intersect with any existing id filter, or set directly
-    where.id = { in: countryUserIds };
+    where.id = { in: await getUserIdsByCountry(countryFilter) };
   }
   if (statusFilter) where.status = statusFilter;
 
@@ -189,8 +154,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     prisma.user.count({ where }),
   ]);
 
-  // Resolve country for users missing accountCountry in one batch query.
-  // Collect all ministry admin IDs needed: direct (ministryAdminId) + via church.
+  // Resolve country in one batch query
   const allAdminIds = new Set<string>();
   for (const u of users) {
     if (!u.accountCountry) {
@@ -201,27 +165,23 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
 
   const adminCountryMap: Record<string, string | null> = {};
   if (allAdminIds.size > 0) {
-    const admins = await prisma.user.findMany({
+    const adminList = await prisma.user.findMany({
       where: { id: { in: [...allAdminIds] } },
       select: { id: true, accountCountry: true },
     });
-    for (const a of admins) adminCountryMap[a.id] = a.accountCountry ?? null;
+    for (const a of adminList) adminCountryMap[a.id] = a.accountCountry ?? null;
   }
 
   function resolveCountry(u: any): string | null {
     if (u.accountCountry) return u.accountCountry;
     if (u.ministryAdminId) return adminCountryMap[u.ministryAdminId] ?? null;
-    const churchAdminId = u.church?.ministryAdminId;
+    const churchAdminId = (u.church as any)?.ministryAdminId;
     return churchAdminId ? (adminCountryMap[churchAdminId] ?? null) : null;
   }
 
   res.json({
     success: true,
-    data: users.map(u => ({
-      ...safeUser(u),
-      churchCount: u._count.ownedChurches,
-      resolvedCountry: resolveCountry(u),
-    })),
+    data: users.map(u => ({ ...safeUser(u), churchCount: u._count.ownedChurches, resolvedCountry: resolveCountry(u) })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 }
@@ -229,8 +189,10 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
 // ─── GET /api/admin/users/:id ─────────────────────────────────────────────────
 
 export async function getAdminUser(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+
   const user = await prisma.user.findUnique({
-    where: { id: req.params.id },
+    where: { id },
     include: {
       role: { select: { id: true, name: true, displayName: true } },
       church: { select: { id: true, name: true } },
@@ -245,23 +207,19 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
     },
   });
 
-  if (!user) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
+  if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
-  // Get all subscriptions if ministry_admin
   let subscriptions: any[] = [];
   let payments: any[] = [];
   if (user.role?.name === 'ministry_admin') {
     [subscriptions, payments] = await Promise.all([
       prisma.subscription.findMany({
-        where: { ministryAdminId: user.id },
+        where: { ministryAdminId: id },
         include: { package: { select: { id: true, name: true, displayName: true } } },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.payment.findMany({
-        where: { ministryAdminId: user.id },
+        where: { ministryAdminId: id },
         include: { package: { select: { name: true, displayName: true } } },
         orderBy: { createdAt: 'desc' },
         take: 50,
@@ -273,13 +231,7 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
 
   res.json({
     success: true,
-    data: {
-      ...safeUser(user),
-      ownedChurches: user.ownedChurches,
-      subscription: activeSubscription,
-      subscriptions,
-      payments,
-    },
+    data: { ...safeUser(user), ownedChurches: user.ownedChurches, subscription: activeSubscription, subscriptions, payments },
   });
 }
 
@@ -295,27 +247,22 @@ const updateUserSchema = z.object({
 });
 
 export async function updateAdminUser(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+
   const target = await prisma.user.findUnique({
-    where: { id: req.params.id },
+    where: { id },
     include: { role: { select: { name: true } } },
   });
-  if (!target) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
+  if (!target) { res.status(404).json({ success: false, message: 'User not found' }); return; }
   if (target.role?.name === 'system_admin') {
-    res.status(403).json({ success: false, message: 'Cannot modify another system admin' });
-    return;
+    res.status(403).json({ success: false, message: 'Cannot modify another system admin' }); return;
   }
 
   const parsed = updateUserSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const updated = await prisma.user.update({
-    where: { id: req.params.id },
+    where: { id },
     data: parsed.data,
     include: { role: { select: { id: true, name: true, displayName: true } } },
   });
@@ -326,56 +273,78 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
 // ─── DELETE /api/admin/users/:id ──────────────────────────────────────────────
 
 export async function deleteAdminUser(req: Request, res: Response): Promise<void> {
-  if (req.params.id === req.user?.userId) {
-    res.status(400).json({ success: false, message: 'Cannot delete your own account' });
-    return;
+  const id = String(req.params.id);
+
+  if (id === req.user?.userId) {
+    res.status(400).json({ success: false, message: 'Cannot delete your own account' }); return;
   }
 
   const target = await prisma.user.findUnique({
-    where: { id: req.params.id },
-    include: { role: true },
+    where: { id },
+    include: { role: { select: { name: true } } },
   });
-  if (!target) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
+  if (!target) { res.status(404).json({ success: false, message: 'User not found' }); return; }
   if (target.role?.name === 'system_admin') {
-    res.status(403).json({ success: false, message: 'Cannot delete a system admin' });
-    return;
+    res.status(403).json({ success: false, message: 'Cannot delete a system admin' }); return;
   }
 
-  await prisma.user.delete({ where: { id: req.params.id } });
+  await prisma.user.delete({ where: { id } });
   res.json({ success: true, message: 'User deleted successfully' });
 }
 
 // ─── POST /api/admin/users/:id/reset-password ─────────────────────────────────
 
 export async function resetAdminUserPassword(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
   const { password } = req.body;
+
   if (!password || password.length < 8) {
-    res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
-    return;
+    res.status(400).json({ success: false, message: 'Password must be at least 8 characters' }); return;
   }
 
-  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
-  if (!target) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
+  const target = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+  if (!target) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
-  await prisma.user.update({
-    where: { id: req.params.id },
-    data: { password: await hashPassword(password) },
-  });
-
+  await prisma.user.update({ where: { id }, data: { password: await hashPassword(password) } });
   res.json({ success: true, message: 'Password reset successfully' });
+}
+
+// ─── POST /api/admin/users/:id/send-email ─────────────────────────────────────
+
+export async function sendEmailToUser(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+  const { subject, message } = req.body;
+
+  if (!subject?.trim() || !message?.trim()) {
+    res.status(400).json({ success: false, message: 'Subject and message are required' }); return;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, firstName: true, email: true },
+  });
+  if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+
+  const { queueEmail } = await import('../lib/emailQueue');
+  const { adminDirectEmailTemplate } = await import('../lib/emailTemplates');
+
+  await queueEmail(
+    user.email,
+    subject.trim(),
+    adminDirectEmailTemplate({ firstName: user.firstName, subject: subject.trim(), message: message.trim() }),
+    'notification'
+  );
+
+  res.json({ success: true, message: `Email queued for ${user.email}` });
 }
 
 // ─── GET /api/admin/churches/:id ──────────────────────────────────────────────
 
 export async function getAdminChurch(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+
   const church = await prisma.church.findUnique({
-    where: { id: req.params.id },
+    where: { id },
     include: {
       ministryAdmin: {
         select: { id: true, firstName: true, lastName: true, email: true, phone: true, accountCountry: true },
@@ -383,13 +352,8 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
       _count: { select: { users: true, events: true, givingCampaigns: true } },
     },
   });
+  if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
 
-  if (!church) {
-    res.status(404).json({ success: false, message: 'Church not found' });
-    return;
-  }
-
-  // Get members with pagination
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(100, Math.max(10, parseInt(req.query.limit as string) || 70));
   const skip = (page - 1) * limit;
@@ -397,7 +361,7 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
   const roleFilter = req.query.role as string | undefined;
   const statusFilter = req.query.status as string | undefined;
 
-  const userWhere: any = { churchId: church.id };
+  const userWhere: any = { churchId: id };
   if (search) {
     userWhere.OR = [
       { firstName: { contains: search } },
@@ -445,68 +409,55 @@ const updateChurchSchema = z.object({
 });
 
 export async function updateAdminChurch(req: Request, res: Response): Promise<void> {
-  const church = await prisma.church.findUnique({ where: { id: req.params.id } });
-  if (!church) {
-    res.status(404).json({ success: false, message: 'Church not found' });
-    return;
-  }
+  const id = String(req.params.id);
+
+  const church = await prisma.church.findUnique({ where: { id }, select: { id: true } });
+  if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
 
   const parsed = updateChurchSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const updated = await prisma.church.update({
-    where: { id: req.params.id },
-    data: parsed.data,
-  });
-
+  const updated = await prisma.church.update({ where: { id }, data: parsed.data });
   res.json({ success: true, data: updated });
 }
 
 // ─── DELETE /api/admin/churches/:id ───────────────────────────────────────────
 
 export async function deleteAdminChurch(req: Request, res: Response): Promise<void> {
-  const church = await prisma.church.findUnique({ where: { id: req.params.id } });
-  if (!church) {
-    res.status(404).json({ success: false, message: 'Church not found' });
-    return;
-  }
+  const id = String(req.params.id);
+
+  const church = await prisma.church.findUnique({ where: { id }, select: { id: true } });
+  if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
 
   await prisma.$transaction(async (tx) => {
-    await tx.event.deleteMany({ where: { churchId: church.id } });
-    await tx.givingCampaign.deleteMany({ where: { churchId: church.id } });
-    await tx.donationTransaction.deleteMany({ where: { churchId: church.id } });
-    await tx.attendance.deleteMany({ where: { churchId: church.id } });
-    await tx.meeting.deleteMany({ where: { churchId: church.id } });
-    await tx.announcement.deleteMany({ where: { churchId: church.id } });
-    await tx.resource.deleteMany({ where: { churchId: church.id } });
-    await tx.transaction.deleteMany({ where: { churchId: church.id } });
-    await tx.user.updateMany({ where: { churchId: church.id }, data: { churchId: null } });
-    await tx.church.delete({ where: { id: church.id } });
+    await tx.event.deleteMany({ where: { churchId: id } });
+    await tx.givingCampaign.deleteMany({ where: { churchId: id } });
+    await tx.donationTransaction.deleteMany({ where: { churchId: id } });
+    await tx.attendance.deleteMany({ where: { churchId: id } });
+    await tx.meeting.deleteMany({ where: { churchId: id } });
+    await tx.announcement.deleteMany({ where: { churchId: id } });
+    await tx.resource.deleteMany({ where: { churchId: id } });
+    await tx.transaction.deleteMany({ where: { churchId: id } });
+    await tx.user.updateMany({ where: { churchId: id }, data: { churchId: null } });
+    await tx.church.delete({ where: { id } });
   });
 
   res.json({ success: true, message: 'Church deleted successfully' });
 }
 
-// ─── PUT /api/admin/church-users/:id — action on a church member ──────────────
+// ─── PUT /api/admin/church-users/:id ──────────────────────────────────────────
 
 export async function updateAdminChurchUser(req: Request, res: Response): Promise<void> {
-  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
-  if (!target) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
+  const id = String(req.params.id);
+
+  const target = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+  if (!target) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
   const parsed = updateUserSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const updated = await prisma.user.update({
-    where: { id: req.params.id },
+    where: { id },
     data: parsed.data,
     include: { role: { select: { name: true, displayName: true } } },
   });
@@ -514,38 +465,7 @@ export async function updateAdminChurchUser(req: Request, res: Response): Promis
   res.json({ success: true, data: safeUser(updated) });
 }
 
-// ─── POST /api/admin/users/:id/send-email ────────────────────────────────────
-
-export async function sendEmailToUser(req: Request, res: Response): Promise<void> {
-  const { subject, message } = req.body;
-  if (!subject?.trim() || !message?.trim()) {
-    res.status(400).json({ success: false, message: 'Subject and message are required' });
-    return;
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { id: req.params.id },
-    select: { id: true, firstName: true, email: true },
-  });
-  if (!user) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
-
-  const { queueEmail } = await import('../lib/emailQueue');
-  const { adminDirectEmailTemplate } = await import('../lib/emailTemplates');
-
-  await queueEmail(
-    user.email,
-    subject.trim(),
-    adminDirectEmailTemplate({ firstName: user.firstName, subject: subject.trim(), message: message.trim() }),
-    'notification'
-  );
-
-  res.json({ success: true, message: `Email queued for ${user.email}` });
-}
-
-// ─── POST /api/admin/users/:id/subscription — create or replace subscription ──────
+// ─── POST /api/admin/users/:id/subscription ───────────────────────────────────
 
 const subscriptionSchema = z.object({
   packageId: z.string().min(1, 'Package is required'),
@@ -555,40 +475,28 @@ const subscriptionSchema = z.object({
 });
 
 export async function manageAdminSubscription(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+
   const user = await prisma.user.findUnique({
-    where: { id: req.params.id },
-    include: { role: true },
+    where: { id },
+    include: { role: { select: { name: true } } },
   });
-  if (!user) {
-    res.status(404).json({ success: false, message: 'User not found' });
-    return;
-  }
+  if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
   if (user.role?.name !== 'ministry_admin') {
-    res.status(400).json({ success: false, message: 'Subscriptions only apply to ministry admins' });
-    return;
+    res.status(400).json({ success: false, message: 'Subscriptions only apply to ministry admins' }); return;
   }
 
   const parsed = subscriptionSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const pkg = await prisma.package.findUnique({ where: { id: parsed.data.packageId } });
-  if (!pkg) {
-    res.status(404).json({ success: false, message: 'Package not found' });
-    return;
-  }
+  const pkg = await prisma.package.findUnique({ where: { id: parsed.data.packageId }, select: { id: true } });
+  if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
 
-  // Expire all existing active subscriptions first
-  await prisma.subscription.updateMany({
-    where: { ministryAdminId: user.id, status: 'active' },
-    data: { status: 'expired' },
-  });
+  await prisma.subscription.updateMany({ where: { ministryAdminId: id, status: 'active' }, data: { status: 'expired' } });
 
   const subscription = await prisma.subscription.create({
     data: {
-      ministryAdminId: user.id,
+      ministryAdminId: id,
       packageId: parsed.data.packageId,
       status: parsed.data.status,
       startsAt: new Date(parsed.data.startsAt),
@@ -600,31 +508,29 @@ export async function manageAdminSubscription(req: Request, res: Response): Prom
   res.status(201).json({ success: true, data: subscription });
 }
 
-// ─── PUT /api/admin/users/:id/subscription/:subId — update existing subscription ───
+// ─── PUT /api/admin/users/:id/subscription/:subId ─────────────────────────────
 
 export async function updateAdminSubscription(req: Request, res: Response): Promise<void> {
-  const sub = await prisma.subscription.findUnique({ where: { id: req.params.subId } });
-  if (!sub || sub.ministryAdminId !== req.params.id) {
-    res.status(404).json({ success: false, message: 'Subscription not found' });
-    return;
+  const userId = String(req.params.id);
+  const subId = String(req.params.subId);
+
+  const sub = await prisma.subscription.findUnique({ where: { id: subId } });
+  if (!sub || sub.ministryAdminId !== userId) {
+    res.status(404).json({ success: false, message: 'Subscription not found' }); return;
   }
 
   const parsed = subscriptionSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  // If activating this sub, expire others
   if (parsed.data.status === 'active') {
     await prisma.subscription.updateMany({
-      where: { ministryAdminId: req.params.id, status: 'active', id: { not: sub.id } },
+      where: { ministryAdminId: userId, status: 'active', id: { not: subId } },
       data: { status: 'expired' },
     });
   }
 
   const updated = await prisma.subscription.update({
-    where: { id: sub.id },
+    where: { id: subId },
     data: {
       packageId: parsed.data.packageId,
       status: parsed.data.status,
@@ -637,7 +543,7 @@ export async function updateAdminSubscription(req: Request, res: Response): Prom
   res.json({ success: true, data: updated });
 }
 
-// ─── GET /api/admin/transactions — all package payment transactions ─────────────
+// ─── GET /api/admin/transactions ──────────────────────────────────────────────
 
 export async function getAdminTransactions(req: Request, res: Response): Promise<void> {
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
@@ -654,15 +560,8 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
   const where: any = {};
 
   if (search) {
-    // Search by ministry admin name or email
     const matchingUsers = await prisma.user.findMany({
-      where: {
-        OR: [
-          { firstName: { contains: search } },
-          { lastName: { contains: search } },
-          { email: { contains: search } },
-        ],
-      },
+      where: { OR: [{ firstName: { contains: search } }, { lastName: { contains: search } }, { email: { contains: search } }] },
       select: { id: true },
     });
     where.ministryAdminId = { in: matchingUsers.map((u: any) => u.id) };
@@ -676,29 +575,21 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
     if (dateTo) where.createdAt.lte = new Date(dateTo + 'T23:59:59Z');
   }
 
-  // Country filter: join through user
-  let ministryAdminIds: string[] | undefined;
   if (countryFilter) {
-    const users = await prisma.user.findMany({
-      where: { accountCountry: countryFilter },
-      select: { id: true },
-    });
-    ministryAdminIds = users.map((u: any) => u.id);
+    const countryAdmins = await prisma.user.findMany({ where: { accountCountry: countryFilter }, select: { id: true } });
+    const countryAdminIds = countryAdmins.map((u: any) => u.id);
     if (where.ministryAdminId) {
-      // Intersect with search results
       const searchIds = new Set(where.ministryAdminId.in);
-      where.ministryAdminId = { in: ministryAdminIds.filter((id: string) => searchIds.has(id)) };
+      where.ministryAdminId = { in: countryAdminIds.filter((id: string) => searchIds.has(id)) };
     } else {
-      where.ministryAdminId = { in: ministryAdminIds };
+      where.ministryAdminId = { in: countryAdminIds };
     }
   }
 
   const [payments, total] = await Promise.all([
     prisma.payment.findMany({
       where,
-      include: {
-        package: { select: { name: true, displayName: true } },
-      },
+      include: { package: { select: { name: true, displayName: true } } },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
@@ -706,7 +597,6 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
     prisma.payment.count({ where }),
   ]);
 
-  // Enrich with ministry admin info
   const adminIds = [...new Set(payments.map((p: any) => p.ministryAdminId))];
   const admins = await prisma.user.findMany({
     where: { id: { in: adminIds } },
@@ -716,10 +606,7 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
 
   res.json({
     success: true,
-    data: payments.map((p: any) => ({
-      ...p,
-      ministryAdmin: adminMap[p.ministryAdminId] ?? null,
-    })),
+    data: payments.map((p: any) => ({ ...p, ministryAdmin: adminMap[p.ministryAdminId] ?? null })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 }
