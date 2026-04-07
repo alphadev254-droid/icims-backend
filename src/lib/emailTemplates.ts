@@ -497,6 +497,29 @@ export const subscriptionExpiredTemplate = (data: {
 </html>
 `;
 
+export const adminDirectEmailTemplate = (data: { firstName: string; subject: string; message: string }) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>${SYSTEM_NAME}</h1>
+      <p>Message from System Administrator</p>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <div style="white-space: pre-line; color: #4b5563; line-height: 1.8;">${data.message}</div>
+    </div>
+    <div class="footer">
+      <p>This message was sent to you by the ${SYSTEM_NAME} system administrator.</p>
+      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
 export const memberWelcomeTemplate = (data: { firstName: string; lastName: string; email: string; churchName: string }) => `
 <!DOCTYPE html>
 <html>

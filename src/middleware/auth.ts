@@ -34,6 +34,19 @@ export function authorize(...roles: UserRole[]) {
   };
 }
 
+// Guard for system admin only
+export function authorizeSystemAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+  if (req.user.role !== 'system_admin') {
+    res.status(403).json({ success: false, message: 'System admin access required' });
+    return;
+  }
+  next();
+}
+
 // Guard by permission string — primary authorization mechanism.
 // Checks req.user.permissions[] which is embedded in the JWT on login (sourced from DB).
 export function authorizePermission(permission: string) {

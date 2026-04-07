@@ -213,6 +213,16 @@ export async function login(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  if (user.status === 'suspended') {
+    res.status(403).json({ success: false, message: 'Your account has been suspended. Please contact support.' });
+    return;
+  }
+
+  if (user.status === 'inactive') {
+    res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
+    return;
+  }
+
   // Get package from National Admin if needed
   const userWithPackage = await getUserWithPackage(user.id);
   if (!userWithPackage) {
@@ -241,9 +251,16 @@ export async function login(req: Request, res: Response): Promise<void> {
   res.json({ success: true, user: safeUser(userWithPackage, permissions) });
 }
 
+const TITLES = ['Rev', 'Dr', 'Prof', 'Pastor', 'Prophet', 'Seer', 'Sister', 'Brother', 'Father', 'Other'] as const;
+
 const registerSchema = z.object({
   firstName: z.string().min(2, 'First name must be at least 2 characters'),
   lastName: z.string().min(2, 'Last name must be at least 2 characters'),
+  title: z.enum(TITLES).optional(),
+  titleOther: z.string().optional(),
+  ministryName: z.string().optional(),
+  currentMembership: z.number().int().min(0).optional(),
+  numberOfBranches: z.number().int().min(0).optional(),
   email: z.string().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   phone: z.string().min(1, 'Phone number is required'),
@@ -324,6 +341,11 @@ export async function register(req: Request, res: Response): Promise<void> {
       password: hashed,
       firstName: data.firstName,
       lastName: data.lastName,
+      title: data.title,
+      titleOther: data.titleOther,
+      ministryName: data.ministryName,
+      currentMembership: data.currentMembership,
+      numberOfBranches: data.numberOfBranches ?? 0,
       roleId,
       churchId,
       ministryAdminId,
@@ -398,6 +420,16 @@ export async function getMe(req: Request, res: Response): Promise<void> {
 
   if (!user) {
     res.status(404).json({ success: false, message: 'User not found' });
+    return;
+  }
+
+  if (user.status === 'suspended') {
+    res.status(403).json({ success: false, message: 'Your account has been suspended. Please contact support.' });
+    return;
+  }
+
+  if (user.status === 'inactive') {
+    res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
     return;
   }
 
