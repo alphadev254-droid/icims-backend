@@ -17,6 +17,7 @@ router.delete('/campaigns/:id', authenticate, authorizePermission('campaigns:del
 
 // Donations
 router.post('/donate', authenticate, authorizePermission('donations:create'), givingController.createDonation);
+router.post('/donations/cash', authenticate, authorizePermission('donations:create'), givingController.recordCashDonation);
 router.get('/donations', authenticate, authorizePermission('donations:read'), givingController.getDonations);
 router.get('/donations/:id/transaction', authenticate, authorizePermission('donations:read'), givingController.getDonationTransaction);
 

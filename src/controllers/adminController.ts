@@ -610,3 +610,129 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 }
+
+// ─── GET /api/admin/system-transactions ───────────────────────────────────────
+
+export async function getAdminSystemTransactions(req: Request, res: Response): Promise<void> {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(req.query.limit as string) || 70));
+  const skip = (page - 1) * limit;
+
+  const search         = (req.query.search as string)?.trim() || '';
+  const typeFilter     = req.query.type as string | undefined;
+  const statusFilter   = req.query.status as string | undefined;
+  const gatewayFilter  = req.query.gateway as string | undefined;
+  const countryFilter  = req.query.country as string | undefined;
+  const churchIdFilter = req.query.churchId as string | undefined;
+  const dateFrom       = req.query.dateFrom as string | undefined;
+  const dateTo         = req.query.dateTo as string | undefined;
+
+  // Build AND conditions so filters never overwrite each other
+  const andConditions: any[] = [];
+
+  // Search — matches user name/email, guest name/email, or reference
+  if (search) {
+    const matchingUsers = await prisma.user.findMany({
+      where: {
+        OR: [
+          { firstName: { contains: search } },
+          { lastName: { contains: search } },
+          { email: { contains: search } },
+        ],
+      },
+      select: { id: true },
+    });
+    andConditions.push({
+      OR: [
+        { userId: { in: matchingUsers.map((u: any) => u.id) } },
+        { guestName: { contains: search } },
+        { guestEmail: { contains: search } },
+        { reference: { contains: search } },
+      ],
+    });
+  }
+
+  if (typeFilter)    andConditions.push({ type: typeFilter });
+  if (statusFilter)  andConditions.push({ status: statusFilter });
+  if (gatewayFilter) andConditions.push({ gateway: gatewayFilter });
+
+  // Country — gatewayCountry is already stored on the transaction row
+  if (countryFilter) andConditions.push({ gatewayCountry: countryFilter });
+
+  // Specific church filter
+  if (churchIdFilter) andConditions.push({ churchId: churchIdFilter });
+
+  if (dateFrom || dateTo) {
+    const dateCondition: any = {};
+    if (dateFrom) dateCondition.gte = new Date(dateFrom);
+    if (dateTo)   dateCondition.lte = new Date(dateTo + 'T23:59:59Z');
+    andConditions.push({ createdAt: dateCondition });
+  }
+
+  const where: any = andConditions.length > 0 ? { AND: andConditions } : {};
+
+  const [transactions, total, mwkAgg, kesAgg] = await Promise.all([
+    prisma.transaction.findMany({
+      where,
+      select: {
+        id: true,
+        type: true,
+        amount: true,
+        baseAmount: true,
+        convenienceFee: true,
+        systemFeeAmount: true,
+        totalAmount: true,
+        currency: true,
+        status: true,
+        paymentMethod: true,
+        gateway: true,
+        gatewayCountry: true,
+        reference: true,
+        isGuest: true,
+        isManual: true,
+        guestName: true,
+        guestEmail: true,
+        paidAt: true,
+        createdAt: true,
+        user: { select: { firstName: true, lastName: true, email: true } },
+        church: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.transaction.count({ where }),
+    prisma.transaction.aggregate({
+      where: { ...where, currency: 'MWK' },
+      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, totalAmount: true },
+      _count: true,
+    }),
+    prisma.transaction.aggregate({
+      where: { ...where, currency: 'KES' },
+      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, totalAmount: true },
+      _count: true,
+    }),
+  ]);
+
+  const buildCurrencySummary = (agg: typeof mwkAgg, currency: string) => ({
+    currency,
+    count: agg._count,
+    totalBaseAmount:  agg._sum.baseAmount    ?? 0,
+    totalSystemFee:   agg._sum.systemFeeAmount ?? 0,
+    totalGatewayFee:  agg._sum.convenienceFee  ?? 0,
+    totalCharged:     agg._sum.totalAmount   ?? 0,
+  });
+
+  res.json({
+    success: true,
+    data: transactions,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    summary: {
+      total,
+      byCurrency: [
+        ...(mwkAgg._count > 0 ? [buildCurrencySummary(mwkAgg, 'MWK')] : []),
+        ...(kesAgg._count > 0 ? [buildCurrencySummary(kesAgg, 'KES')] : []),
+      ],
+    },
+  });
+}

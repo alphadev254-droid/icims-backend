@@ -825,3 +825,111 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
     res.json({ success: true, data: transaction });
   }
 }
+
+// ─── POST /api/giving/donations/cash ─────────────────────────────────────────
+
+const recordCashDonationSchema = z.object({
+  campaignId: z.string().min(1),
+  donorType: z.enum(['member', 'guest', 'anonymous']),
+  memberId: z.string().optional(),
+  guestName: z.string().optional(),
+  guestEmail: z.string().email().optional().or(z.literal('')),
+  guestPhone: z.string().optional(),
+  amount: z.number().positive('Amount must be positive'),
+  currency: z.string().min(1),
+  date: z.string().min(1, 'Date is required'),
+  reference: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export async function recordCashDonation(req: Request, res: Response): Promise<void> {
+  const adminId = req.user?.userId;
+  const roleName = req.user?.role;
+
+  const parsed = recordCashDonationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const { campaignId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes } = parsed.data;
+
+  // Validate required fields per donor type
+  if (donorType === 'member' && !memberId) {
+    res.status(400).json({ success: false, message: 'Member is required' });
+    return;
+  }
+  if (donorType === 'guest' && !guestName) {
+    res.status(400).json({ success: false, message: 'Guest name is required' });
+    return;
+  }
+
+  // Verify campaign exists
+  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
+  if (!campaign) {
+    res.status(404).json({ success: false, message: 'Campaign not found' });
+    return;
+  }
+
+  // Verify admin has access to this campaign's church
+  const { getAccessibleChurchIds } = await import('../lib/churchScope');
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    adminId
+  );
+
+  if (!accessibleChurchIds.includes(campaign.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to this campaign' });
+    return;
+  }
+
+  // For member type — verify member exists and is in scope
+  let resolvedUserId: string | null = null;
+  if (donorType === 'member' && memberId) {
+    const member = await prisma.user.findUnique({
+      where: { id: memberId },
+      select: { id: true, churchId: true },
+    });
+    if (!member) {
+      res.status(404).json({ success: false, message: 'Member not found' });
+      return;
+    }
+    if (member.churchId && !accessibleChurchIds.includes(member.churchId)) {
+      res.status(403).json({ success: false, message: 'Access denied to this member' });
+      return;
+    }
+    resolvedUserId = member.id;
+  }
+
+  const donation = await prisma.donationTransaction.create({
+    data: {
+      campaignId,
+      churchId: campaign.churchId,
+      amount,
+      currency,
+      paymentMethod: 'cash',
+      status: 'completed',
+      reference: reference || undefined,
+      notes: notes || undefined,
+      createdAt: new Date(date),
+      // donor type fields
+      userId: resolvedUserId,
+      isGuest: donorType === 'guest',
+      isAnonymous: donorType === 'anonymous',
+      guestName: donorType === 'guest' ? guestName : undefined,
+      guestEmail: donorType === 'guest' ? (guestEmail || undefined) : undefined,
+      guestPhone: donorType === 'guest' ? (guestPhone || undefined) : undefined,
+    },
+    include: {
+      campaign: { select: { name: true, category: true } },
+      user: { select: { firstName: true, lastName: true, email: true } },
+      church: { select: { name: true } },
+    },
+  });
+
+  res.status(201).json({ success: true, data: donation });
+}
