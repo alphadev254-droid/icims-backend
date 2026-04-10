@@ -267,6 +267,14 @@ const registerSchema = z.object({
   gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
   accountCountry: z.enum(['Malawi', 'Kenya'], { required_error: 'Country is required' }).optional(),
   anniversary: z.string().optional(),
+  // Member-specific fields (sent when registering via invite link)
+  dateOfBirth: z.string().optional(),
+  maritalStatus: z.enum(['single', 'married', 'widowed', 'divorced']).optional(),
+  weddingDate: z.string().optional(),
+  residentialNeighbourhood: z.string().optional(),
+  membershipType: z.enum(['member', 'pastor', 'deacon', 'other']).optional(),
+  serviceInterest: z.string().optional(),
+  baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().optional(),
 }).superRefine((data, ctx) => {
   // If no inviteToken (national admin registration), require accountCountry
@@ -353,6 +361,14 @@ export async function register(req: Request, res: Response): Promise<void> {
       phone: data.phone,
       gender: data.gender,
       anniversary: data.anniversary ? new Date(data.anniversary) : undefined,
+      // Member fields
+      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
+      maritalStatus: data.maritalStatus,
+      weddingDate: data.weddingDate ? new Date(data.weddingDate) : undefined,
+      residentialNeighbourhood: data.residentialNeighbourhood,
+      membershipType: data.membershipType,
+      serviceInterest: data.serviceInterest,
+      baptizedByImmersion: data.baptizedByImmersion,
     },
     include: USER_INCLUDE,
   });
