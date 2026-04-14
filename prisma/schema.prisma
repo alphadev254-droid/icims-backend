@@ -109,6 +109,8 @@ model User {
   passwordResetTokens    PasswordResetToken[]
   teams                  UserTeam[]
   reminders              ReminderCache[]
+  announcementViews      AnnouncementView[]
+  resourceViews          ResourceView[]
 
   @@index([churchId, roleId, status, createdAt])
   @@index([dateOfBirth])
@@ -478,6 +480,7 @@ model Announcement {
   updatedAt   DateTime @updatedAt
 
   church      Church   @relation(fields: [churchId], references: [id])
+  views       AnnouncementView[]
 
   @@map("announcements")
 }
@@ -506,6 +509,7 @@ model Resource {
   updatedAt   DateTime @updatedAt
 
   church      Church   @relation(fields: [churchId], references: [id])
+  views       ResourceView[]
 
   @@map("resources")
 }
@@ -846,4 +850,34 @@ model ReminderCache {
   @@index([daysUntil])
   @@index([eventId])
   @@map("reminder_cache")
+}
+
+// ─── Content Views ─────────────────────────────────────────────────────────────
+
+model AnnouncementView {
+  id             String       @id @default(cuid())
+  announcementId String
+  userId         String
+  viewedAt       DateTime     @default(now())
+
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, userId])
+  @@index([announcementId])
+  @@map("announcement_views")
+}
+
+model ResourceView {
+  id         String   @id @default(cuid())
+  resourceId String
+  userId     String
+  viewedAt   DateTime @default(now())
+
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([resourceId, userId])
+  @@index([resourceId])
+  @@map("resource_views")
 }
