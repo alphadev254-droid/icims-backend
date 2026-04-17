@@ -12,7 +12,7 @@ const createCampaignSchema = z.object({
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions']),
   subcategory: z.string().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
-  currency: z.enum(['MWK', 'KSH']).default('MWK'),
+  currency: z.enum(['MWK', 'KES']).default('MWK'),
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),
 });
@@ -22,7 +22,7 @@ const updateCampaignSchema = z.object({
   description: z.string().optional(),
   subcategory: z.string().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
-  currency: z.enum(['MWK', 'KSH']).optional(),
+  currency: z.enum(['MWK', 'KES']).optional(),
   status: z.enum(['active', 'completed', 'cancelled']).optional(),
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),

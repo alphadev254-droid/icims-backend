@@ -45,7 +45,7 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
     prisma.subscription.count({ where: { status: 'expired' } }),
     prisma.payment.aggregate({ where: { status: 'completed' }, _sum: { amount: true }, _count: true }),
     prisma.payment.aggregate({ where: { status: 'completed', currency: 'MWK' }, _sum: { amount: true }, _count: true }),
-    prisma.payment.aggregate({ where: { status: 'completed', currency: 'KSH' }, _sum: { amount: true }, _count: true }),
+    prisma.payment.aggregate({ where: { status: 'completed', currency: 'KES' }, _sum: { amount: true }, _count: true }),
     prisma.user.findMany({
       where: { roleId: ministryAdminRole?.id },
       orderBy: { createdAt: 'desc' },

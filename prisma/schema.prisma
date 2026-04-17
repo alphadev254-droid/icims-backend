@@ -332,7 +332,7 @@ model PendingTransaction {
   id        String   @id @default(cuid())
   reference String?  @unique
   amount    Float
-  currency  String   @default("NGN")
+  currency  String   @default("MWK")
   status    String   @default("pending") // pending | completed | failed | abandoned
   userId    String?
   churchId  String
