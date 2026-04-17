@@ -243,7 +243,7 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
       baseAmount: fees.baseAmount,
       convenienceFee: fees.convenienceFee,
       systemFeeAmount: fees.systemFeeAmount,
-      transactionCost: parseFloat((fees.convenienceFee + fees.systemFeeAmount).toFixed(2)),
+      transactionCost: fees.totalAmount - fees.baseAmount,
       totalAmount: fees.totalAmount,
     },
   });

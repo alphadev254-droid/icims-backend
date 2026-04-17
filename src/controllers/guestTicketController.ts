@@ -122,7 +122,7 @@ export async function getGuestTicketFees(req: Request, res: Response): Promise<v
       baseAmount: fees.baseAmount,
       convenienceFee: fees.convenienceFee,
       systemFeeAmount: fees.systemFeeAmount,
-      transactionCost: parseFloat((fees.convenienceFee + fees.systemFeeAmount).toFixed(2)),
+      transactionCost: fees.totalAmount - fees.baseAmount,
       totalAmount: fees.totalAmount,
     },
   });
