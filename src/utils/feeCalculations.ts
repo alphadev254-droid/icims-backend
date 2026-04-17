@@ -33,7 +33,7 @@ export function calculatePaymentFees(baseAmount: number, country?: string): Paym
     baseAmount:           parseFloat(baseAmount.toFixed(2)),
     convenienceFee:       parseFloat(convenienceFee.toFixed(2)),
     systemFeeAmount:      parseFloat(systemFeeAmount.toFixed(2)),
-    totalAmount:          parseFloat(totalAmount.toFixed(2)),
+    totalAmount:          Math.ceil(totalAmount),  // always round up — M-Pesa STK push requires whole numbers
     systemGatewayFeeRate: gatewayFeeRate,
     systemFeeRate,
   };
