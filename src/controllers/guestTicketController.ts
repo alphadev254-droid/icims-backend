@@ -204,6 +204,7 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
         totalAmount: fees.totalAmount,
         gateway,
         gatewayCountry,
@@ -351,7 +352,7 @@ async function initiatePaystackGuestPayment(
       },
       ...(subaccount && {
         subaccount: subaccount.subaccountCode,
-        transaction_charge: Math.round((fees.convenienceFee + fees.systemFeeAmount) * 100),
+        transaction_charge: Math.round((fees.totalAmount - fees.baseAmount) * 100),
         bearer: 'account',
       }),
     };

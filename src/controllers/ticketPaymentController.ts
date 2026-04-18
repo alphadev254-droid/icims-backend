@@ -102,6 +102,7 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
         totalAmount: fees.totalAmount,
         gateway,
         gatewayCountry,
@@ -156,7 +157,7 @@ async function initiatePaystackTicketPayment(
       },
       ...(subaccount && {
         subaccount: subaccount.subaccountCode,
-        transaction_charge: Math.round((fees.convenienceFee + fees.systemFeeAmount) * 100),
+        transaction_charge: Math.round((fees.totalAmount - fees.baseAmount) * 100),
         bearer: 'account',
       }),
     };

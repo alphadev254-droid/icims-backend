@@ -146,6 +146,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
         totalAmount: fees.totalAmount,
         gatewayFeeRate: fees.systemGatewayFeeRate,
         systemFeeRate: fees.systemFeeRate,
@@ -409,6 +410,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const baseAmount = pendingMetadata.baseAmount || amount;
         const convenienceFee = pendingMetadata.convenienceFee || 0;
         const systemFeeAmount = pendingMetadata.systemFeeAmount || 0;
+        const ceilRoundingAmount = pendingMetadata.ceilRoundingAmount || 0;
         const totalAmount = pendingMetadata.totalAmount || amount;
         const gateway = pendingMetadata.gateway || 'paystack';
         const gatewayCountry = pendingMetadata.gatewayCountry || 'Kenya';
@@ -441,6 +443,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             baseAmount,
             convenienceFee,
             systemFeeAmount,
+            ceilRoundingAmount,
             totalAmount,
             gateway,
             paymentMethod: data.channel || 'card',

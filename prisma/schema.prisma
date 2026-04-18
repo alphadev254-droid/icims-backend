@@ -288,7 +288,8 @@ model Transaction {
   baseAmount      Float?   // Original amount (what church gets)
   convenienceFee  Float?   // Gateway processing fee (2% Paychangu, 2.9% Paystack)
   systemFeeAmount Float?   // Platform system fee (17.5% Malawi, 16% Kenya of baseAmount)
-  totalAmount     Float?   // baseAmount + convenienceFee + systemFeeAmount
+  totalAmount     Float?   // baseAmount + convenienceFee + systemFeeAmount (ceil'd)
+  ceilRoundingAmount Float? // Extra collected due to Math.ceil rounding — goes to ICIMS
   gatewayCharge   Float?   // Actual charge reported by gateway (Paychangu: charge field, Paystack: fees field)
   systemGatewayFeeRate Float?   // Gateway fee rate used e.g. 0.02 for Malawi, 0.029 for Kenya
   systemFeeRate   Float?   // Platform fee rate used e.g. 0.005 for both
@@ -605,7 +606,8 @@ model Payment {
   baseAmount      Float?   // Original package price
   convenienceFee  Float?   // 2% convenience fee
   systemFeeAmount Float?   // Platform system fee on convenience fee
-  totalAmount     Float?   // baseAmount + convenienceFee + systemFeeAmount
+  totalAmount     Float?   // baseAmount + convenienceFee + systemFeeAmount (ceil'd)
+  ceilRoundingAmount Float? // Extra collected due to Math.ceil rounding — goes to ICIMS
   gatewayCharge   Float?   // Actual charge reported by gateway
   systemGatewayFeeRate Float?  // Gateway fee rate used e.g. 0.02 Malawi, 0.029 Kenya
   systemFeeRate   Float?   // Platform fee rate used e.g. 0.005

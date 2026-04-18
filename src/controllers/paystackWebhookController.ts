@@ -98,6 +98,7 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
       const baseAmount = pendingMetadata.baseAmount || amount;
       const convenienceFee = pendingMetadata.convenienceFee || 0;
       const systemFeeAmount = pendingMetadata.systemFeeAmount || 0;
+      const ceilRoundingAmount = pendingMetadata.ceilRoundingAmount || 0;
       const totalAmount = pendingMetadata.totalAmount || amount;
       const gateway = pendingMetadata.gateway || 'paystack';
       const systemGatewayFeeRate = pendingMetadata.gatewayFeeRate || 0;
@@ -132,6 +133,7 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
           baseAmount,
           convenienceFee,
           systemFeeAmount,
+          ceilRoundingAmount,
           totalAmount,
           gateway,
           paymentMethod: txData.channel || 'card',
@@ -226,6 +228,7 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
           baseAmount: pendingMetadata.baseAmount,
           convenienceFee: pendingMetadata.convenienceFee,
           systemFeeAmount: pendingMetadata.systemFeeAmount,
+          ceilRoundingAmount: pendingMetadata.ceilRoundingAmount || 0,
           totalAmount: pendingMetadata.totalAmount,
           currency: txData.currency,
           status: 'completed',
@@ -367,6 +370,7 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
           baseAmount: pendingMetadata.baseAmount,
           convenienceFee: pendingMetadata.convenienceFee,
           systemFeeAmount: pendingMetadata.systemFeeAmount,
+          ceilRoundingAmount: pendingMetadata.ceilRoundingAmount || 0,
           totalAmount: pendingMetadata.totalAmount,
           currency: txData.currency,
           status: 'completed',

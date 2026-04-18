@@ -681,6 +681,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
         baseAmount: true,
         convenienceFee: true,
         systemFeeAmount: true,
+        ceilRoundingAmount: true,
         totalAmount: true,
         currency: true,
         status: true,
@@ -696,7 +697,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
         createdAt: true,
         user: { select: { firstName: true, lastName: true, email: true } },
         church: { select: { id: true, name: true } },
-      },
+      } as any,
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
@@ -704,23 +705,23 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
     prisma.transaction.count({ where }),
     prisma.transaction.aggregate({
       where: { ...where, currency: 'MWK' },
-      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, totalAmount: true },
-      _count: true,
+      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, totalAmount: true } as any,
+      _count: { _all: true },
     }),
     prisma.transaction.aggregate({
       where: { ...where, currency: 'KES' },
-      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, totalAmount: true },
-      _count: true,
+      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, totalAmount: true } as any,
+      _count: { _all: true },
     }),
   ]);
 
-  const buildCurrencySummary = (agg: typeof mwkAgg, currency: string) => ({
+  const buildCurrencySummary = (agg: any, currency: string) => ({
     currency,
-    count: agg._count,
-    totalBaseAmount:  agg._sum.baseAmount    ?? 0,
-    totalSystemFee:   agg._sum.systemFeeAmount ?? 0,
-    totalGatewayFee:  agg._sum.convenienceFee  ?? 0,
-    totalCharged:     agg._sum.totalAmount   ?? 0,
+    count: agg._count?._all ?? 0,
+    totalBaseAmount:  agg._sum?.baseAmount    ?? 0,
+    totalSystemFee:   (agg._sum?.systemFeeAmount ?? 0) + (agg._sum?.ceilRoundingAmount ?? 0),
+    totalGatewayFee:  agg._sum?.convenienceFee  ?? 0,
+    totalCharged:     agg._sum?.totalAmount   ?? 0,
   });
 
   res.json({
@@ -730,8 +731,8 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
     summary: {
       total,
       byCurrency: [
-        ...(mwkAgg._count > 0 ? [buildCurrencySummary(mwkAgg, 'MWK')] : []),
-        ...(kesAgg._count > 0 ? [buildCurrencySummary(kesAgg, 'KES')] : []),
+        ...((mwkAgg._count as any)?._all > 0 ? [buildCurrencySummary(mwkAgg, 'MWK')] : []),
+        ...((kesAgg._count as any)?._all > 0 ? [buildCurrencySummary(kesAgg, 'KES')] : []),
       ],
     },
   });

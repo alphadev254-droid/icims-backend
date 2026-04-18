@@ -428,6 +428,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
         totalAmount: fees.totalAmount,
         gateway,
         gatewayCountry,
@@ -492,7 +493,7 @@ async function initiatePaystackDonation(
       },
       ...(subaccount && {
         subaccount: subaccount.subaccountCode,
-        transaction_charge: Math.round((fees.convenienceFee + fees.systemFeeAmount) * 100),
+        transaction_charge: Math.round((fees.totalAmount - fees.baseAmount) * 100),
         bearer: 'account',
       }),
     };
@@ -643,6 +644,7 @@ export async function getGuestDonationFees(req: Request, res: Response): Promise
       baseAmount: fees.baseAmount,
       convenienceFee: fees.convenienceFee,
       systemFeeAmount: fees.systemFeeAmount,
+      ceilRoundingAmount: fees.ceilRoundingAmount,
       totalAmount: fees.totalAmount,
     },
   });
@@ -732,6 +734,7 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
         totalAmount: fees.totalAmount,
         gateway,
         gatewayCountry,
@@ -790,6 +793,7 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
         baseAmount: true,
         convenienceFee: true,
         systemFeeAmount: true,
+        ceilRoundingAmount: true,
         totalAmount: true,
         gateway: true,
       },
@@ -818,6 +822,7 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
           baseAmount: true,
         convenienceFee: true,
         systemFeeAmount: true,
+        ceilRoundingAmount: true,
         totalAmount: true,
         gateway: true,
       },

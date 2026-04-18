@@ -3,6 +3,7 @@ interface PaymentFees {
   convenienceFee: number;
   systemFeeAmount: number;
   totalAmount: number;
+  ceilRoundingAmount: number;  // extra collected due to Math.ceil — goes to ICIMS
   systemGatewayFeeRate: number;
   systemFeeRate: number;
 }
@@ -27,13 +28,16 @@ export function calculatePaymentFees(baseAmount: number, country?: string): Paym
   const systemFeeRate   = country === 'Kenya' ? KENYA_SYSTEM_FEE_RATE : MALAWI_SYSTEM_FEE_RATE;
   const systemFeeAmount = baseAmount * systemFeeRate;
 
-  const totalAmount = baseAmount + convenienceFee + systemFeeAmount;
+  const rawTotal = baseAmount + convenienceFee + systemFeeAmount;
+  const totalAmount = Math.ceil(rawTotal);
+  const ceilRoundingAmount = parseFloat((totalAmount - rawTotal).toFixed(2));
 
   return {
     baseAmount:           parseFloat(baseAmount.toFixed(2)),
     convenienceFee:       parseFloat(convenienceFee.toFixed(2)),
     systemFeeAmount:      parseFloat(systemFeeAmount.toFixed(2)),
-    totalAmount:          Math.ceil(totalAmount),  // always round up — M-Pesa STK push requires whole numbers
+    totalAmount,
+    ceilRoundingAmount,
     systemGatewayFeeRate: gatewayFeeRate,
     systemFeeRate,
   };
