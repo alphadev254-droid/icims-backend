@@ -791,10 +791,6 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
         paidAt: true,
         channel: true,
         baseAmount: true,
-        convenienceFee: true,
-        systemFeeAmount: true,
-        ceilRoundingAmount: true,
-        totalAmount: true,
         gateway: true,
       },
     });
@@ -820,10 +816,6 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
         createdAt: true,
         subaccountName: true,
           baseAmount: true,
-        convenienceFee: true,
-        systemFeeAmount: true,
-        ceilRoundingAmount: true,
-        totalAmount: true,
         gateway: true,
       },
     });
