@@ -842,6 +842,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             donorName: pendingMetadata.donorName,
             donorPhone: pendingMetadata.donorPhone,
             notes: pendingMetadata.notes,
+            cellId: pendingMetadata.cellId || null,
           }
         });
         

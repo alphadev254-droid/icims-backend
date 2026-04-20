@@ -9,7 +9,7 @@ const createCampaignSchema = z.object({
   churchId: z.string().min(1),
   name: z.string().min(1),
   description: z.string().optional(),
-  category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions']),
+  category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']),
   subcategory: z.string().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
   currency: z.enum(['MWK', 'KES']).default('MWK'),
@@ -306,6 +306,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
       include: {
         campaign: { select: { name: true, category: true } },
         user: { select: { firstName: true, lastName: true, email: true } },
+        church: { select: { name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -361,6 +362,7 @@ const createDonationSchema = z.object({
   donorEmail: z.string().email().optional(),
   donorPhone: z.string().optional(),
   notes: z.string().optional(),
+  cellId: z.string().optional(),
 });
 
 export async function createDonation(req: Request, res: Response): Promise<void> {
@@ -377,7 +379,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { campaignId, amount, isAnonymous, donorName, donorEmail, donorPhone, notes } = parsed.data;
+  const { campaignId, amount, isAnonymous, donorName, donorEmail, donorPhone, notes, cellId } = parsed.data;
 
   const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
   if (!campaign) {
@@ -425,6 +427,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
         donorName,
         donorPhone,
         notes,
+        cellId: cellId || null,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
@@ -679,6 +682,7 @@ const guestDonationSchema = z.object({
   guestName: z.string().min(1),
   guestEmail: z.string().email(),
   guestPhone: z.string().optional(),
+  cellId: z.string().optional(),
 });
 
 export async function createGuestDonation(req: Request, res: Response): Promise<void> {
@@ -691,7 +695,7 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
     return;
   }
 
-  const { campaignId, amount, guestName, guestEmail, guestPhone } = parsed.data;
+  const { campaignId, amount, guestName, guestEmail, guestPhone, cellId } = parsed.data;
 
   const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
   if (!campaign || !campaign.allowPublicDonations) {
@@ -731,6 +735,7 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
         guestEmail,
         guestPhone: guestPhone || null,
         isAnonymous: false,
+        cellId: cellId || null,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
@@ -837,6 +842,7 @@ const recordCashDonationSchema = z.object({
   date: z.string().min(1, 'Date is required'),
   reference: z.string().optional(),
   notes: z.string().optional(),
+  cellId: z.string().optional(),
 });
 
 export async function recordCashDonation(req: Request, res: Response): Promise<void> {
@@ -849,7 +855,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { campaignId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes } = parsed.data;
+  const { campaignId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes, cellId } = parsed.data;
 
   // Validate required fields per donor type
   if (donorType === 'member' && !memberId) {
@@ -902,6 +908,30 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     resolvedUserId = member.id;
   }
 
+  // Create Transaction record for consistency (cash type)
+  const transaction = await prisma.transaction.create({
+    data: {
+      amount,
+      currency,
+      status: 'completed',
+      paymentMethod: 'cash',
+      type: 'donation',
+      isManual: true,
+      reference: reference || undefined,
+      notes: notes || undefined,
+      baseAmount: amount,
+      userId: resolvedUserId,
+      churchId: campaign.churchId,
+      paidAt: new Date(date),
+      createdAt: new Date(date),
+      // donor info
+      isGuest: donorType === 'guest',
+      guestName: donorType === 'guest' ? guestName : undefined,
+      guestEmail: donorType === 'guest' ? (guestEmail || undefined) : undefined,
+      guestPhone: donorType === 'guest' ? (guestPhone || undefined) : undefined,
+    },
+  });
+
   const donation = await prisma.donationTransaction.create({
     data: {
       campaignId,
@@ -910,6 +940,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
       currency,
       paymentMethod: 'cash',
       status: 'completed',
+      transactionId: transaction.id,
       reference: reference || undefined,
       notes: notes || undefined,
       createdAt: new Date(date),
@@ -920,6 +951,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
       guestName: donorType === 'guest' ? guestName : undefined,
       guestEmail: donorType === 'guest' ? (guestEmail || undefined) : undefined,
       guestPhone: donorType === 'guest' ? (guestPhone || undefined) : undefined,
+      cellId: cellId || undefined,
     },
     include: {
       campaign: { select: { name: true, category: true } },
@@ -929,4 +961,29 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
   });
 
   res.status(201).json({ success: true, data: donation });
+}
+
+// ─── GET /api/giving/campaigns/:id/cells — public, no auth ───────────────────
+// Returns active cells for the church that owns this campaign (for fellowship_offering)
+
+export async function getPublicCampaignCells(req: Request, res: Response): Promise<void> {
+  const { id } = req.params;
+
+  const campaign = await prisma.givingCampaign.findUnique({
+    where: { id: String(id) },
+    select: { churchId: true, allowPublicDonations: true, category: true },
+  });
+
+  if (!campaign || !campaign.allowPublicDonations) {
+    res.status(404).json({ success: false, message: 'Campaign not found' });
+    return;
+  }
+
+  const cells = await prisma.cell.findMany({
+    where: { churchId: campaign.churchId, status: 'active' },
+    select: { id: true, name: true, zone: true },
+    orderBy: { name: 'asc' },
+  });
+
+  res.json({ success: true, data: cells });
 }

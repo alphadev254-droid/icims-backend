@@ -416,6 +416,7 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
           donorName: pendingMetadata.donorName,
           donorPhone: pendingMetadata.donorPhone,
           notes: pendingMetadata.notes,
+          cellId: pendingMetadata.cellId || null,
         }
       });
 

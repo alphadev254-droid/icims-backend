@@ -30,6 +30,9 @@ const FEATURES = [
   { name: 'event_ticketing', displayName: 'Event Ticketing', category: 'events', sortOrder: 16 },
   { name: 'event_attendance', displayName: 'Event Attendance Tracking', category: 'events', sortOrder: 17 },
   
+  // Cell / Fellowship Management
+  { name: 'cell_management', displayName: 'Cell & Fellowship Management', category: 'management', sortOrder: 21 },
+
   // Limits
   { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 18 },
   { name: 'max_churches', displayName: 'Maximum Churches', category: 'limit', sortOrder: 19 },
@@ -107,6 +110,7 @@ const PACKAGES = [
       { name: 'advanced_reports', limit: null },
       { name: 'event_ticketing', limit: null },
       { name: 'event_attendance', limit: null },
+      { name: 'cell_management', limit: null },
       { name: 'max_members', limit: 999999 },
       { name: 'max_churches', limit: 999 },
       { name: 'max_events_per_month', limit: 999999 },

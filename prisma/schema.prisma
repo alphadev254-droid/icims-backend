@@ -111,6 +111,8 @@ model User {
   reminders              ReminderCache[]
   announcementViews      AnnouncementView[]
   resourceViews          ResourceView[]
+  cellMemberships        CellMember[]
+  cellAttendance         CellAttendance[]
 
   @@index([churchId, roleId, status, createdAt])
   @@index([dateOfBirth])
@@ -173,6 +175,7 @@ model Church {
   kpis          KPI[]
   teams         Team[]
   reminders     ReminderCache[]
+  cells         Cell[]
 
   @@map("churches")
 }
@@ -359,7 +362,7 @@ model GivingCampaign {
   churchId      String
   name          String
   description   String?  @db.Text
-  category      String   // tithe | offering | partnership | welfare | missions
+  category      String   // tithe | offering | partnership | welfare | missions | fellowship_offering
   subcategory   String?  // tv_sponsorship | radio_sponsorship | funeral | wedding | etc
   targetAmount  Float?
   currency      String   @default("MWK")
@@ -368,10 +371,12 @@ model GivingCampaign {
   endDate       DateTime?
   imageUrl      String?
   allowPublicDonations Boolean @default(false)
+  cellId        String?  // set when category = fellowship_offering
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   church        Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  cell          Cell?    @relation(fields: [cellId], references: [id])
   donations     DonationTransaction[]
 
   @@index([churchId])
@@ -400,12 +405,14 @@ model DonationTransaction {
   donorEmail    String?
   donorPhone    String?
   notes         String?  @db.Text
+  cellId        String?  // set when campaign category = fellowship_offering
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   campaign      GivingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   user          User?    @relation(fields: [userId], references: [id])
   church        Church   @relation(fields: [churchId], references: [id])
+  cell          Cell?    @relation(fields: [cellId], references: [id])
 
   @@index([campaignId])
   @@index([userId])
@@ -882,4 +889,91 @@ model ResourceView {
   @@unique([resourceId, userId])
   @@index([resourceId])
   @@map("resource_views")
+}
+
+// ─── Cell / Fellowship Management ─────────────────────────────────────────────
+
+model Cell {
+  id              String   @id @default(cuid())
+  churchId        String
+  name            String
+  zone            String?  // residential area / zone
+  meetingDay      String?  // Monday, Tuesday, etc.
+  meetingTime     String?  // e.g. "18:00"
+  status          String   @default("active") // active | inactive
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  church          Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  members         CellMember[]
+  meetings        CellMeeting[]
+  campaigns       GivingCampaign[]
+  donations       DonationTransaction[]
+
+  @@index([churchId])
+  @@index([status])
+  @@map("cells")
+}
+
+model CellMember {
+  id          String   @id @default(cuid())
+  cellId      String
+  userId      String
+  joinedAt    DateTime @default(now())
+  leftAt      DateTime?  // set when removed (soft delete)
+  status      String   @default("active") // active | inactive | new_convert
+  tags        String?  // JSON array e.g. ["New Member", "Leader-in-training"]
+  isLeader    Boolean  @default(false)
+  isAssistant Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cell        Cell     @relation(fields: [cellId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([cellId, userId])
+  // Enforce one leader and one assistant per cell using filtered logic in application layer
+  @@index([cellId])
+  @@index([userId])
+  @@map("cell_members")
+}
+
+model CellMeeting {
+  id          String   @id @default(cuid())
+  cellId      String
+  date        DateTime
+  topic       String?
+  notes       String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cell        Cell     @relation(fields: [cellId], references: [id], onDelete: Cascade)
+  attendance  CellAttendance[]
+
+  @@index([cellId])
+  @@index([date])
+  @@map("cell_meetings")
+}
+
+model CellAttendance {
+  id              String   @id @default(cuid())
+  meetingId       String
+  cellId          String
+  userId          String?  // null if visitor
+  status          String   @default("present") // present | absent | excused
+  isVisitor       Boolean  @default(false)
+  visitorName     String?
+  visitorPhone    String?
+  isFirstTime     Boolean  @default(true) // first-time vs returning visitor
+  invitedByUserId String?  // which cell member invited this visitor
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  meeting         CellMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user            User?       @relation(fields: [userId], references: [id])
+
+  @@index([meetingId])
+  @@index([cellId])
+  @@index([userId])
+  @@map("cell_attendance")
 }

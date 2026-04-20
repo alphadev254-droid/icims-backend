@@ -6,6 +6,7 @@ const router = Router();
 
 // Public routes (no auth)
 router.get('/campaigns/:id/public', givingController.getPublicCampaign);
+router.get('/campaigns/:id/cells', givingController.getPublicCampaignCells);
 router.post('/guest-donate', givingController.createGuestDonation);
 
 // Campaigns

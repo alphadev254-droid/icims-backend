@@ -78,6 +78,10 @@ const PERMISSIONS = [
   { name: 'teams:delete', resource: 'teams', action: 'delete' },
   { name: 'teams:assign', resource: 'teams', action: 'assign' },
   { name: 'reminders:read', resource: 'reminders', action: 'read' },
+  { name: 'cells:read',   resource: 'cells', action: 'read' },
+  { name: 'cells:create', resource: 'cells', action: 'create' },
+  { name: 'cells:update', resource: 'cells', action: 'update' },
+  { name: 'cells:delete', resource: 'cells', action: 'delete' },
 ];
 
 const ROLES = [
@@ -108,6 +112,8 @@ const MEMBER_PERMISSIONS = [
   'packages:view',
   'teams:read',
   'reminders:read',
+  'cells:read',
+  'cells:update',  // members can submit attendance (cell leaders)
 ];
 
 async function main() {

@@ -488,6 +488,7 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
           donorName: metadata.donorName,
           donorPhone: metadata.donorPhone,
           notes: metadata.notes,
+          cellId: metadata.cellId || null,
         }
       });
       
