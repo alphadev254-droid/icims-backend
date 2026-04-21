@@ -321,6 +321,7 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
   }
   if (roleFilter === 'leader') where.isLeader = true;
   if (roleFilter === 'assistant') where.isAssistant = true;
+  if (roleFilter === 'member') { where.isLeader = false; where.isAssistant = false; }
 
   // Search by user name/email — filter in DB via user relation
   const userWhere = search
@@ -451,6 +452,7 @@ const attendanceSchema = z.object({
     isVisitor: z.boolean().optional().default(false),
     visitorName: z.string().optional(),
     visitorPhone: z.string().optional(),
+    visitorEmail: z.string().email().optional().or(z.literal('')),
     isFirstTime: z.boolean().optional().default(true),
     invitedByUserId: z.string().optional(),
     notes: z.string().optional(),
@@ -636,6 +638,100 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   }
   const ageDistribution = Object.entries(ageBuckets).map(([range, count]) => ({ range, count }));
 
+  // ── Guest-to-member conversion tracking ──────────────────────────────────
+  // A guest "converted" if their phone or email matches an active cell member's user record
+  // Done at DB level: get all visitor phones/emails, then check against member users
+
+  // Get distinct visitor phones and emails for this cell
+  const [visitorPhones, visitorEmails] = await Promise.all([
+    prisma.cellAttendance.findMany({
+      where: { cellId, isVisitor: true, visitorPhone: { not: null } },
+      select: { visitorPhone: true },
+      distinct: ['visitorPhone'],
+    }),
+    prisma.cellAttendance.findMany({
+      where: { cellId, isVisitor: true, visitorEmail: { not: null } } as any,
+      select: { visitorEmail: true } as any,
+      distinct: ['visitorEmail' as any],
+    }).catch(() => []),
+  ]);
+
+  const phones = visitorPhones.map((v: any) => v.visitorPhone).filter(Boolean);
+  const emails = (visitorEmails as any[]).map((v: any) => v.visitorEmail).filter(Boolean);
+
+  // Count active members whose phone or email matches a past visitor
+  const convertedCount = await prisma.cellMember.count({
+    where: {
+      cellId,
+      status: 'active',
+      user: {
+        OR: [
+          ...(phones.length > 0 ? [{ phone: { in: phones } }] : []),
+          ...(emails.length > 0 ? [{ email: { in: emails } }] : []),
+        ],
+      },
+    },
+  });
+
+  const totalUniqueVisitors = phones.length + emails.filter(e => !phones.includes(e)).length;
+  const conversionRate = totalUniqueVisitors > 0
+    ? Math.round((convertedCount / totalUniqueVisitors) * 100)
+    : 0;
+  // Three separate groupBy queries (phone, email, name) — DB does the counting
+  const [byPhone, byEmail, byName] = await Promise.all([
+    prisma.cellAttendance.groupBy({
+      by: ['visitorPhone'],
+      where: { cellId, isVisitor: true, visitorPhone: { not: null } },
+      _count: { id: true },
+      having: { id: { _count: { gte: 2 } } },
+      orderBy: { _count: { id: 'desc' } },
+      take: 10,
+    }),
+    prisma.cellAttendance.groupBy({
+      by: ['visitorEmail' as any],
+      where: { cellId, isVisitor: true, visitorPhone: null, visitorEmail: { not: null } } as any,
+      _count: { id: true },
+      having: { id: { _count: { gte: 2 } } },
+      orderBy: { _count: { id: 'desc' } },
+      take: 10,
+    }).catch(() => []), // visitorEmail may not exist yet pre-migration
+    prisma.cellAttendance.groupBy({
+      by: ['visitorName'],
+      where: { cellId, isVisitor: true, visitorPhone: null, visitorName: { not: null } },
+      _count: { id: true },
+      having: { id: { _count: { gte: 2 } } },
+      orderBy: { _count: { id: 'desc' } },
+      take: 10,
+    }),
+  ]);
+
+  // Merge results — phone takes priority, then email, then name
+  // Fetch one representative record per group to get name/email/phone for display
+  const phoneKeys = new Set(byPhone.map((r: any) => r.visitorPhone));
+  const emailKeys = new Set((byEmail as any[]).map((r: any) => r.visitorEmail));
+
+  const repeatVisitorKeys = [
+    ...byPhone.map((r: any) => ({ key: r.visitorPhone, field: 'visitorPhone', visits: r._count.id })),
+    ...(byEmail as any[]).filter((r: any) => !phoneKeys.has(r.visitorPhone)).map((r: any) => ({ key: r.visitorEmail, field: 'visitorEmail', visits: r._count.id })),
+    ...(byName as any[]).filter((r: any) => !phoneKeys.has(r.visitorPhone) && !emailKeys.has((r as any).visitorEmail)).map((r: any) => ({ key: r.visitorName, field: 'visitorName', visits: r._count.id })),
+  ].sort((a, b) => b.visits - a.visits).slice(0, 10);
+
+  // Fetch one representative record per group for display info
+  const repeatVisitors = await Promise.all(
+    repeatVisitorKeys.map(async ({ key, field, visits }) => {
+      const sample = await prisma.cellAttendance.findFirst({
+        where: { cellId, isVisitor: true, [field]: key },
+        select: { visitorName: true, visitorPhone: true },
+      });
+      return {
+        name: sample?.visitorName ?? '',
+        phone: sample?.visitorPhone ?? null,
+        email: null as string | null, // populated post-migration
+        visits,
+      };
+    })
+  );
+
   res.json({
     success: true,
     data: {
@@ -643,6 +739,8 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       attendanceTrend, consecutiveAbsences,
       memberGrowth: { newThisMonth, leftThisMonth, netGrowth, newLastMonth },
       ageDistribution, topAttendees, mostAbsent,
+      repeatVisitors,
+      guestConversion: { convertedCount, totalUniqueVisitors, conversionRate },
     },
   });
 }
@@ -1011,4 +1109,60 @@ export async function getCellsSimple(req: Request, res: Response): Promise<void>
   });
 
   res.json({ success: true, data: cells });
+}
+
+// ─── GET /api/cells/:id/church-members ────────────────────────────────────────
+// Returns members of the church that owns this cell — for the Add Member dialog
+
+export async function getCellChurchMembers(req: Request, res: Response): Promise<void> {
+  const cellId = String(req.params.id);
+  const { search, page = '1', limit = '50' } = req.query as Record<string, string>;
+
+  const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
+  if (!cell) { res.status(404).json({ success: false, message: 'Cell not found' }); return; }
+
+  // Exclude users already active members of this cell
+  const existingMemberIds = await prisma.cellMember.findMany({
+    where: { cellId, status: { not: 'inactive' } },
+    select: { userId: true },
+  });
+  const excludeIds = existingMemberIds.map(m => m.userId);
+
+  const pageNum = Math.max(1, parseInt(page));
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+  const skip = (pageNum - 1) * limitNum;
+
+  const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
+
+  const where: any = {
+    churchId: cell.churchId,
+    ...(memberRole && { roleId: memberRole.id }),
+    status: 'active',
+    ...(excludeIds.length > 0 && { id: { notIn: excludeIds } }),
+    ...(search && {
+      OR: [
+        { firstName: { contains: search } },
+        { lastName: { contains: search } },
+        { email: { contains: search } },
+        { phone: { contains: search } },
+      ],
+    }),
+  };
+
+  const [total, users] = await Promise.all([
+    prisma.user.count({ where }),
+    prisma.user.findMany({
+      where,
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      skip,
+      take: limitNum,
+    }),
+  ]);
+
+  res.json({
+    success: true,
+    data: users,
+    pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
+  });
 }

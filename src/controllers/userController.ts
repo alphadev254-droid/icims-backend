@@ -42,6 +42,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const search = (req.query.search as string)?.trim() || '';
   const filterChurchId = req.query.churchId as string | undefined;
   const filterRole = req.query.role as string | undefined;
+  const filterCellId = req.query.cellId as string | undefined; // 'none' = no cell
   const minAge = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
 
@@ -84,6 +85,12 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   // Apply filters
   if (filterChurchId) whereClause.churchId = filterChurchId;
   if (filterRole) whereClause.role = { name: filterRole };
+  // Cell filter: 'none' = users with no active cell membership, otherwise filter by cellId
+  if (filterCellId === 'none') {
+    whereClause.cellMemberships = { none: { status: { not: 'inactive' } } };
+  } else if (filterCellId) {
+    whereClause.cellMemberships = { some: { cellId: filterCellId, status: { not: 'inactive' } } };
+  }
   if (search) {
     whereClause.OR = [
       { firstName: { contains: search } },
@@ -124,7 +131,12 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
           include: {
             team: { select: { name: true } }
           }
-        }
+        },
+        cellMemberships: {
+          where: { status: { not: 'inactive' } },
+          select: { cell: { select: { id: true, name: true } } },
+          take: 3, // show up to 3 cells
+        },
       },
       orderBy: { createdAt: 'desc' },
       skip,
@@ -140,6 +152,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       return {
         ...safeUserData,
         teams: u.teams.map(t => t.team.name),
+        cells: (u as any).cellMemberships?.map((cm: any) => cm.cell) ?? [],
         // Ensure all member fields are included
         gender: u.gender,
         dateOfBirth: u.dateOfBirth,

@@ -964,6 +964,7 @@ model CellAttendance {
   isVisitor       Boolean  @default(false)
   visitorName     String?
   visitorPhone    String?
+  visitorEmail    String?
   isFirstTime     Boolean  @default(true) // first-time vs returning visitor
   invitedByUserId String?  // which cell member invited this visitor
   notes           String?

@@ -9,6 +9,7 @@ import {
   getCellDonations,
   getCellsOverviewStats,
   getCellsSimple,
+  getCellChurchMembers,
 } from '../controllers/cellController';
 
 const router = Router();
@@ -32,6 +33,7 @@ router.get('/:id/donations',      getCellDonations);
 
 // Members
 router.get('/:id/members',                     getCellMembers);
+router.get('/:id/church-members',              getCellChurchMembers);
 router.post('/:id/members',                    authorizePermission('cells:update'), addCellMember);
 router.put('/:id/members/:memberId',           authorizePermission('cells:update'), updateCellMember);
 router.delete('/:id/members/:memberId',        authorizePermission('cells:update'), removeCellMember);
