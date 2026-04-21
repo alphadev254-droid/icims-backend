@@ -63,6 +63,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     }),
   };
 
+  // Round 1: count + page cells only
   const [total, cells] = await Promise.all([
     prisma.cell.count({ where }),
     prisma.cell.findMany({
@@ -81,9 +82,79 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     }),
   ]);
 
+  const cellIds = cells.map(c => c.id);
+
+  // Round 2: all enrichment in parallel, scoped to page cell IDs
+  const [lastMeetingsRaw, attendanceStatsScoped, visitorPhonesPerCell] = await Promise.all([
+    prisma.cellMeeting.groupBy({
+      by: ['cellId'],
+      where: { cellId: { in: cellIds } },
+      _max: { date: true },
+    }),
+    prisma.cellAttendance.groupBy({
+      by: ['cellId', 'status'],
+      where: { cellId: { in: cellIds }, isVisitor: false },
+      _count: { _all: true },
+    }),
+    prisma.cellAttendance.findMany({
+      where: { cellId: { in: cellIds }, isVisitor: true, visitorPhone: { not: null } },
+      select: { cellId: true, visitorPhone: true },
+      distinct: ['cellId', 'visitorPhone'],
+    }),
+  ]);
+
+  // Round 3: member phone match (needs visitor phones from round 2)
+  const allVisitorPhones = [...new Set(visitorPhonesPerCell.map(v => v.visitorPhone!).filter(Boolean))];
+  const matchedMembers = allVisitorPhones.length > 0
+    ? await prisma.cellMember.findMany({
+        where: { cellId: { in: cellIds }, status: 'active', user: { phone: { in: allVisitorPhones } } },
+        select: { cellId: true, user: { select: { phone: true } } },
+      })
+    : [];
+
+  // Build lookup maps — O(n) in memory
+  const lastMeetingMap = new Map(lastMeetingsRaw.map(m => [m.cellId, m._max?.date ?? null]));
+
+  const attMap = new Map<string, { present: number; total: number }>();
+  for (const a of attendanceStatsScoped) {
+    if (!attMap.has(a.cellId)) attMap.set(a.cellId, { present: 0, total: 0 });
+    const entry = attMap.get(a.cellId)!;
+    const cnt = (a._count as any)?._all ?? 0;
+    entry.total += cnt;
+    if (a.status === 'present') entry.present += cnt;
+  }
+
+  const cellVisitorPhones = new Map<string, Set<string>>();
+  for (const v of visitorPhonesPerCell) {
+    if (!cellVisitorPhones.has(v.cellId)) cellVisitorPhones.set(v.cellId, new Set());
+    cellVisitorPhones.get(v.cellId)!.add(v.visitorPhone!);
+  }
+  const cellConvertedPhones = new Map<string, Set<string>>();
+  for (const m of matchedMembers) {
+    if (!m.user?.phone) continue;
+    if (!cellConvertedPhones.has(m.cellId)) cellConvertedPhones.set(m.cellId, new Set());
+    cellConvertedPhones.get(m.cellId)!.add(m.user.phone);
+  }
+
+  const enriched = cells.map(c => ({
+    ...c,
+    lastMeetingDate: lastMeetingMap.get(c.id) ?? null,
+    attendanceRate: (() => {
+      const a = attMap.get(c.id);
+      return a && a.total > 0 ? Math.round((a.present / a.total) * 100) : null;
+    })(),
+    conversionRate: (() => {
+      const visitors = cellVisitorPhones.get(c.id);
+      const converted = cellConvertedPhones.get(c.id);
+      if (!visitors || visitors.size === 0) return null;
+      const count = converted ? [...converted].filter(p => visitors.has(p)).length : 0;
+      return Math.round((count / visitors.size) * 100);
+    })(),
+  }));
+
   res.json({
     success: true,
-    data: cells,
+    data: enriched,
     pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
   });
 }
@@ -1069,10 +1140,37 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     .sort((a, b) => b.attendanceRate - a.attendanceRate)
     .slice(0, 5);
 
+  // ── Cumulative conversion rate — two parallel DB queries ─────────────────
+  const [uniqueVisitorPhones, convertedMembers] = await Promise.all([
+    prisma.cellAttendance.findMany({
+      where: { cellId: { in: cellIds }, isVisitor: true, visitorPhone: { not: null } },
+      select: { visitorPhone: true },
+      distinct: ['visitorPhone'],
+    }),
+    // Will filter after getting visitor phones
+    Promise.resolve(null),
+  ]);
+
+  const visitorPhones = uniqueVisitorPhones.map((v: any) => v.visitorPhone).filter(Boolean);
+  const convertedCount = visitorPhones.length > 0
+    ? await prisma.cellMember.count({
+        where: {
+          cellId: { in: cellIds },
+          status: 'active',
+          user: { phone: { in: visitorPhones } },
+        },
+      })
+    : 0;
+
+  const cumulativeConversionRate = visitorPhones.length > 0
+    ? Math.round((convertedCount / visitorPhones.length) * 100)
+    : 0;
+
   res.json({
     success: true,
     data: {
       totalCells, activeCells, totalMembers, totalMeetings, totalVisitors, attendanceRate, recentMeetingsCount,
+      cumulativeConversionRate,
       topByMembers: memberCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByMeetings: meetingCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByGiving: givingPerCell.filter(c => c.cellId).map(c => ({ id: c.cellId!, name: label(c.cellId!), total: c._sum.amount ?? 0 })),
