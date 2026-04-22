@@ -77,7 +77,7 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
 // ─── PUT /api/admin/packages/:id ─────────────────────────────────────────────
 
 export async function updatePackage(req: Request, res: Response): Promise<void> {
-  const { id } = req.params;
+  const id = String(req.params.id);
 
   const parsed = packageSchema.partial().safeParse(req.body);
   if (!parsed.success) {
@@ -118,7 +118,7 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
 // ─── DELETE /api/admin/packages/:id ──────────────────────────────────────────
 
 export async function deletePackage(req: Request, res: Response): Promise<void> {
-  const { id } = req.params;
+  const id = String(req.params.id);
 
   const activeSubscriptions = await prisma.subscription.count({
     where: { packageId: id, status: 'active' },
@@ -160,7 +160,7 @@ export async function createFeature(req: Request, res: Response): Promise<void> 
 // ─── PUT /api/admin/packages/features/:id ────────────────────────────────────
 
 export async function updateFeature(req: Request, res: Response): Promise<void> {
-  const { id } = req.params;
+  const id = String(req.params.id);
   const parsed = featureSchema.partial().safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
