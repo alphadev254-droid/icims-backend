@@ -8,19 +8,36 @@ import {
   calculateFees,
   getPayments, createPayment, updatePayment,
 } from '../controllers/packageController';
+import { Request, Response } from 'express';
+
+// Public rates handler — reads from env, no DB needed
+function getRates(_req: Request, res: Response): void {
+  res.json({
+    success: true,
+    data: {
+      kesRate:        parseFloat(process.env.USD_TO_KSH_RATE   || '129'),
+      mwkRate:        parseFloat(process.env.USD_TO_MWK_RATE   || '1730'),
+      kenyaDiscount:  parseFloat(process.env.KENYA_PACKAGE_DISCOUNT  || '1'),
+      malawiDiscount: parseFloat(process.env.MALAWI_PACKAGE_DISCOUNT || '0.5'),
+    },
+  });
+}
 
 const router = Router();
 
-// All routes require authentication
+// ─── Public routes (no auth required) ────────────────────────────────────────
+router.get('/',         getPackages);   // Public pricing page
+router.get('/features', getFeatures);  // Public feature list
+router.get('/rates',    getRates);     // Public conversion rates
+
+// All other routes require authentication
 router.use(authenticate);
 
 // ─── Package tiers ────────────────────────────────────────────────────────────
-router.get('/',                getPackages);
 router.get('/current',         getCurrentPackage);
 router.get('/calculate-fees',  calculateFees);
 
-// ─── Package features (manage which features each package includes) ───────────
-router.get('/features',           getFeatures);  // Public - no permission needed
+// ─── Package features ─────────────────────────────────────────────────────────
 router.post('/features',          authorizePermission('packages:manage'), createFeature);
 router.delete('/features/:id',    authorizePermission('packages:manage'), deleteFeature);
 router.put('/:id/features',       authorizePermission('packages:manage'), setPackageFeatures);

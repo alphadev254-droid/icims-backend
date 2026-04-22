@@ -35,7 +35,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   const roleName = req.user?.role;
 
   // Check if user has giving_tracking feature
-  const { hasFeature } = await import('../lib/packageChecker');
+  const { hasFeature, checkLimit } = await import('../lib/packageChecker');
   if (!(await hasFeature(userId!, 'giving_tracking'))) {
     res.status(403).json({ success: false, message: 'Your package does not include Giving & Donations. Please upgrade to access this feature.' });
     return;
@@ -48,6 +48,23 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   }
 
   const { churchId: targetChurchId, endDate, ...data } = parsed.data;
+
+  // Check maxGivings limit
+  let ministryAdminId: string | null = roleName === 'ministry_admin' ? userId! : null;
+  if (!ministryAdminId) {
+    const u = await prisma.user.findUnique({ where: { id: userId! }, select: { ministryAdminId: true } });
+    ministryAdminId = u?.ministryAdminId ?? null;
+  }
+  if (ministryAdminId) {
+    const churches = await prisma.church.findMany({ where: { ministryAdminId }, select: { id: true } });
+    const churchIds = churches.map((c: { id: string }) => c.id);
+    const currentCampaigns = await prisma.givingCampaign.count({ where: { churchId: { in: churchIds }, status: 'active' } });
+    const limitCheck = await checkLimit(ministryAdminId, 'max_givings', currentCampaigns);
+    if (!limitCheck.allowed) {
+      res.status(403).json({ success: false, message: limitCheck.message });
+      return;
+    }
+  }
 
   // Check if Kenya account has subaccount for receiving donations
   const { getPaymentGateway } = await import('../utils/gatewayRouter');

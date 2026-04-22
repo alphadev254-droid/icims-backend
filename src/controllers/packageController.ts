@@ -10,7 +10,7 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   const role = req.user?.role;
 
   const packages = await prisma.package.findMany({
-    where: { isActive: true },
+    where: { isActive: true, isPrivate: false },
     orderBy: { sortOrder: 'asc' },
     include: {
       features: {
@@ -58,6 +58,12 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     priceMonthly: Math.round(pkg.priceMonthly * rate * discount),
     priceYearly: Math.round(pkg.priceYearly * rate * discount),
     currency,
+    // Only return non-limit features (no limitValue exposed)
+    features: pkg.features
+      .filter(f => f.feature.category !== 'limit')
+      .map(({ feature }) => ({ name: feature.name, displayName: feature.displayName, category: feature.category })),
+    // Keep direct limit fields for display — these are the authoritative limits
+    // maxChurches, maxMembers, maxEvents, maxGivings, maxCells stay in response
   }));
 
   res.json({ success: true, data: convertedPackages });

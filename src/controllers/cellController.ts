@@ -217,6 +217,22 @@ export async function createCell(req: Request, res: Response): Promise<void> {
   const accessibleChurchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
   if (!accessibleChurchIds.includes(parsed.data.churchId)) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
+  // Check cell_management feature and max_cells limit
+  const { hasFeature, checkCellLimit } = await import('../lib/packageChecker');
+  if (!(await hasFeature(userId, 'cell_management'))) {
+    res.status(403).json({ success: false, message: 'Your package does not include Cell Management. Please upgrade.' });
+    return;
+  }
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true, role: { select: { name: true } } } });
+  const ministryAdminId = user?.role?.name === 'ministry_admin' ? userId : user?.ministryAdminId;
+  if (ministryAdminId) {
+    const limitCheck = await checkCellLimit(ministryAdminId);
+    if (!limitCheck.allowed) {
+      res.status(403).json({ success: false, message: limitCheck.message || 'Cell limit reached' });
+      return;
+    }
+  }
+
   const cell = await prisma.cell.create({ data: parsed.data });
   res.status(201).json({ success: true, data: cell });
 }

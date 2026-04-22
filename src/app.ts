@@ -29,6 +29,7 @@ import teamCommunicationRoutes from './routes/teamCommunication';
 import reminderRoutes from './routes/reminderRoutes';
 import adminRoutes from './routes/adminRoutes';
 import cellRoutes from './routes/cells';
+import contactRoutes from './routes/contact';
 import { errorHandler } from './middleware/errorHandler';
 
 declare global {
@@ -94,6 +95,7 @@ app.use('/api/team-communications', teamCommunicationRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cells', cellRoutes);
+app.use('/api/contact', contactRoutes);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────
 app.use((_req, res) => {

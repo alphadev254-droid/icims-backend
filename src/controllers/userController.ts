@@ -345,6 +345,19 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const hashed = await hashPassword(password);
   
+  // Check max_members limit when creating a member
+  if (roleName === 'member' && assignedChurchId) {
+    const { checkMemberLimit } = await import('../lib/packageChecker');
+    const adminId = role === 'ministry_admin' ? userId : (await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } }))?.ministryAdminId;
+    if (adminId) {
+      const limitCheck = await checkMemberLimit(adminId, assignedChurchId);
+      if (!limitCheck.allowed) {
+        res.status(403).json({ success: false, message: limitCheck.message || 'Member limit reached. Please upgrade your package.' });
+        return;
+      }
+    }
+  }
+
   // Determine ministryAdminId for the new user
   let ministryAdminIdForNewUser: string | undefined;
   if (roleName === 'member') {
@@ -584,14 +597,26 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
 
   for (const userData of users) {
     try {
-      const parsed = createUserSchema.safeParse(userData);
+      // Pre-fill password if missing — will be auto-generated after parsing
+      const dataWithPassword = {
+        ...userData,
+        password: userData.password && userData.password.length >= 8
+          ? userData.password
+          : `${(userData.firstName || 'User').charAt(0).toUpperCase()}${userData.lastName || 'User'}@${new Date().getFullYear()}!`,
+      };
+      const parsed = createUserSchema.safeParse(dataWithPassword);
       if (!parsed.success) {
         results.failed++;
         results.errors.push({ email: userData.email, error: parsed.error.errors[0].message });
         continue;
       }
 
-      const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, churchId } = parsed.data;
+      const { email, password: rawPassword, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, churchId } = parsed.data;
+
+      // Auto-generate password if not provided (bulk import without password column)
+      const password = rawPassword && rawPassword.length >= 8
+        ? rawPassword
+        : `${firstName.charAt(0).toUpperCase()}${lastName}@${new Date().getFullYear()}!`;
 
       // Check if user exists
       const existing = await prisma.user.findUnique({ where: { email } });

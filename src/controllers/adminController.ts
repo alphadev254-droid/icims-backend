@@ -375,7 +375,7 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
   }
   if (statusFilter) userWhere.status = statusFilter;
 
-  const [users, userTotal] = await Promise.all([
+  const [users, userTotal, teams, cells] = await Promise.all([
     prisma.user.findMany({
       where: userWhere,
       include: { role: { select: { name: true, displayName: true } } },
@@ -384,6 +384,45 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
       take: limit,
     }),
     prisma.user.count({ where: userWhere }),
+    // Teams — name + member count only (privacy: no personal data)
+    prisma.team.findMany({
+      where: { churchId: id },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        color: true,
+        createdAt: true,
+        _count: { select: { members: true } },
+        members: {
+          select: {
+            isLeader: true,
+            user: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
+    }),
+    // Cells — name + member count only (privacy: no personal data)
+    prisma.cell.findMany({
+      where: { churchId: id },
+      select: {
+        id: true,
+        name: true,
+        zone: true,
+        status: true,
+        createdAt: true,
+        _count: { select: { members: true } },
+        members: {
+          select: {
+            isLeader: true,
+            isAssistant: true,
+            user: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
+    }),
   ]);
 
   res.json({
@@ -392,6 +431,8 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
       ...church,
       users: users.map(safeUser),
       userPagination: { page, limit, total: userTotal, totalPages: Math.ceil(userTotal / limit) },
+      teams,
+      cells,
     },
   });
 }

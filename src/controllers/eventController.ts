@@ -170,10 +170,21 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const userId = req.user!.userId;
   
   // Check if user has events_management feature
-  const { hasFeature } = await import('../lib/packageChecker');
+  const { hasFeature, checkEventLimit } = await import('../lib/packageChecker');
   if (!(await hasFeature(userId, 'events_management'))) {
     res.status(403).json({ success: false, message: 'Your package does not include Events Management. Please upgrade to access this feature.' });
     return;
+  }
+
+  // Check max_events_per_month limit from Package table
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true, role: { select: { name: true } } } });
+  const ministryAdminId = user?.role?.name === 'ministry_admin' ? userId : user?.ministryAdminId;
+  if (ministryAdminId) {
+    const limitCheck = await checkEventLimit(ministryAdminId);
+    if (!limitCheck.allowed) {
+      res.status(403).json({ success: false, message: limitCheck.message || 'Event limit reached for this month' });
+      return;
+    }
   }
   
   const parsed = eventSchema.safeParse(req.body);

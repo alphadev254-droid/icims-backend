@@ -552,7 +552,14 @@ model Package {
   priceMonthly Float    @default(0)
   priceYearly  Float    @default(0)
   isActive     Boolean  @default(true)
+  isPrivate    Boolean  @default(false) // private packages hidden from public listing
   sortOrder    Int      @default(0)
+  // Hard limits enforced at application layer
+  maxChurches  Int?     // null = unlimited
+  maxMembers   Int?
+  maxEvents    Int?
+  maxGivings   Int?     // max giving campaigns
+  maxCells     Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

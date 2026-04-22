@@ -17,7 +17,6 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
 
   if (!user) return {};
 
-  // Determine which ministryAdminId to use
   let ministryAdminId: string | null = null;
   const roleName = user.role?.name;
 
@@ -31,20 +30,12 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
 
   if (!ministryAdminId) return {};
 
-  // Get active subscription
   const subscription = await prisma.subscription.findFirst({
-    where: { 
-      ministryAdminId,
-      status: 'active',
-    },
+    where: { ministryAdminId, status: 'active' },
     include: {
       package: {
         include: {
-          features: {
-            include: {
-              feature: true,
-            },
-          },
+          features: { include: { feature: true } },
         },
       },
     },
@@ -52,10 +43,21 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
 
   if (!subscription?.package) return {};
 
+  const pkg = subscription.package;
   const features: PackageFeatures = {};
-  for (const link of subscription.package.features) {
+
+  // Feature flags from PackageFeatureLink
+  for (const link of pkg.features) {
     features[link.feature.name] = link.limitValue;
   }
+
+  // Override/supplement with direct Package limit fields (take the more specific value)
+  // These are the authoritative limits for resource creation
+  if (pkg.maxChurches != null) features['max_churches'] = pkg.maxChurches;
+  if (pkg.maxMembers != null) features['max_members'] = pkg.maxMembers;
+  if (pkg.maxEvents != null) features['max_events_per_month'] = pkg.maxEvents;
+  if (pkg.maxGivings != null) features['max_givings'] = pkg.maxGivings;
+  if (pkg.maxCells != null) features['max_cells'] = pkg.maxCells;
 
   return features;
 }
@@ -90,4 +92,37 @@ export async function checkLimit(
   }
 
   return { allowed: true, limit };
+}
+
+// ─── Convenience helpers for resource creation checks ─────────────────────────
+
+export async function checkChurchLimit(ministryAdminId: string): Promise<{ allowed: boolean; message?: string }> {
+  const currentCount = await prisma.church.count({ where: { ministryAdminId } });
+  const result = await checkLimit(ministryAdminId, 'max_churches', currentCount);
+  return { allowed: result.allowed, message: result.message };
+}
+
+export async function checkMemberLimit(ministryAdminId: string, churchId?: string): Promise<{ allowed: boolean; message?: string }> {
+  const where: any = churchId ? { churchId } : { ministryAdminId };
+  const currentCount = await prisma.user.count({ where: { ...where, role: { name: 'member' } } });
+  const result = await checkLimit(ministryAdminId, 'max_members', currentCount);
+  return { allowed: result.allowed, message: result.message };
+}
+
+export async function checkEventLimit(ministryAdminId: string): Promise<{ allowed: boolean; message?: string }> {
+  // Count events created this month
+  const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0,0,0,0);
+  const churches = await prisma.church.findMany({ where: { ministryAdminId }, select: { id: true } });
+  const churchIds = churches.map(c => c.id);
+  const currentCount = await prisma.event.count({ where: { churchId: { in: churchIds }, createdAt: { gte: startOfMonth } } });
+  const result = await checkLimit(ministryAdminId, 'max_events_per_month', currentCount);
+  return { allowed: result.allowed, message: result.message };
+}
+
+export async function checkCellLimit(ministryAdminId: string): Promise<{ allowed: boolean; message?: string }> {
+  const churches = await prisma.church.findMany({ where: { ministryAdminId }, select: { id: true } });
+  const churchIds = churches.map(c => c.id);
+  const currentCount = await prisma.cell.count({ where: { churchId: { in: churchIds } } });
+  const result = await checkLimit(ministryAdminId, 'max_cells', currentCount);
+  return { allowed: result.allowed, message: result.message };
 }

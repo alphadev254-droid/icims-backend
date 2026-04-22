@@ -17,6 +17,14 @@ import {
   deleteAdminChurch,
   updateAdminChurchUser,
 } from '../controllers/adminController';
+import {
+  getPackages,
+  getAllFeatures,
+  createPackage,
+  updatePackage,
+  deletePackage,
+  getConversionRates,
+} from '../controllers/packageManagementController';
 
 const router = Router();
 router.use(authenticate, authorizeSystemAdmin);
@@ -40,5 +48,15 @@ router.put('/churches/:id', updateAdminChurch);
 router.delete('/churches/:id', deleteAdminChurch);
 
 router.put('/church-users/:id', updateAdminChurchUser);
+
+// Package management
+router.get('/packages/rates', getConversionRates);
+router.get('/packages', getPackages);
+router.post('/packages', createPackage);
+router.put('/packages/:id', updatePackage);
+router.delete('/packages/:id', deletePackage);
+
+// Feature management (read-only — features are seeded, not created via UI)
+router.get('/packages/features', getAllFeatures);
 
 export default router;
