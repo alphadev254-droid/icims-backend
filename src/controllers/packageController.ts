@@ -22,7 +22,10 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
 
   // Determine account country
   let accountCountry = 'Kenya';
-  if (userId) {
+  // Allow public pricing page to request a specific country
+  if (req.query.country === 'Malawi' || req.query.country === 'Kenya') {
+    accountCountry = req.query.country as string;
+  } else if (userId) {
     let adminId = role === 'ministry_admin' ? userId : null;
     if (!adminId) {
       const user = await prisma.user.findUnique({
