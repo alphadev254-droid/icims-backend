@@ -4,34 +4,34 @@ const prisma = new PrismaClient();
 
 const FEATURES = [
   // Core Features
-  { name: 'members_management', displayName: 'Members Management', category: 'core', sortOrder: 1 },
-  { name: 'events_management', displayName: 'Events Management', category: 'core', sortOrder: 2 },
-  { name: 'giving_tracking', displayName: 'Giving & Donations', category: 'core', sortOrder: 3 },
-  { name: 'attendance_tracking', displayName: 'Attendance Tracking', category: 'core', sortOrder: 4 },
-  { name: 'resources_library', displayName: 'Resources Library', category: 'core', sortOrder: 5 },
-  { name: 'churches_management', displayName: 'Churches Management', category: 'core', sortOrder: 6 },
-  { name: 'transactions_view', displayName: 'Transactions View', category: 'core', sortOrder: 7 },
+  { name: 'members_management', displayName: 'Members Management', description: 'This module helps you manage an online membership register of all the brethren in the church.', category: 'core', sortOrder: 1 },
+  { name: 'events_management', displayName: 'Events Management', description: 'This module allows you to create church events and share them with all your church members. It also issues tickets for all ticketed events.', category: 'core', sortOrder: 2 },
+  { name: 'giving_tracking', displayName: 'Giving & Donations', description: 'Online giving is made easy! You can now manage your church\'s giving online.', category: 'core', sortOrder: 3 },
+  { name: 'attendance_tracking', displayName: 'Attendance Tracking', description: 'Report every church meeting and retrieve the data at any time in the future.', category: 'core', sortOrder: 4 },
+  { name: 'resources_library', displayName: 'Resources Library', description: 'This module gives you a platform to keep resource materials that can be accessed by all church members.', category: 'core', sortOrder: 5 },
+  { name: 'churches_management', displayName: 'Churches Management', description: 'Create your church and manage how data flows from the churches under you in this module.', category: 'core', sortOrder: 6 },
+  { name: 'transactions_view', displayName: 'Transactions View', description: 'View all the giving transactions on your account as they happen.', category: 'core', sortOrder: 7 },
   
   // Management Features
-  { name: 'users_management', displayName: 'Users Management', category: 'management', sortOrder: 8 },
-  { name: 'roles_permissions', displayName: 'Roles & Permissions', category: 'management', sortOrder: 9 },
+  { name: 'users_management', displayName: 'Users Management', description: 'Manage the users using this module.', category: 'management', sortOrder: 8 },
+  { name: 'roles_permissions', displayName: 'Roles & Permissions', description: 'Assign roles and permissions to the users using this module.', category: 'management', sortOrder: 9 },
   
   // Communication Features
-  { name: 'communication', displayName: 'Communication & Announcements', category: 'communication', sortOrder: 10 },
-  { name: 'teams_management', displayName: 'Teams Management', category: 'communication', sortOrder: 11 },
-  { name: 'reminders_management', displayName: 'Reminders Management', category: 'communication', sortOrder: 12 },
+  { name: 'communication', displayName: 'Communication & Announcements', description: 'This module helps you manage your communication within the church. You communicate directly with your targeted audience in the church/ministry.', category: 'communication', sortOrder: 10 },
+  { name: 'teams_management', displayName: 'Teams Management', description: 'Assign your church members to teams to ensure they are engaged in the ministry\'s work.', category: 'communication', sortOrder: 11 },
+  { name: 'reminders_management', displayName: 'Reminders Management', description: 'This module reminds you of special days, including anniversaries, birthdays, and ministry events, so that you do not miss any.', category: 'communication', sortOrder: 12 },
   
   // Reporting Features
-  { name: 'reports_analytics', displayName: 'Reports & Analytics', category: 'reporting', sortOrder: 13 },
-  { name: 'performance_dashboard', displayName: 'Performance Dashboard', category: 'reporting', sortOrder: 14 },
-  { name: 'advanced_reports', displayName: 'Advanced Reports', category: 'reporting', sortOrder: 15 },
+  { name: 'reports_analytics', displayName: 'Reports & Analytics', description: 'Access all your giving, attendance, and membership reports using this module.', category: 'reporting', sortOrder: 13 },
+  { name: 'performance_dashboard', displayName: 'Performance Dashboard', description: 'Track all your Key Performance Indicators using this module.', category: 'reporting', sortOrder: 14 },
+  { name: 'advanced_reports', displayName: 'Advanced Reports', description: 'Export and analyze your data using other analytical softwares.', category: 'reporting', sortOrder: 15 },
   
   // Event Features
-  { name: 'event_ticketing', displayName: 'Event Ticketing', category: 'events', sortOrder: 16 },
-  { name: 'event_attendance', displayName: 'Event Attendance Tracking', category: 'events', sortOrder: 17 },
+  { name: 'event_ticketing', displayName: 'Event Ticketing', description: 'Issue tickets for your events using this module.', category: 'events', sortOrder: 16 },
+  { name: 'event_attendance', displayName: 'Event Attendance Tracking', description: 'Report your service attendance using this module.', category: 'events', sortOrder: 17 },
   
   // Cell / Fellowship Management
-  { name: 'cell_management', displayName: 'Cell & Fellowship Management', category: 'management', sortOrder: 21 },
+  { name: 'cell_management', displayName: 'Cell & Fellowship Management', description: 'Manage cells and home fellowships using this module.', category: 'management', sortOrder: 21 },
 
   // Limits
   { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 18 },
