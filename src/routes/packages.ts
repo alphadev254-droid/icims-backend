@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate } from '../middleware/auth';
+import { authenticate, authenticateOptional } from '../middleware/auth';
 import { authorizePermission } from '../middleware/auth';
 import {
   getPackages, getCurrentPackage,
@@ -25,10 +25,10 @@ function getRates(_req: Request, res: Response): void {
 
 const router = Router();
 
-// ─── Public routes (no auth required) ────────────────────────────────────────
-router.get('/',         getPackages);   // Public pricing page
-router.get('/features', getFeatures);  // Public feature list
-router.get('/rates',    getRates);     // Public conversion rates
+// ─── Public routes (no auth required, but attach user if token present) ──────
+router.get('/',         authenticateOptional, getPackages);   // Public pricing page + dashboard
+router.get('/features', authenticateOptional, getFeatures);  // Public feature list
+router.get('/rates',    getRates);                           // Public conversion rates
 
 // All other routes require authentication
 router.use(authenticate);

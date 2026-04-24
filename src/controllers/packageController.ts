@@ -26,24 +26,31 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   if (req.query.country === 'Malawi' || req.query.country === 'Kenya') {
     accountCountry = req.query.country as string;
   } else if (userId) {
-    let adminId = role === 'ministry_admin' ? userId : null;
-    if (!adminId) {
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { accountCountry: true, ministryAdminId: true },
-      });
-      if (user?.accountCountry) {
-        accountCountry = user.accountCountry;
-      } else if (user?.ministryAdminId) {
-        adminId = user.ministryAdminId;
-      }
-    }
-    if (adminId && accountCountry === 'Kenya') {
+    // For ministry_admin: read their own accountCountry directly
+    if (role === 'ministry_admin') {
       const admin = await prisma.user.findUnique({
-        where: { id: adminId },
+        where: { id: userId },
         select: { accountCountry: true },
       });
       if (admin?.accountCountry) accountCountry = admin.accountCountry;
+    } else {
+      // For other roles: find their ministryAdminId, then read that admin's country
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { accountCountry: true, ministryAdminId: true, church: { select: { ministryAdminId: true } } },
+      });
+      if (user?.accountCountry) {
+        accountCountry = user.accountCountry;
+      } else {
+        const adminId = user?.ministryAdminId ?? user?.church?.ministryAdminId ?? null;
+        if (adminId) {
+          const admin = await prisma.user.findUnique({
+            where: { id: adminId },
+            select: { accountCountry: true },
+          });
+          if (admin?.accountCountry) accountCountry = admin.accountCountry;
+        }
+      }
     }
   }
 

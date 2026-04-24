@@ -19,6 +19,15 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
   }
 }
 
+// Optional authenticate — attaches user if token present, continues without error if not
+export function authenticateOptional(req: Request, _res: Response, next: NextFunction): void {
+  const token = req.cookies?.icims_token;
+  if (token) {
+    try { req.user = verifyToken(token); } catch { /* ignore invalid token */ }
+  }
+  next();
+}
+
 // Guard by role name (used for coarse role checks where needed)
 export function authorize(...roles: UserRole[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
