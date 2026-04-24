@@ -126,7 +126,7 @@ async function main() {
   for (const feature of FEATURES) {
     await prisma.packageFeature.upsert({
       where: { name: feature.name },
-      update: {},
+      update: { displayName: feature.displayName, description: feature.description, category: feature.category, sortOrder: feature.sortOrder },
       create: feature,
     });
   }
