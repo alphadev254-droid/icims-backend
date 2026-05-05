@@ -470,7 +470,7 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
       console.log(`[${traceId}] System fee applied: ${metadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${metadata.gatewayCountry})`);
       
       // Create donation record
-      await prisma.donationTransaction.create({
+      const donationTxPaychangu = await prisma.donationTransaction.create({
         data: {
           campaignId: metadata.campaignId,
           userId: metadata.isGuest ? null : pendingTx.userId,
@@ -489,8 +489,34 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
           donorPhone: metadata.donorPhone,
           notes: metadata.notes,
           cellId: metadata.cellId || null,
+          pledgeId: metadata.pledgeId || null,
         }
       });
+
+      // If this payment is linked to a pledge, update pledge amountPaid + status.
+      // Also auto-link if no pledgeId was passed but the user has an active pledge for this campaign.
+      if (metadata.pledgeId) {
+        const { recalculatePledgeStatus } = await import('./pledgeController');
+        await recalculatePledgeStatus(metadata.pledgeId);
+        console.log(`[${traceId}] Pledge ${metadata.pledgeId} updated after Paychangu payment`);
+      } else if (!metadata.isGuest && pendingTx.userId && metadata.campaignId) {
+        const activePledge = await prisma.pledge.findFirst({
+          where: {
+            userId: pendingTx.userId,
+            campaignId: metadata.campaignId,
+            status: { in: ['pending', 'partial', 'overdue'] },
+          },
+        });
+        if (activePledge) {
+          await prisma.donationTransaction.update({
+            where: { id: donationTxPaychangu.id },
+            data: { pledgeId: activePledge.id },
+          });
+          const { recalculatePledgeStatus } = await import('./pledgeController');
+          await recalculatePledgeStatus(activePledge.id);
+          console.log(`[${traceId}] Auto-linked Paychangu donation to pledge ${activePledge.id}`);
+        }
+      }
       
       // Credit church wallet for Malawi
       if (metadata.gateway === 'paychangu' && pendingTx.churchId) {

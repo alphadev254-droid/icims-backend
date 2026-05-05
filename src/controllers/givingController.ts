@@ -27,6 +27,7 @@ const updateCampaignSchema = z.object({
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),
   allowPublicDonations: z.boolean().optional(),
+  allowPledging: z.boolean().optional(),
 });
 
 export async function createCampaign(req: Request, res: Response): Promise<void> {
@@ -106,6 +107,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
       churchId: targetChurchId,
       endDate: endDate ? new Date(endDate) : null,
       allowPublicDonations: (req.body.allowPublicDonations === true || req.body.allowPublicDonations === 'true') ? true : false,
+      allowPledging: (req.body.allowPledging === true || req.body.allowPledging === 'true') ? true : false,
     },
   });
 
@@ -380,6 +382,7 @@ const createDonationSchema = z.object({
   donorPhone: z.string().optional(),
   notes: z.string().optional(),
   cellId: z.string().optional(),
+  pledgeId: z.string().optional(), // optional: pay against a specific pledge
 });
 
 export async function createDonation(req: Request, res: Response): Promise<void> {
@@ -396,7 +399,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { campaignId, amount, isAnonymous, donorName, donorEmail, donorPhone, notes, cellId } = parsed.data;
+  const { campaignId, amount, isAnonymous, donorName, donorEmail, donorPhone, notes, cellId, pledgeId } = parsed.data;
 
   const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
   if (!campaign) {
@@ -445,6 +448,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
         donorPhone,
         notes,
         cellId: cellId || null,
+        pledgeId: pledgeId || null,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,

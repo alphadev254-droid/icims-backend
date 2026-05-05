@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
+import { createSubdomain, toSlug } from '../lib/hostingerDns';
 import type { UserRole } from '../types';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -259,6 +260,7 @@ const registerSchema = z.object({
   title: z.enum(TITLES).optional(),
   titleOther: z.string().optional(),
   ministryName: z.string().optional(),
+  subdomain: z.string().optional(),  // custom slug; falls back to slugified ministryName
   currentMembership: z.number().int().min(0).optional(),
   numberOfBranches: z.number().int().min(0).optional(),
   email: z.string().email('Invalid email address'),
@@ -277,13 +279,22 @@ const registerSchema = z.object({
   baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().optional(),
 }).superRefine((data, ctx) => {
-  // If no inviteToken (national admin registration), require accountCountry
-  if (!data.inviteToken && !data.accountCountry) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Country is required',
-      path: ['accountCountry'],
-    });
+  // Ministry admin registration (no invite token) requires ministryName and accountCountry
+  if (!data.inviteToken) {
+    if (!data.ministryName || data.ministryName.trim().length < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Ministry / church name is required',
+        path: ['ministryName'],
+      });
+    }
+    if (!data.accountCountry) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Country is required',
+        path: ['accountCountry'],
+      });
+    }
   }
 });
 
@@ -375,6 +386,24 @@ export async function register(req: Request, res: Response): Promise<void> {
 
   const permissions = await getUserPermissions(user);
 
+  // ── Subdomain creation for ministry_admin registrations ──────────────────
+  let subdomainValue: string | null = null;
+  if (!data.inviteToken && data.ministryName) {
+    // Use custom slug if provided, otherwise derive from ministry name
+    const slugSource = (data.subdomain && data.subdomain.trim())
+      ? data.subdomain.trim()
+      : data.ministryName;
+    const fullSubdomain = await createSubdomain(toSlug(slugSource));
+    if (fullSubdomain) {
+      subdomainValue = fullSubdomain;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { subdomain: fullSubdomain },
+      });
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const { queueEmail } = await import('../lib/emailQueue');
   const { registrationTemplate, memberWelcomeTemplate } = await import('../lib/emailTemplates');
   
@@ -418,7 +447,7 @@ export async function register(req: Request, res: Response): Promise<void> {
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.status(201).json({ success: true, user: safeUser(user, permissions) });
+  res.status(201).json({ success: true, user: { ...safeUser(user, permissions), subdomain: subdomainValue } });
 }
 
 export function logout(_req: Request, res: Response): void {

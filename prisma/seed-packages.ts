@@ -33,6 +33,12 @@ const FEATURES = [
   // Cell / Fellowship Management
   { name: 'cell_management', displayName: 'Cell & Fellowship Management', description: 'Manage cells and home fellowships using this module.', category: 'management', sortOrder: 21 },
 
+  // Pledges
+  { name: 'pledges_management', displayName: 'Pledge Management', description: 'Allow members to make giving pledges against campaigns and track fulfillment over time.', category: 'core', sortOrder: 22 },
+
+  // Church Website
+  { name: 'church_website', displayName: 'Church Public Website', description: 'Publish a branded public website on your own subdomain with custom branding, about section, service times, and contact info.', category: 'core', sortOrder: 23 },
+
   // Limits
   { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 18 },
   { name: 'max_churches', displayName: 'Maximum Churches', category: 'limit', sortOrder: 19 },
@@ -44,8 +50,8 @@ const PACKAGES = [
     name: 'basic',
     displayName: 'Basic',
     description: 'Essential features for small churches',
-    priceMonthly: 50,
-    priceYearly: 500,
+    priceMonthly: 20,    // KES 2,580/mo  (20 × 129)
+    priceYearly: 240,    // KES 30,960/yr (240 × 129)
     sortOrder: 1,
     features: [
       { name: 'members_management', limit: null },
@@ -63,8 +69,8 @@ const PACKAGES = [
     name: 'standard',
     displayName: 'Standard',
     description: 'Advanced features for growing churches',
-    priceMonthly: 500,
-    priceYearly: 5000,
+    priceMonthly: 30,    // KES 3,870/mo  (30 × 129)
+    priceYearly: 360,    // KES 46,440/yr (360 × 129)
     sortOrder: 2,
     features: [
       { name: 'members_management', limit: null },
@@ -80,6 +86,8 @@ const PACKAGES = [
       { name: 'reports_analytics', limit: null },
       { name: 'event_ticketing', limit: null },
       { name: 'event_attendance', limit: null },
+      { name: 'pledges_management', limit: null },
+      { name: 'church_website', limit: null },
       { name: 'max_members', limit: 500 },
       { name: 'max_churches', limit: 5 },
       { name: 'max_events_per_month', limit: 50 },
@@ -89,8 +97,8 @@ const PACKAGES = [
     name: 'premium',
     displayName: 'Premium',
     description: 'Complete solution for large church networks',
-    priceMonthly: 1000,
-    priceYearly: 10000,
+    priceMonthly: 50,    // KES 6,450/mo  (50 × 129)
+    priceYearly: 600,    // KES 77,400/yr (600 × 129)
     sortOrder: 3,
     features: [
       { name: 'members_management', limit: null },
@@ -111,6 +119,8 @@ const PACKAGES = [
       { name: 'event_ticketing', limit: null },
       { name: 'event_attendance', limit: null },
       { name: 'cell_management', limit: null },
+      { name: 'pledges_management', limit: null },
+      { name: 'church_website', limit: null },
       { name: 'max_members', limit: 999999 },
       { name: 'max_churches', limit: 999 },
       { name: 'max_events_per_month', limit: 999999 },

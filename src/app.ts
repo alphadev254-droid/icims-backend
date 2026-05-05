@@ -30,6 +30,7 @@ import reminderRoutes from './routes/reminderRoutes';
 import adminRoutes from './routes/adminRoutes';
 import cellRoutes from './routes/cells';
 import contactRoutes from './routes/contact';
+import churchProfileRoutes from './routes/churchProfile';
 import { errorHandler } from './middleware/errorHandler';
 
 declare global {
@@ -44,8 +45,20 @@ const app = express();
 
 // ─── CORS — allow frontend origin with credentials ─────────────────────────
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:8080',
-  credentials: true,   // needed for cookies
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // server-to-server / curl
+    const allowed = [
+      'https://churchcentral.church',
+      'https://www.churchcentral.church',
+      process.env.FRONTEND_URL || 'http://localhost:8080',
+      'http://localhost:5173',
+    ];
+    // Allow any subdomain of churchcentral.church
+    if (origin.endsWith('.churchcentral.church')) return callback(null, true);
+    if (allowed.includes(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
 }));
 
 // ─── Raw body capture for webhook signature verification ──────────────────
@@ -96,6 +109,7 @@ app.use('/api/reminders', reminderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cells', cellRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api', churchProfileRoutes);  // mounts /api/church-profile and /api/p/:slug
 
 // ─── 404 ──────────────────────────────────────────────────────────────────
 app.use((_req, res) => {

@@ -95,6 +95,7 @@ model User {
   membershipType         String?  // Visitor, Member
   baptizedByImmersion    Boolean?
   status                 String   @default("active")
+  subdomain              String?  @unique  // e.g. grace-church (without domain)
   memberId               String?  @unique
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
@@ -113,6 +114,8 @@ model User {
   resourceViews          ResourceView[]
   cellMemberships        CellMember[]
   cellAttendance         CellAttendance[]
+  pledges                Pledge[]
+  churchProfile          ChurchProfile?
 
   @@index([churchId, roleId, status, createdAt])
   @@index([dateOfBirth])
@@ -176,6 +179,7 @@ model Church {
   teams         Team[]
   reminders     ReminderCache[]
   cells         Cell[]
+  pledges       Pledge[]
 
   @@map("churches")
 }
@@ -371,6 +375,7 @@ model GivingCampaign {
   endDate       DateTime?
   imageUrl      String?
   allowPublicDonations Boolean @default(false)
+  allowPledging        Boolean @default(false)
   cellId        String?  // set when category = fellowship_offering
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -378,6 +383,7 @@ model GivingCampaign {
   church        Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
   cell          Cell?    @relation(fields: [cellId], references: [id])
   donations     DonationTransaction[]
+  pledges       Pledge[]
 
   @@index([churchId])
   @@index([category])
@@ -406,6 +412,7 @@ model DonationTransaction {
   donorPhone    String?
   notes         String?  @db.Text
   cellId        String?  // set when campaign category = fellowship_offering
+  pledgeId      String?  // links this payment to a pledge
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -413,6 +420,7 @@ model DonationTransaction {
   user          User?    @relation(fields: [userId], references: [id])
   church        Church   @relation(fields: [churchId], references: [id])
   cell          Cell?    @relation(fields: [cellId], references: [id])
+  pledge        Pledge?  @relation(fields: [pledgeId], references: [id])
 
   @@index([campaignId])
   @@index([userId])
@@ -420,6 +428,40 @@ model DonationTransaction {
   @@index([status])
   @@index([churchId, status, createdAt])
   @@map("donation_transactions")
+}
+
+// ─── Pledges ──────────────────────────────────────────────────────────────────
+
+model Pledge {
+  id                  String   @id @default(cuid())
+  campaignId          String
+  churchId            String
+  userId              String?  // null = walk-in pledger recorded by admin
+  pledgerName         String?  // for non-member pledgers
+  pledgerEmail        String?
+  pledgerPhone        String?
+  pledgedAmount       Float
+  currency            String   @default("MWK")
+  amountPaid          Float    @default(0)  // cached sum of linked payments
+  // status: pending | partial | fulfilled | overdue
+  status              String   @default("pending")
+  fulfillmentDeadline DateTime?
+  notes               String?  @db.Text
+  createdById         String   // userId of who recorded it (admin or self)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  campaign    GivingCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  church      Church               @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  user        User?                @relation(fields: [userId], references: [id])
+  payments    DonationTransaction[]
+
+  @@index([campaignId])
+  @@index([userId])
+  @@index([churchId])
+  @@index([status])
+  @@index([churchId, status])
+  @@map("pledges")
 }
 
 // ─── Attendance ────────────────────────────────────────────────────────────────
@@ -984,4 +1026,44 @@ model CellAttendance {
   @@index([cellId])
   @@index([userId])
   @@map("cell_attendance")
+}
+
+// ─── Church Public Profile ────────────────────────────────────────────────────
+
+model ChurchProfile {
+  id                String   @id @default(cuid())
+  ministryAdminId   String   @unique
+
+  // Branding (requires church_website feature)
+  logoUrl           String?
+  bannerUrl         String?
+  primaryColor      String?  @default("#d4a574")
+  tagline           String?
+
+  // About (requires church_website feature)
+  aboutText         String?  @db.Text
+  pastorName        String?
+  pastorPhoto       String?
+  pastorBio         String?  @db.Text
+  visionText        String?
+  missionText       String?
+
+  // Service times JSON: [{name, day, time, location}]
+  serviceTimes      String?  @db.Text
+
+  // Contact (requires church_website feature)
+  phone             String?
+  email             String?
+  address           String?
+  facebookUrl       String?
+  youtubeUrl        String?
+  whatsappNumber    String?
+
+  isPublished       Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  ministryAdmin     User     @relation(fields: [ministryAdminId], references: [id], onDelete: Cascade)
+
+  @@map("church_profiles")
 }

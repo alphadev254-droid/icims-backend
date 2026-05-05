@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, authorizePermission } from '../middleware/auth';
 import * as givingController from '../controllers/givingController';
+import * as pledgeController from '../controllers/pledgeController';
 
 const router = Router();
 
@@ -21,5 +22,11 @@ router.post('/donate', authenticate, authorizePermission('donations:create'), gi
 router.post('/donations/cash', authenticate, authorizePermission('donations:create'), givingController.recordCashDonation);
 router.get('/donations', authenticate, authorizePermission('donations:read'), givingController.getDonations);
 router.get('/donations/:id/transaction', authenticate, authorizePermission('donations:read'), givingController.getDonationTransaction);
+
+// Pledges — members can create/view their own; admins view all
+router.post('/pledges', authenticate, pledgeController.createPledge);
+router.get('/pledges/my', authenticate, pledgeController.getMyPledges);
+router.get('/pledges', authenticate, authorizePermission('donations:read'), pledgeController.getMinistryPledges);
+router.get('/pledges/:id', authenticate, pledgeController.getPledge);
 
 export default router;

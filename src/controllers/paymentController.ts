@@ -824,7 +824,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
         
         // Create donation record
-        await prisma.donationTransaction.create({
+        const donationTx = await prisma.donationTransaction.create({
           data: {
             campaignId: pendingMetadata.campaignId,
             userId: pendingMetadata.isGuest ? null : pendingTx.userId,
@@ -843,8 +843,35 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             donorPhone: pendingMetadata.donorPhone,
             notes: pendingMetadata.notes,
             cellId: pendingMetadata.cellId || null,
+            pledgeId: pendingMetadata.pledgeId || null,
           }
         });
+
+        // If this payment is linked to a pledge, update pledge amountPaid + status.
+        // Also auto-link if no pledgeId was passed but the user has an active pledge for this campaign.
+        if (pendingMetadata.pledgeId) {
+          const { recalculatePledgeStatus } = await import('./pledgeController');
+          await recalculatePledgeStatus(pendingMetadata.pledgeId);
+          console.log(`[${traceId}] Pledge ${pendingMetadata.pledgeId} updated after payment`);
+        } else if (!pendingMetadata.isGuest && pendingTx.userId && pendingMetadata.campaignId) {
+          // Auto-link: find an active pledge by this user for this campaign
+          const activePledge = await prisma.pledge.findFirst({
+            where: {
+              userId: pendingTx.userId,
+              campaignId: pendingMetadata.campaignId,
+              status: { in: ['pending', 'partial', 'overdue'] },
+            },
+          });
+          if (activePledge) {
+            await prisma.donationTransaction.update({
+              where: { id: donationTx.id },
+              data: { pledgeId: activePledge.id },
+            });
+            const { recalculatePledgeStatus } = await import('./pledgeController');
+            await recalculatePledgeStatus(activePledge.id);
+            console.log(`[${traceId}] Auto-linked donation to pledge ${activePledge.id}`);
+          }
+        }
         
         // Send donation receipt email with PDF
         const isGuestDonation = pendingMetadata.isGuest === true;
