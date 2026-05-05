@@ -112,7 +112,7 @@ router.delete(
   authenticate,
   async (req: Request, res: Response): Promise<void> => {
     const userId = req.user?.userId;
-    const { type } = req.params;
+    const type = String(req.params.type);
     if (!['logo', 'banner', 'pastor'].includes(type)) {
       res.status(400).json({ success: false, message: 'Invalid type' }); return;
     }

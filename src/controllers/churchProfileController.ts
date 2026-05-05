@@ -118,11 +118,12 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   // Find the ministry admin whose subdomain matches this slug
   // subdomain is stored as full domain e.g. "grace-church.churchcentral.church"
   // or just the slug "grace-church" — handle both
+  const slugStr = String(slug);
   const user = await prisma.user.findFirst({
     where: {
       OR: [
-        { subdomain: slug },
-        { subdomain: { startsWith: `${slug}.` } },
+        { subdomain: slugStr },
+        { subdomain: { startsWith: `${slugStr}.` } },
       ],
     },
     select: { id: true, ministryName: true, firstName: true, lastName: true },
