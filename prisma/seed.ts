@@ -84,6 +84,7 @@ const PERMISSIONS = [
   { name: 'cells:delete', resource: 'cells', action: 'delete' },
   { name: 'pledges:read',   resource: 'pledges', action: 'read' },
   { name: 'pledges:create', resource: 'pledges', action: 'create' },
+  { name: 'church_website:manage', resource: 'church_website', action: 'manage' },
 ];
 
 const ROLES = [
@@ -262,18 +263,22 @@ async function main() {
   
   let linked = 0;
   for (const permission of allPermissions) {
-    try {
-      await prisma.rolePermission.create({
-        data: {
+    await prisma.rolePermission.upsert({
+      where: {
+        ministryAdminId_roleId_permissionId: {
           ministryAdminId: 'GLOBAL',
           roleId: ministryAdminRole.id,
           permissionId: permission.id,
         },
-      });
-      linked++;
-    } catch (e) {
-      console.log(`Skipping duplicate: ${permission.name}`);
-    }
+      },
+      update: {},
+      create: {
+        ministryAdminId: 'GLOBAL',
+        roleId: ministryAdminRole.id,
+        permissionId: permission.id,
+      },
+    });
+    linked++;
   }
 
   console.log(`✅ Linked ${linked} permissions to ministry_admin\n`);
@@ -289,18 +294,22 @@ async function main() {
     
     let memberLinked = 0;
     for (const permission of memberPerms) {
-      try {
-        await prisma.rolePermission.create({
-          data: {
+      await prisma.rolePermission.upsert({
+        where: {
+          ministryAdminId_roleId_permissionId: {
             ministryAdminId: 'GLOBAL',
             roleId: memberRole.id,
             permissionId: permission.id,
           },
-        });
-        memberLinked++;
-      } catch (e) {
-        console.log(`Skipping duplicate: ${permission.name}`);
-      }
+        },
+        update: {},
+        create: {
+          ministryAdminId: 'GLOBAL',
+          roleId: memberRole.id,
+          permissionId: permission.id,
+        },
+      });
+      memberLinked++;
     }
     console.log(`✅ Linked ${memberLinked} permissions to member role\n`);
   }
@@ -318,18 +327,22 @@ async function main() {
 
     let count = 0;
     for (const permission of perms) {
-      try {
-        await prisma.rolePermission.create({
-          data: {
+      await prisma.rolePermission.upsert({
+        where: {
+          ministryAdminId_roleId_permissionId: {
             ministryAdminId: 'GLOBAL',
             roleId: role.id,
             permissionId: permission.id,
           },
-        });
-        count++;
-      } catch (e) {
-        // already exists — skip
-      }
+        },
+        update: {},
+        create: {
+          ministryAdminId: 'GLOBAL',
+          roleId: role.id,
+          permissionId: permission.id,
+        },
+      });
+      count++;
     }
     console.log(`✅ Linked ${count} permissions to ${roleName}\n`);
   }
