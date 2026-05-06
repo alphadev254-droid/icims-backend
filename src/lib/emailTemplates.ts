@@ -67,39 +67,43 @@ export const userCreatedTemplate = (data: { firstName: string; lastName: string;
 </html>
 `;
 
-export const registrationTemplate = (data: { firstName: string; lastName: string; email: string; roleName?: string; churchName?: string }) => `
+export const registrationTemplate = (data: { firstName: string; lastName: string; email: string; ministryName?: string; siteUrl?: string; roleName?: string; churchName?: string }) => `
 <!DOCTYPE html>
 <html>
 <head>${getBaseStyle()}</head>
 <body>
   <div class="container">
-    ${getChurchHeader(data.churchName)}
     <div class="header">
       <h1>Welcome to ${SYSTEM_NAME}!</h1>
+      <p>Your ministry account is ready</p>
     </div>
     <div class="content">
       <h2>Hello ${data.firstName} ${data.lastName},</h2>
-      <p>Thank you for registering with ${SYSTEM_NAME}. Your account has been created successfully!</p>
-      
+      <p>Your account has been created successfully. Here's everything you need to get started.</p>
+
       <div class="info-box">
-        <h3>Account Information</h3>
+        <h3>Your Account Details</h3>
+        <p><strong>Ministry:</strong> ${data.ministryName || '—'}</p>
         <p><strong>Email:</strong> ${data.email}</p>
-        ${data.roleName ? `<p><strong>Role:</strong> ${data.roleName}</p>` : ''}
+        ${data.siteUrl ? `<p><strong>Your Ministry Site:</strong> <a href="${data.siteUrl}" style="color: #d4a574;">${data.siteUrl}</a></p>` : ''}
       </div>
-      
+
+      ${data.siteUrl ? `<p style="font-size: 13px; color: #6b7280;">Your public ministry website is being activated — it will be live within a few minutes.</p>` : ''}
+
       <h3>Next Steps:</h3>
       <ol>
-        <li><strong>Choose a Package:</strong> Select a subscription package that fits your church's needs</li>
-        <li><strong>Set Up Your Church:</strong> Add your church information and customize your profile</li>
-        <li><strong>Invite Members:</strong> Start adding your church members to the system</li>
+        <li><strong>Choose a Package:</strong> Select a subscription plan that fits your ministry's needs</li>
+        <li><strong>Set Up Your Profile:</strong> Add your church logo, banner, service times, and contact details — go to <a href="${FRONTEND_URL}/dashboard/church-website" style="color: #d4a574;">Church Website</a> inside your dashboard to customise your public page</li>
+        <li><strong>Add Your Branches:</strong> Register your church branches and locations</li>
+        <li><strong>Invite Your Team:</strong> Add staff and leaders to help manage your ministry</li>
       </ol>
-      
-      <a href="${FRONTEND_URL}/dashboard" class="button">Get Started</a>
-      
-      <p>Need help? Contact our support team or visit our documentation.</p>
+
+      <a href="${FRONTEND_URL}/dashboard" class="button">Go to Dashboard</a>
+
+      <p>Need help? Reply to this email or visit our support centre.</p>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>

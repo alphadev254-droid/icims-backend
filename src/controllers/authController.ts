@@ -403,6 +403,8 @@ export async function register(req: Request, res: Response): Promise<void> {
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,
+        ministryName: data.ministryName,
+        siteUrl: subdomainValue ? `https://${subdomainValue}` : undefined,
         roleName: user.role?.displayName,
       }),
       'registration'
