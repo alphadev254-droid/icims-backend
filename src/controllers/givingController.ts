@@ -114,7 +114,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   res.status(201).json({ success: true, data: campaign });
 }
 
-export export async function getCampaigns(req: Request, res: Response): Promise<void> {
+export async function getCampaigns(req: Request, res: Response): Promise<void> {
   const userId   = req.user?.userId;
   const roleName = req.user?.role;
   const { category, status } = req.query;
