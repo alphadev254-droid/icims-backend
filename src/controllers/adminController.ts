@@ -535,6 +535,10 @@ export async function manageAdminSubscription(req: Request, res: Response): Prom
 
   await prisma.subscription.updateMany({ where: { ministryAdminId: id, status: 'active' }, data: { status: 'expired' } });
 
+  // Delete any existing subscription (unique constraint allows only one per admin)
+  // then create a fresh one with the new dates/package
+  await prisma.subscription.deleteMany({ where: { ministryAdminId: id } });
+
   const subscription = await prisma.subscription.create({
     data: {
       ministryAdminId: id,

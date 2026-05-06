@@ -150,6 +150,20 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   });
   const churchIds = churches.map(c => c.id);
 
+  // If no churches, return empty events/campaigns — don't risk a full-table scan
+  if (churchIds.length === 0) {
+    res.json({
+      success: true,
+      data: {
+        profile,
+        ministryName: user.ministryName ?? `${user.firstName} ${user.lastName}`,
+        events: [],
+        campaigns: [],
+      },
+    });
+    return;
+  }
+
   // Public events — upcoming, allowPublicTicketing
   const events = await prisma.event.findMany({
     where: {

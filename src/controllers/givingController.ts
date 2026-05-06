@@ -230,6 +230,8 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
   const churchId = req.user?.churchId;
   const roleName = req.user?.role;
 
+  console.log(`[updateCampaign] ── campaign=${id} user=${userId} role=${roleName} jwtChurchId=${churchId ?? 'null'}`);
+
   const parsed = updateCampaignSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
@@ -246,6 +248,8 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
+  console.log(`[updateCampaign] campaign.churchId=${existingCampaign.churchId} church.ministryAdminId=${existingCampaign.church?.ministryAdminId ?? 'null'}`);
+
   // Verify user has access to this church
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
@@ -256,10 +260,25 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
     userId
   );
 
-  if (!accessibleChurchIds.includes(existingCampaign.churchId)) {
+  console.log(`[updateCampaign] accessibleChurchIds=${JSON.stringify(accessibleChurchIds)}`);
+
+  let hasAccess = accessibleChurchIds.includes(existingCampaign.churchId);
+  console.log(`[updateCampaign] hasAccess via getAccessibleChurchIds=${hasAccess}`);
+
+  // Fallback for ministry_admin: directly check church.ministryAdminId
+  // handles cases where getAccessibleChurchIds returns empty (church not yet linked)
+  if (!hasAccess && roleName === 'ministry_admin') {
+    hasAccess = existingCampaign.church?.ministryAdminId === userId;
+    console.log(`[updateCampaign] fallback ministryAdminId check: church.ministryAdminId=${existingCampaign.church?.ministryAdminId} === userId=${userId} → ${hasAccess}`);
+  }
+
+  if (!hasAccess) {
+    console.log(`[updateCampaign] ✗ ACCESS DENIED`);
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
+
+  console.log(`[updateCampaign] ✓ access granted — proceeding with update`);
 
   const { endDate, ...data } = parsed.data;
 
