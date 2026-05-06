@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
-import { console } from 'inspector';
+import { getAccessibleChurchIds } from '../lib/churchScope';
 
 const USER_INCLUDE = {
   role: true,
@@ -25,117 +25,136 @@ function safeUser(user: any) {
 
 export async function getUsers(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
-  const role = req.user?.role ?? 'member';
-  const churchId = req.user?.churchId;
-  
+  const role   = req.user?.role ?? 'member';
+
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
     return;
   }
 
   // Pagination
-  const page = Math.max(1, parseInt(req.query.page as string) || 1);
-  const limit = Math.max(100, parseInt(req.query.limit as string) || 100);
-  const skip = (page - 1) * limit;
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const skip  = (page - 1) * limit;
 
-  // Filters
-  const search = (req.query.search as string)?.trim() || '';
+  // Query filters from request
+  const search        = (req.query.search   as string)?.trim() || '';
   const filterChurchId = req.query.churchId as string | undefined;
-  const filterRole = req.query.role as string | undefined;
-  const filterCellId = req.query.cellId as string | undefined; // 'none' = no cell
-  const minAge = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
-  const maxAge = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
+  const filterRole    = req.query.role      as string | undefined;
+  const filterCellId  = req.query.cellId    as string | undefined;
+  const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
+  const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
 
-  // Build where clause based on role
-  let whereClause: any = {};
+  // ── Scope: get all church IDs this user is allowed to see ──────────────────
+  // getAccessibleChurchIds already handles all role variants correctly and
+  // always scopes to the same ministry — no cross-ministry leakage.
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    role,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
 
-  if (role === 'ministry_admin') {
-    const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
-      select: { id: true }
-    });
-    const churchIds = churches.map(c => c.id);
-    
-    whereClause.OR = [
-      { churchId: { in: churchIds } },
-      { ministryAdminId: userId }
-    ];
-  } else if (role === 'district_admin') {
-    const userDistricts = req.user?.districts ?? [];
-    const churches = await prisma.church.findMany({
-      where: userDistricts.includes('__all__') ? {} : { district: { in: userDistricts } },
-      select: { id: true }
-    });
-    whereClause.churchId = { in: churches.map(c => c.id) };
-  } else if (role === 'branch_admin') {
-    const userTAs = req.user?.traditionalAuthorities ?? [];
-    const churches = await prisma.church.findMany({
-      where: userTAs.includes('__all__') ? {} : { traditionalAuthority: { in: userTAs } },
-      select: { id: true }
-    });
-    whereClause.churchId = { in: churches.map(c => c.id) };
-  } else {
-    if (!churchId) {
+  // Members only see their own church
+  if (role === 'member') {
+    if (!req.user?.churchId) {
       res.status(400).json({ success: false, message: 'churchId required' });
       return;
     }
-    whereClause.churchId = churchId;
   }
 
-  // Apply filters
-  if (filterChurchId) whereClause.churchId = filterChurchId;
-  if (filterRole) whereClause.role = { name: filterRole };
-  // Cell filter: 'none' = users with no active cell membership, otherwise filter by cellId
+  // If no accessible churches found (e.g. admin with no churches yet), return empty
+  if (accessibleChurchIds.length === 0 && role !== 'ministry_admin') {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
+
+  // ── filterChurchId: only allow if it's within the accessible scope ──────────
+  // Never let a caller bypass scope by passing an arbitrary churchId.
+  let scopedChurchIds = accessibleChurchIds;
+  if (filterChurchId) {
+    if (!accessibleChurchIds.includes(filterChurchId)) {
+      // Requested church is outside this user's scope — return empty, not 403
+      // (avoids leaking whether the church exists)
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+      return;
+    }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  // ── Build where clause ──────────────────────────────────────────────────────
+  // For ministry_admin: also include users whose ministryAdminId = userId
+  // (sub-admins who don't have a churchId yet)
+  let whereClause: any;
+
+  if (role === 'ministry_admin') {
+    whereClause = {
+      OR: [
+        { churchId: { in: scopedChurchIds } },
+        { ministryAdminId: userId },
+      ],
+    };
+  } else {
+    whereClause = { churchId: { in: scopedChurchIds } };
+  }
+
+  // ── Additional filters — applied with AND so they never widen scope ─────────
+  const andConditions: any[] = [];
+
+  if (filterRole) {
+    andConditions.push({ role: { name: filterRole } });
+  }
+
   if (filterCellId === 'none') {
-    whereClause.cellMemberships = { none: { status: { not: 'inactive' } } };
+    andConditions.push({ cellMemberships: { none: { status: { not: 'inactive' } } } });
   } else if (filterCellId) {
-    whereClause.cellMemberships = { some: { cellId: filterCellId, status: { not: 'inactive' } } };
+    andConditions.push({ cellMemberships: { some: { cellId: filterCellId, status: { not: 'inactive' } } } });
   }
+
+  // Search: scoped with AND so it narrows within the ministry, never widens
   if (search) {
-    whereClause.OR = [
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { email: { contains: search } },
-    ];
+    andConditions.push({
+      OR: [
+        { firstName: { contains: search } },
+        { lastName:  { contains: search } },
+        { email:     { contains: search } },
+      ],
+    });
   }
-  
-  // Age filtering using date calculations
+
+  // Age filters
   if (minAge !== undefined || maxAge !== undefined) {
     const today = new Date();
-    const ageFilters: any[] = [];
-    
     if (minAge !== undefined) {
-      // Max date for minimum age (born on or before this date)
-      const maxDateForMinAge = new Date(today.getFullYear() - minAge, today.getMonth(), today.getDate());
-      ageFilters.push({ dateOfBirth: { lte: maxDateForMinAge } });
+      andConditions.push({
+        dateOfBirth: { lte: new Date(today.getFullYear() - minAge, today.getMonth(), today.getDate()) },
+      });
     }
-    
     if (maxAge !== undefined) {
-      // Min date for maximum age (born on or after this date)
-      const minDateForMaxAge = new Date(today.getFullYear() - maxAge - 1, today.getMonth(), today.getDate() + 1);
-      ageFilters.push({ dateOfBirth: { gte: minDateForMaxAge } });
-    }
-    
-    if (ageFilters.length > 0) {
-      whereClause.AND = ageFilters;
+      andConditions.push({
+        dateOfBirth: { gte: new Date(today.getFullYear() - maxAge - 1, today.getMonth(), today.getDate() + 1) },
+      });
     }
   }
 
+  if (andConditions.length > 0) {
+    whereClause.AND = andConditions;
+  }
+
+  // ── Query ───────────────────────────────────────────────────────────────────
   const [users, total] = await Promise.all([
     prisma.user.findMany({
       where: whereClause,
-      include: { 
-        role: { select: { id: true, name: true, displayName: true, createdAt: true } }, 
+      include: {
+        role: { select: { id: true, name: true, displayName: true, createdAt: true } },
         church: { select: { name: true } },
-        teams: {
-          include: {
-            team: { select: { name: true } }
-          }
-        },
+        teams: { include: { team: { select: { name: true } } } },
         cellMemberships: {
           where: { status: { not: 'inactive' } },
           select: { cell: { select: { id: true, name: true } } },
-          take: 3, // show up to 3 cells
+          take: 3,
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -145,27 +164,23 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     prisma.user.count({ where: whereClause }),
   ]);
 
-  res.json({ 
-    success: true, 
-    data: users.map(u => {
-      const safeUserData = safeUser(u);
-      return {
-        ...safeUserData,
-        teams: u.teams.map(t => t.team.name),
-        cells: (u as any).cellMemberships?.map((cm: any) => cm.cell) ?? [],
-        // Ensure all member fields are included
-        gender: u.gender,
-        dateOfBirth: u.dateOfBirth,
-        maritalStatus: u.maritalStatus,
-        weddingDate: u.weddingDate,
-        anniversary: u.anniversary,
-        residentialNeighbourhood: u.residentialNeighbourhood,
-        serviceInterest: u.serviceInterest,
-        membershipType: u.membershipType,
-        baptizedByImmersion: u.baptizedByImmersion,
-      };
-    }),
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+  res.json({
+    success: true,
+    data: users.map(u => ({
+      ...safeUser(u),
+      teams: u.teams.map(t => t.team.name),
+      cells: (u as any).cellMemberships?.map((cm: any) => cm.cell) ?? [],
+      gender:                    u.gender,
+      dateOfBirth:               u.dateOfBirth,
+      maritalStatus:             u.maritalStatus,
+      weddingDate:               u.weddingDate,
+      anniversary:               u.anniversary,
+      residentialNeighbourhood:  u.residentialNeighbourhood,
+      serviceInterest:           u.serviceInterest,
+      membershipType:            u.membershipType,
+      baptizedByImmersion:       u.baptizedByImmersion,
+    })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 }
 
