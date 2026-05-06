@@ -114,12 +114,13 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   res.status(201).json({ success: true, data: campaign });
 }
 
-export async function getCampaigns(req: Request, res: Response): Promise<void> {
-  const userId = req.user?.userId;
+export export async function getCampaigns(req: Request, res: Response): Promise<void> {
+  const userId   = req.user?.userId;
   const roleName = req.user?.role;
-  const { churchId, category, status } = req.query;
+  const { category, status } = req.query;
+  const filterChurchId = req.query.churchId as string | undefined;
 
-  // Get user's accessible churches based on role
+  // Get user's accessible churches based on role — always ministry-scoped
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
     req.user?.churchId,
@@ -129,13 +130,30 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
     userId
   );
 
+  // If no accessible churches (e.g. member with no churchId in JWT), return empty
+  if (accessibleChurchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  // filterChurchId: only allow if it's within the accessible scope
+  let scopedChurchIds = accessibleChurchIds;
+  if (filterChurchId) {
+    if (!accessibleChurchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: [] });
+      return;
+    }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  // Members always see only active campaigns — ignore any status query param
+  const statusFilter = roleName === 'member' ? 'active' : (status ? String(status) : undefined);
+
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
-      ...(churchId && { churchId: String(churchId) }),
-      ...(accessibleChurchIds.length > 0 && { churchId: { in: accessibleChurchIds } }),
-      ...(category && { category: String(category) }),
-      ...(status && { status: String(status) }),
-      ...(roleName === 'member' && { status: 'active' }),
+      churchId: { in: scopedChurchIds },
+      ...(category     && { category: String(category) }),
+      ...(statusFilter && { status: statusFilter }),
     },
     include: {
       church: { select: { name: true } },
