@@ -148,7 +148,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
   // Handle logo upload
   const logoUrl = req.file ? `/uploads/churches/${req.file.filename}` : undefined;
 
-  const church = await prisma.church.create({
+  await (prisma.church.create as any)({
     data: {
       name, location, country,
       region, district, traditionalAuthority, village,
@@ -156,9 +156,14 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
       branchCode,
       logoUrl,
       ministryAdminId: adminUserId,
-      latitude: (latitude as any) ?? null,
-      longitude: (longitude as any) ?? null,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
     },
+    include: { _count: { select: { users: true } } },
+  });
+
+  const church = await prisma.church.findFirst({
+    where: { branchCode },
     include: { _count: { select: { users: true } } },
   });
 
