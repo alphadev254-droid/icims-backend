@@ -158,6 +158,8 @@ model Church {
   yearFounded          Int?
   branchCode           String?  @unique
   ministryAdminId      String?
+  latitude             Float?
+  longitude            Float?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

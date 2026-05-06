@@ -79,6 +79,8 @@ const churchSchema = z.object({
   website: z.string().optional(),
   pastorName: z.string().optional(),
   yearFounded: z.coerce.number().int().positive().optional(),
+  latitude: z.coerce.number().optional(),
+  longitude: z.coerce.number().optional(),
 });
 
 export async function createChurch(req: Request, res: Response): Promise<void> {
@@ -135,7 +137,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, pastorName, yearFounded } = parsed.data;
+  const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, pastorName, yearFounded, latitude, longitude } = parsed.data;
 
   // Build location string
   const locParts = [traditionalAuthority, district, region].filter(Boolean);
@@ -154,6 +156,8 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
       branchCode,
       logoUrl,
       ministryAdminId: adminUserId,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
     },
     include: { _count: { select: { users: true } } },
   });
@@ -177,6 +181,8 @@ const updateChurchSchema = z.object({
   website: z.string().optional(),
   pastorName: z.string().optional(),
   yearFounded: z.coerce.number().int().positive().optional(),
+  latitude: z.coerce.number().optional().nullable(),
+  longitude: z.coerce.number().optional().nullable(),
 });
 
 export async function updateChurch(req: Request, res: Response): Promise<void> {

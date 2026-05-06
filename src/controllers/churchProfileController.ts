@@ -146,7 +146,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   // Get all church IDs belonging to this ministry admin
   const churches = await prisma.church.findMany({
     where: { ministryAdminId: user.id },
-    select: { id: true, name: true },
+    select: { id: true, name: true, address: true, latitude: true, longitude: true },
   });
   const churchIds = churches.map(c => c.id);
 
@@ -159,6 +159,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
         ministryName: user.ministryName ?? `${user.firstName} ${user.lastName}`,
         events: [],
         campaigns: [],
+        churches: [],
       },
     });
     return;
@@ -203,6 +204,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
     data: {
       profile,
       ministryName: user.ministryName ?? `${user.firstName} ${user.lastName}`,
+      churches,
       events,
       campaigns,
     },
