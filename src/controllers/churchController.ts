@@ -156,8 +156,8 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
       branchCode,
       logoUrl,
       ministryAdminId: adminUserId,
-      latitude: latitude ?? null,
-      longitude: longitude ?? null,
+      latitude: (latitude as any) ?? null,
+      longitude: (longitude as any) ?? null,
     },
     include: { _count: { select: { users: true } } },
   });

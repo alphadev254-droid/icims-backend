@@ -146,8 +146,8 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   // Get all church IDs belonging to this ministry admin
   const churches = await prisma.church.findMany({
     where: { ministryAdminId: user.id },
-    select: { id: true, name: true, address: true, latitude: true, longitude: true },
-  });
+    select: { id: true, name: true, address: true, latitude: true, longitude: true } as any,
+  }) as Array<{ id: string; name: string; address?: string | null; latitude?: number | null; longitude?: number | null }>;
   const churchIds = churches.map(c => c.id);
 
   // If no churches, return empty events/campaigns — don't risk a full-table scan
