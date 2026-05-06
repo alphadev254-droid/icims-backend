@@ -112,7 +112,6 @@ const MEMBER_PERMISSIONS = [
   'donations:create',
   'donations:read',
   'settings:read',
-  'packages:view',
   'teams:read',
   'reminders:read',
   'cells:read',

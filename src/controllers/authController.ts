@@ -39,90 +39,42 @@ async function getUserWithPackage(userId: string) {
   if (!user) return null;
 
   const roleName = user.role?.name;
-  
-  // For member: get package from church's National Admin subscription
-  if (roleName === 'member' && user.churchId) {
-    const church = await prisma.church.findUnique({
-      where: { id: user.churchId },
-      select: { ministryAdminId: true },
-    });
-    
-    if (church?.ministryAdminId) {
-      const subscription = await prisma.subscription.findFirst({
-        where: { 
-          ministryAdminId: church.ministryAdminId,
-          status: 'active',
-        },
-        include: {
-          package: {
-            include: {
-              features: {
-                include: {
-                  feature: true,
-                },
-              },
-            },
-          },
-        },
-      });
-      
-      if (subscription?.package) {
-        return { ...user, package: subscription.package };
-      }
-    }
+
+  // Members don't need the package object in the auth response —
+  // hasFeature() queries the DB directly and doesn't use this field.
+  // Returning the full features array for members wastes bandwidth and
+  // exposes subscription details they have no use for.
+  if (roleName === 'member') {
+    return { ...user, package: null };
   }
-  
+
   // For district_admin, branch_admin, regional_admin: get package from their National Admin subscription
   if ((roleName === 'district_admin' || roleName === 'branch_admin' || roleName === 'regional_admin') && user.ministryAdminId) {
     const subscription = await prisma.subscription.findFirst({
-      where: { 
-        ministryAdminId: user.ministryAdminId,
-        status: 'active',
-      },
+      where: { ministryAdminId: user.ministryAdminId, status: 'active' },
       include: {
         package: {
-          include: {
-            features: {
-              include: {
-                feature: true,
-              },
-            },
-          },
+          include: { features: { include: { feature: true } } },
         },
       },
     });
-    
-    if (subscription?.package) {
-      return { ...user, package: subscription.package };
-    }
+    if (subscription?.package) return { ...user, package: subscription.package };
   }
-  
+
   // For ministry_admin: get their own subscription
   if (roleName === 'ministry_admin') {
     const subscription = await prisma.subscription.findFirst({
-      where: { 
-        ministryAdminId: userId,
-        status: 'active',
-      },
+      where: { ministryAdminId: userId, status: 'active' },
       include: {
         package: {
-          include: {
-            features: {
-              include: {
-                feature: true,
-              },
-            },
-          },
+          include: { features: { include: { feature: true } } },
         },
       },
     });
-    
-    if (subscription?.package) {
-      return { ...user, package: subscription.package };
-    }
+    if (subscription?.package) return { ...user, package: subscription.package };
   }
 
-  // No subscription found - return user with null package
+  // No subscription found
   return { ...user, package: null };
 }
 
@@ -184,14 +136,35 @@ function parseJson(val: string | null | undefined): string[] | undefined {
 
 function safeUser(user: any, permissions: string[]): any {
   const { password: _pw, rolePermissions: _rp, ...rest } = user;
-  return {
+  const roleName = user.role?.name || null;
+
+  const base = {
     ...rest,
-    roleName: user.role?.name || null,
+    roleName,
     permissions,
     districts: parseJson(user.districts),
     traditionalAuthorities: parseJson(user.traditionalAuthorities),
     accountCountry: user.accountCountry,
   };
+
+  // Members don't need scope fields, package details, or ministry-level data
+  if (roleName === 'member') {
+    const {
+      ministryAdminId: _mai,
+      regions: _reg,
+      districts: _dist,
+      traditionalAuthorities: _ta,
+      ministryName: _mn,
+      numberOfBranches: _nb,
+      currentMembership: _cm,
+      subdomain: _sd,
+      package: _pkg,
+      ...memberBase
+    } = base;
+    return memberBase;
+  }
+
+  return base;
 }
 
 const loginSchema = z.object({
