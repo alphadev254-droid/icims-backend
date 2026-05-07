@@ -111,19 +111,35 @@ async function getUserPermissions(user: any): Promise<string[]> {
     return permissions.map(rp => rp.permission.name);
   }
   
-  // Tenant-specific roles: district_admin, branch_admin - use ministryAdminId
+  // Tenant-specific roles: district_admin, branch_admin, regional_admin
+  // Permissions are stored with ministryAdminId = <ministry_admin_id> (tenant-specific)
+  // OR ministryAdminId = 'GLOBAL' (default permissions from seed)
   if (user.ministryAdminId) {
+    // Try tenant-specific permissions first, then fall back to GLOBAL for this role
     const permissions = await prisma.rolePermission.findMany({
       where: {
-        ministryAdminId: user.ministryAdminId,
         roleId: user.roleId,
+        OR: [
+          { ministryAdminId: user.ministryAdminId },
+          { ministryAdminId: 'GLOBAL' },
+        ],
       },
       include: { permission: { select: { name: true } } },
     });
-    return permissions.map(rp => rp.permission.name);
+    // Deduplicate — tenant-specific takes precedence but GLOBAL fills gaps
+    const seen = new Set<string>();
+    return permissions
+      .map(rp => rp.permission.name)
+      .filter(name => { if (seen.has(name)) return false; seen.add(name); return true; });
   }
-  
-  return [];
+
+  // ministryAdminId not set — fall back to GLOBAL permissions for this role
+  // This handles users created before the ministryAdminId fix was applied
+  const globalPermissions = await prisma.rolePermission.findMany({
+    where: { roleId: user.roleId, ministryAdminId: 'GLOBAL' },
+    include: { permission: { select: { name: true } } },
+  });
+  return globalPermissions.map(rp => rp.permission.name);
 }
 
 function extractPermissions(user: { rolePermissions: { permission: { name: string } }[] }): string[] {

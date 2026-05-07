@@ -2,61 +2,99 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 
-// ─── GET /api/roles — list all roles for current user's church ─────────────────
+// Roles that are global and not editable by ministry admins
+const GLOBAL_ROLES = ['ministry_admin', 'member', 'system_admin'];
+// Roles that are completely locked (no one can edit)
+const LOCKED_ROLES = ['system_admin'];
+
+// ─── GET /api/roles ────────────────────────────────────────────────────────────
 
 export async function getRoles(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const role = req.user?.role;
-  
-  // Roles are global
+
+  // Resolve the ministryAdminId for the caller
+  let ministryAdminId: string | null = null;
+  if (role === 'ministry_admin' && userId) {
+    ministryAdminId = userId;
+  } else if (userId) {
+    const caller = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { ministryAdminId: true },
+    });
+    ministryAdminId = caller?.ministryAdminId ?? null;
+  }
+
   const roles = await prisma.role.findMany({
-    include: {
-      _count: { select: { users: true } },
-    },
+    where: role === 'system_admin' ? {} : { name: { not: 'system_admin' } },
+    include: { _count: { select: { users: true } } },
     orderBy: { name: 'asc' },
   });
 
-  // Get permissions - use GLOBAL for ministry_admin and member
-  const rolePermissions = await prisma.rolePermission.findMany({
-    where: { ministryAdminId: 'GLOBAL' },
-    include: { permission: true },
-  });
+  // For each role, fetch permissions from the correct scope:
+  // - member, ministry_admin, system_admin → always GLOBAL
+  // - district_admin, branch_admin, regional_admin → ministryAdminId (tenant-specific)
+  //   If no tenant rows exist yet, fall back to GLOBAL so the UI shows defaults
+  const data = await Promise.all(roles.map(async (r) => {
+    const isGlobalRole = GLOBAL_ROLES.includes(r.name);
+    const isLocked = LOCKED_ROLES.includes(r.name);
 
-  const data = roles.map(r => {
-    const perms = rolePermissions
-      .filter(rp => rp.roleId === r.id)
-      .map(rp => rp.permission);
-    
+    let perms;
+    if (isGlobalRole || !ministryAdminId) {
+      // Always use GLOBAL for these roles
+      perms = await prisma.rolePermission.findMany({
+        where: { ministryAdminId: 'GLOBAL', roleId: r.id },
+        include: { permission: true },
+      });
+    } else {
+      // Try tenant-specific first
+      const tenantPerms = await prisma.rolePermission.findMany({
+        where: { ministryAdminId, roleId: r.id },
+        include: { permission: true },
+      });
+      // If no tenant customisation exists yet, show GLOBAL defaults
+      perms = tenantPerms.length > 0
+        ? tenantPerms
+        : await prisma.rolePermission.findMany({
+            where: { ministryAdminId: 'GLOBAL', roleId: r.id },
+            include: { permission: true },
+          });
+    }
+
     return {
       id: r.id,
       name: r.name,
       displayName: r.displayName,
       userCount: r._count.users,
-      permissions: perms,
+      permissions: perms.map(rp => rp.permission),
       createdAt: r.createdAt,
+      isEditable: !isLocked && !isGlobalRole,  // only sub-admin roles are editable
+      isGlobal: isGlobalRole,
     };
-  });
+  }));
 
   res.json({ success: true, data });
 }
 
-// ─── GET /api/roles/permissions — list all available permission definitions ────
+// ─── GET /api/roles/permissions ────────────────────────────────────────────────
 
 export async function getAllPermissions(_req: Request, res: Response): Promise<void> {
   const permissions = await prisma.permission.findMany({ orderBy: [{ resource: 'asc' }, { action: 'asc' }] });
   res.json({ success: true, data: permissions });
 }
 
-// ─── PUT /api/roles/:id/permissions — replace permissions for a role ───────────
+// ─── PUT /api/roles/:id/permissions ───────────────────────────────────────────
 
 const updatePermsSchema = z.object({
-  permissions: z.array(z.string()),  // array of permission names
+  permissions: z.array(z.string()),
 });
 
 export async function updateRolePermissions(req: Request, res: Response): Promise<void> {
-  const permissions = req.user?.permissions ?? [];
-  
-  if (!permissions.includes('roles:manage')) {
+  const callerPermissions = req.user?.permissions ?? [];
+  const userId = req.user?.userId;
+  const role = req.user?.role;
+
+  if (!callerPermissions.includes('roles:manage')) {
     res.status(403).json({ success: false, message: 'Permission denied: roles:manage required' });
     return;
   }
@@ -76,21 +114,42 @@ export async function updateRolePermissions(req: Request, res: Response): Promis
     return;
   }
 
+  // Block editing of global/locked roles
+  if (LOCKED_ROLES.includes(roleRecord.name)) {
+    res.status(403).json({ success: false, message: `The ${roleRecord.displayName} role cannot be modified.` });
+    return;
+  }
+  if (GLOBAL_ROLES.includes(roleRecord.name)) {
+    res.status(403).json({ success: false, message: `The ${roleRecord.displayName} role is global and cannot be customised per ministry.` });
+    return;
+  }
+
+  // Resolve ministryAdminId — write to tenant scope only
+  let ministryAdminId: string | null = null;
+  if (role === 'ministry_admin' && userId) {
+    ministryAdminId = userId;
+  } else if (userId) {
+    const caller = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { ministryAdminId: true },
+    });
+    ministryAdminId = caller?.ministryAdminId ?? null;
+  }
+
+  if (!ministryAdminId) {
+    res.status(400).json({ success: false, message: 'Cannot determine ministry scope.' });
+    return;
+  }
+
   const permRecords = await prisma.permission.findMany({
     where: { name: { in: permNames } },
   });
 
-  await prisma.rolePermission.deleteMany({
-    where: { ministryAdminId: 'GLOBAL', roleId },
-  });
-
+  // Replace tenant-specific permissions for this role
+  await prisma.rolePermission.deleteMany({ where: { ministryAdminId, roleId } });
   for (const perm of permRecords) {
     await prisma.rolePermission.create({
-      data: {
-        ministryAdminId: 'GLOBAL',
-        roleId,
-        permissionId: perm.id,
-      },
+      data: { ministryAdminId, roleId, permissionId: perm.id },
     });
   }
 

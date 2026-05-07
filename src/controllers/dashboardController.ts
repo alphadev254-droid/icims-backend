@@ -50,12 +50,32 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     });
     churchIds = churches.map(c => c.id);
   } else {
-    // For other roles, use the existing churchScope logic
-    if (!churchId) { 
-      res.status(400).json({ success: false, message: 'churchId required for this role' }); 
-      return; 
+    // For sub-admin roles (district_admin, branch_admin, regional_admin):
+    // churchId in JWT is null — they oversee multiple churches.
+    // Use getAccessibleChurchIds which resolves via ministryAdminId + scope fields.
+    churchIds = await getAccessibleChurchIds(
+      roleName,
+      churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId
+    );
+
+    if (churchIds.length === 0) {
+      // No churches in scope yet — return empty stats rather than 400
+      res.json({
+        success: true,
+        data: {
+          totalMembers: 0, activeMembers: 0, totalChurches: 0,
+          totalDonations: 0, upcomingEvents: 0, averageAttendance: 0,
+          memberGrowth: 0, donationGrowth: 0, totalNewVisitors: 0,
+          retentionRate: 0, attendanceRate: 0, newMembersThisMonth: 0,
+          weeklyAttendance: [], monthlyGiving: [],
+        },
+      });
+      return;
     }
-    churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
   }
 
   const [users, events, donations, attendance] = await Promise.all([
