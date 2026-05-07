@@ -13,9 +13,9 @@ export async function getTransactions(req: Request, res: Response): Promise<void
   }
 
   // Pagination params
-  const page = Math.max(1, parseInt(req.query.page as string) || 1);
-  const limit = Math.max(100, parseInt(req.query.limit as string) || 100);
-  const skip = (page - 1) * limit;
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const skip  = (page - 1) * limit;
 
   // Search and filter params
   const search = (req.query.search as string)?.trim() || '';
@@ -28,13 +28,7 @@ export async function getTransactions(req: Request, res: Response): Promise<void
 
   let churchIds: string[] = [];
 
-  if (roleName === 'ministry_admin') {
-    const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
-      select: { id: true }
-    });
-    churchIds = churches.map(c => c.id);
-  } else if (roleName === 'member') {
+  if (roleName === 'member') {
     // Members see only their own transactions
     const whereClause: any = { userId };
     if (type) whereClause.type = type;
@@ -42,9 +36,9 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     if (paymentMethod) whereClause.paymentMethod = paymentMethod;
     if (search) {
       whereClause.OR = [
-        { user: { firstName: { contains: search, mode: 'insensitive' } } },
-        { user: { lastName: { contains: search, mode: 'insensitive' } } },
-        { user: { email: { contains: search, mode: 'insensitive' } } },
+        { user: { firstName: { contains: search } } },
+        { user: { lastName: { contains: search } } },
+        { user: { email: { contains: search } } },
       ];
     }
     if (startDate || endDate) {
@@ -84,11 +78,21 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     res.json({ success: true, data: transactions, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     return;
   } else {
-    if (!churchId) {
-      res.status(400).json({ success: false, message: 'churchId required' });
+    // All admin roles — use getAccessibleChurchIds which handles ministry_admin, sub-admins, etc.
+    // Sub-admins have churchId: null in JWT but getAccessibleChurchIds resolves via ministryAdminId
+    churchIds = await getAccessibleChurchIds(
+      roleName,
+      churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId,
+    );
+
+    if (churchIds.length === 0) {
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
       return;
     }
-    churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
   }
 
   // Build where clause for admins
@@ -99,9 +103,9 @@ export async function getTransactions(req: Request, res: Response): Promise<void
   if (paymentMethod) whereClause.paymentMethod = paymentMethod;
   if (search) {
     whereClause.OR = [
-      { user: { firstName: { contains: search, mode: 'insensitive' } } },
-      { user: { lastName: { contains: search, mode: 'insensitive' } } },
-      { user: { email: { contains: search, mode: 'insensitive' } } },
+      { user: { firstName: { contains: search } } },
+      { user: { lastName: { contains: search } } },
+      { user: { email: { contains: search } } },
     ];
   }
   if (startDate || endDate) {

@@ -71,21 +71,71 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
     whereClause.date = { ...whereClause.date, lte: endDateTime };
   }
 
-  const records = await prisma.attendance.findMany({
-    where: whereClause,
-    include: {
-      church: {
-        select: {
-          id: true,
-          name: true,
-        },
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const skip  = (page - 1) * limit;
+  const isExport = req.query.export === 'true';
+
+  if (isExport) {
+    // Export mode: return all records (up to 10,000 safety cap), no pagination wrapper
+    const records = await prisma.attendance.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        churchId: true,
+        date: true,
+        totalAttendees: true,
+        maleCount: true,
+        femaleCount: true,
+        children: true,
+        youth: true,
+        youngAdults: true,
+        adults: true,
+        seniors: true,
+        newVisitors: true,
+        serviceType: true,
+        notes: true,
+        eventId: true,
+        createdAt: true,
+        church: { select: { id: true, name: true } },
       },
-    },
-    orderBy: { date: 'desc' },
-    take: 100,
-  });
+      orderBy: { date: 'desc' },
+      take: 10000,
+    });
+    res.json({ success: true, data: records });
+    return;
+  }
+
+  const [records, total] = await Promise.all([
+    prisma.attendance.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        churchId: true,
+        date: true,
+        totalAttendees: true,
+        maleCount: true,
+        femaleCount: true,
+        children: true,
+        youth: true,
+        youngAdults: true,
+        adults: true,
+        seniors: true,
+        newVisitors: true,
+        serviceType: true,
+        notes: true,
+        eventId: true,
+        createdAt: true,
+        church: { select: { id: true, name: true } },
+      },
+      orderBy: { date: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.attendance.count({ where: whereClause }),
+  ]);
   
-  res.json({ success: true, data: records });
+  res.json({ success: true, data: records, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function createAttendance(req: Request, res: Response): Promise<void> {

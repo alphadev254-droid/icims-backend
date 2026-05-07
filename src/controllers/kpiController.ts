@@ -259,141 +259,115 @@ export const kpiController = {
         where: { churchId: { in: accessibleChurchIds }, status: 'active' },
       });
 
-      // Cache member role lookup
+      if (kpis.length === 0) {
+        res.json({ message: 'No active KPIs to calculate' });
+        return;
+      }
+
+      // Cache member role lookup once
       const memberRole = await prisma.role.findUnique({ where: { name: 'member' } });
       const memberRoleId = memberRole?.id;
 
-      // Batch updates
-      const updates: Promise<any>[] = [];
+      // Group KPIs by churchId + metricType to batch DB queries
+      // Instead of N queries for N KPIs, we run one query per unique (churchId, metricType) combo
+      type MetricKey = string; // `${churchId}:${metricType}:${attendanceType}:${eventId}`
+      const metricCache = new Map<MetricKey, number>();
 
+      const getMetricKey = (kpi: typeof kpis[0]) =>
+        `${kpi.churchId}:${kpi.metricType}:${kpi.attendanceType ?? ''}:${kpi.eventId ?? ''}:${kpi.startDate.toISOString()}:${kpi.endDate.toISOString()}`;
+
+      // Collect all unique metric computations needed
+      const uniqueMetrics = new Map<MetricKey, typeof kpis[0]>();
       for (const kpi of kpis) {
-        let currentValue = 0;
-
-        try {
-          switch (kpi.metricType) {
-            case 'total_attendance':
-              const whereClause: any = {
-                churchId: kpi.churchId,
-                date: { gte: kpi.startDate, lte: kpi.endDate },
-              };
-              
-              // Filter by attendance type
-              if (kpi.attendanceType === 'regular') {
-                whereClause.eventId = null;
-              } else if (kpi.attendanceType === 'event') {
-                if (kpi.eventId) {
-                  whereClause.eventId = kpi.eventId;
-                } else {
-                  whereClause.eventId = { not: null };
-                }
-              }
-              
-              const attendance = await prisma.attendance.aggregate({
-                where: whereClause,
-                _sum: { totalAttendees: true },
-              });
-              currentValue = attendance._sum.totalAttendees || 0;
-              break;
-
-            case 'average_attendance':
-              const avgWhereClause: any = {
-                churchId: kpi.churchId,
-                date: { gte: kpi.startDate, lte: kpi.endDate },
-              };
-              
-              // Filter by attendance type
-              if (kpi.attendanceType === 'regular') {
-                avgWhereClause.eventId = null;
-              } else if (kpi.attendanceType === 'event') {
-                if (kpi.eventId) {
-                  avgWhereClause.eventId = kpi.eventId;
-                } else {
-                  avgWhereClause.eventId = { not: null };
-                }
-              }
-              
-              const avgAttendance = await prisma.attendance.aggregate({
-                where: avgWhereClause,
-                _avg: { totalAttendees: true },
-              });
-              currentValue = Math.round(avgAttendance._avg.totalAttendees || 0);
-              break;
-
-            case 'total_giving':
-              const donations = await prisma.donationTransaction.aggregate({
-                where: {
-                  churchId: kpi.churchId,
-                  status: 'completed',
-                  createdAt: { gte: kpi.startDate, lte: kpi.endDate },
-                },
-                _sum: { amount: true },
-              });
-              currentValue = donations._sum.amount || 0;
-              break;
-
-            case 'new_members':
-              if (memberRoleId) {
-                const members = await prisma.user.count({
-                  where: {
-                    churchId: kpi.churchId,
-                    roleId: memberRoleId,
-                    status: 'active',
-                    createdAt: { gte: kpi.startDate, lte: kpi.endDate },
-                  },
-                });
-                currentValue = members;
-              }
-              break;
-
-            case 'event_count':
-              const events = await prisma.event.count({
-                where: {
-                  churchId: kpi.churchId,
-                  date: { gte: kpi.startDate, lte: kpi.endDate },
-                },
-              });
-              currentValue = events;
-              break;
-
-            case 'total_members':
-              if (memberRoleId) {
-                const totalMembers = await prisma.user.count({
-                  where: { 
-                    churchId: kpi.churchId, 
-                    roleId: memberRoleId,
-                    status: 'active' 
-                  },
-                });
-                currentValue = totalMembers;
-              }
-              break;
-
-            case 'new_visitors':
-              const visitors = await prisma.attendance.aggregate({
-                where: {
-                  churchId: kpi.churchId,
-                  date: { gte: kpi.startDate, lte: kpi.endDate },
-                },
-                _sum: { newVisitors: true },
-              });
-              currentValue = visitors._sum.newVisitors || 0;
-              break;
-          }
-
-          // Add to batch updates
-          updates.push(
-            prisma.kPI.update({
-              where: { id: kpi.id },
-              data: { currentValue },
-            })
-          );
-        } catch (error) {
-          console.error(`Failed to calculate KPI ${kpi.id}:`, error);
-        }
+        uniqueMetrics.set(getMetricKey(kpi), kpi);
       }
 
-      // Execute all updates in parallel
-      await Promise.all(updates);
+      // Compute each unique metric once
+      await Promise.all(
+        Array.from(uniqueMetrics.entries()).map(async ([key, kpi]) => {
+          let currentValue = 0;
+          try {
+            switch (kpi.metricType) {
+              case 'total_attendance': {
+                const whereClause: any = {
+                  churchId: kpi.churchId,
+                  date: { gte: kpi.startDate, lte: kpi.endDate },
+                };
+                if (kpi.attendanceType === 'regular') whereClause.eventId = null;
+                else if (kpi.attendanceType === 'event') {
+                  whereClause.eventId = kpi.eventId ? kpi.eventId : { not: null };
+                }
+                const result = await prisma.attendance.aggregate({ where: whereClause, _sum: { totalAttendees: true } });
+                currentValue = result._sum.totalAttendees ?? 0;
+                break;
+              }
+              case 'average_attendance': {
+                const whereClause: any = {
+                  churchId: kpi.churchId,
+                  date: { gte: kpi.startDate, lte: kpi.endDate },
+                };
+                if (kpi.attendanceType === 'regular') whereClause.eventId = null;
+                else if (kpi.attendanceType === 'event') {
+                  whereClause.eventId = kpi.eventId ? kpi.eventId : { not: null };
+                }
+                const result = await prisma.attendance.aggregate({ where: whereClause, _avg: { totalAttendees: true } });
+                currentValue = Math.round(result._avg.totalAttendees ?? 0);
+                break;
+              }
+              case 'total_giving': {
+                const result = await prisma.donationTransaction.aggregate({
+                  where: { churchId: kpi.churchId, status: 'completed', createdAt: { gte: kpi.startDate, lte: kpi.endDate } },
+                  _sum: { amount: true },
+                });
+                currentValue = result._sum.amount ?? 0;
+                break;
+              }
+              case 'new_members': {
+                if (memberRoleId) {
+                  currentValue = await prisma.user.count({
+                    where: { churchId: kpi.churchId, roleId: memberRoleId, status: 'active', createdAt: { gte: kpi.startDate, lte: kpi.endDate } },
+                  });
+                }
+                break;
+              }
+              case 'event_count': {
+                currentValue = await prisma.event.count({
+                  where: { churchId: kpi.churchId, date: { gte: kpi.startDate, lte: kpi.endDate } },
+                });
+                break;
+              }
+              case 'total_members': {
+                if (memberRoleId) {
+                  currentValue = await prisma.user.count({
+                    where: { churchId: kpi.churchId, roleId: memberRoleId, status: 'active' },
+                  });
+                }
+                break;
+              }
+              case 'new_visitors': {
+                const result = await prisma.attendance.aggregate({
+                  where: { churchId: kpi.churchId, date: { gte: kpi.startDate, lte: kpi.endDate } },
+                  _sum: { newVisitors: true },
+                });
+                currentValue = result._sum.newVisitors ?? 0;
+                break;
+              }
+            }
+            metricCache.set(key, currentValue);
+          } catch (error) {
+            console.error(`Failed to calculate metric ${key}:`, error);
+          }
+        })
+      );
+
+      // Batch update all KPIs in parallel using cached values
+      await Promise.all(
+        kpis.map(kpi => {
+          const key = getMetricKey(kpi);
+          const currentValue = metricCache.get(key) ?? 0;
+          return prisma.kPI.update({ where: { id: kpi.id }, data: { currentValue } });
+        })
+      );
 
       res.json({ message: 'KPIs calculated successfully' });
     } catch (error: any) {

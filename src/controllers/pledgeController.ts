@@ -244,10 +244,18 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
 
   const where: any = {
     churchId: { in: accessibleChurchIds },
-    ...(filterChurchId && { churchId: filterChurchId }),
-    ...(campaignId     && { campaignId }),
+    ...(campaignId && { campaignId }),
     ...(status && status !== 'all' && { status }),
   };
+
+  // Apply church filter only if it's within the accessible scope
+  if (filterChurchId) {
+    if (!accessibleChurchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 }, summary: { totalPledged: 0, totalPaid: 0, outstanding: 0, count: 0 } });
+      return;
+    }
+    where.churchId = filterChurchId;
+  }
 
   const [pledges, total, allStats] = await Promise.all([
     prisma.pledge.findMany({

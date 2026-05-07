@@ -162,41 +162,59 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
     orderBy: { createdAt: 'desc' },
   });
 
-  // Calculate total raised for each campaign
-  const campaignsWithStats = await Promise.all(
-    campaigns.map(async (campaign) => {
-      const stats = await prisma.donationTransaction.aggregate({
-        where: { campaignId: campaign.id, status: 'completed' },
-        _sum: { amount: true },
-      });
+  if (campaigns.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
 
-      // Count unique donors
-      const uniqueDonors = await prisma.donationTransaction.findMany({
-        where: { campaignId: campaign.id, status: 'completed' },
-        select: { userId: true },
-        distinct: ['userId'],
-      });
+  const campaignIds = campaigns.map(c => c.id);
 
-      // Check if member has donated to this campaign and get their total
-      let userHasDonated = false;
-      let userTotalDonated = 0;
-      if (roleName === 'member') {
-        const userDonations = await prisma.donationTransaction.findMany({
-          where: { campaignId: campaign.id, userId, status: 'completed' },
-        });
-        userHasDonated = userDonations.length > 0;
-        userTotalDonated = userDonations.reduce((sum, d) => sum + d.amount, 0);
-      }
+  // ── Batch all per-campaign stats in 2 queries instead of N*3 ─────────────
+  const [raisedStats, donorStats] = await Promise.all([
+    // Total raised per campaign
+    prisma.donationTransaction.groupBy({
+      by: ['campaignId'],
+      where: { campaignId: { in: campaignIds }, status: 'completed' },
+      _sum: { amount: true },
+    }),
+    // Unique donor count per campaign (distinct userId, excluding nulls)
+    prisma.donationTransaction.findMany({
+      where: { campaignId: { in: campaignIds }, status: 'completed', userId: { not: null } },
+      select: { campaignId: true, userId: true },
+      distinct: ['campaignId', 'userId'],
+    }),
+  ]);
 
-      return {
-        ...campaign,
-        totalRaised: stats._sum.amount || 0,
-        donorCount: uniqueDonors.length,
-        userHasDonated,
-        userTotalDonated,
-      };
-    })
-  );
+  const raisedMap = new Map(raisedStats.map(r => [r.campaignId, r._sum.amount ?? 0]));
+  // Count distinct donors per campaign
+  const donorCountMap = new Map<string, number>();
+  for (const d of donorStats) {
+    donorCountMap.set(d.campaignId, (donorCountMap.get(d.campaignId) ?? 0) + 1);
+  }
+
+  // For members: batch-fetch their donations across all campaigns in one query
+  let memberDonationMap = new Map<string, { hasDonated: boolean; total: number }>();
+  if (roleName === 'member' && userId) {
+    const memberDonations = await prisma.donationTransaction.findMany({
+      where: { campaignId: { in: campaignIds }, userId, status: 'completed' },
+      select: { campaignId: true, amount: true },
+    });
+    for (const d of memberDonations) {
+      const existing = memberDonationMap.get(d.campaignId) ?? { hasDonated: false, total: 0 };
+      memberDonationMap.set(d.campaignId, { hasDonated: true, total: existing.total + d.amount });
+    }
+  }
+
+  const campaignsWithStats = campaigns.map(campaign => {
+    const memberData = memberDonationMap.get(campaign.id);
+    return {
+      ...campaign,
+      totalRaised: raisedMap.get(campaign.id) ?? 0,
+      donorCount: donorCountMap.get(campaign.id) ?? 0,
+      userHasDonated: memberData?.hasDonated ?? false,
+      userTotalDonated: memberData?.total ?? 0,
+    };
+  });
 
   // Group by date ranges
   const grouped = groupByDateRanges(campaignsWithStats);
@@ -350,23 +368,35 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
 export async function getDonations(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;
-  const { campaignId, churchId } = req.query;
+  const { campaignId, churchId: filterChurchId } = req.query;
+
+  // Pagination
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
+  const skip  = (page - 1) * limit;
+  const isExport = req.query.export === 'true';
 
   // Members see only their own donations
   if (roleName === 'member') {
-    const donations = await prisma.donationTransaction.findMany({
-      where: {
-        userId,
-        ...(campaignId && { campaignId: String(campaignId) }),
-      },
-      include: {
-        campaign: { select: { name: true, category: true } },
-        user: { select: { firstName: true, lastName: true, email: true } },
-        church: { select: { name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json({ success: true, data: donations });
+    const where: any = {
+      userId,
+      ...(campaignId && { campaignId: String(campaignId) }),
+    };
+    const [donations, total] = await Promise.all([
+      prisma.donationTransaction.findMany({
+        where,
+        include: {
+          campaign: { select: { name: true, category: true } },
+          user: { select: { firstName: true, lastName: true, email: true } },
+          church: { select: { name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.donationTransaction.count({ where }),
+    ]);
+    res.json({ success: true, data: donations, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     return;
   }
 
@@ -380,34 +410,70 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     userId
   );
 
-  const donations = await prisma.donationTransaction.findMany({
-    where: {
-      ...(campaignId && { campaignId: String(campaignId) }),
-      ...(churchId && { churchId: String(churchId) }),
-      ...(accessibleChurchIds.length > 0 && { churchId: { in: accessibleChurchIds } }),
-    },
-    select: {
-      id: true,
-      amount: true,
-      currency: true,
-      status: true,
-      isAnonymous: true,
-      donorName: true,
-      donorEmail: true,
-      isGuest: true,
-      guestName: true,
-      guestEmail: true,
-      guestPhone: true,
-      notes: true,
-      createdAt: true,
-      campaign: { select: { name: true, category: true } },
-      church: { select: { name: true } },
-      user: { select: { firstName: true, lastName: true, email: true } },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+  if (accessibleChurchIds.length === 0) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
 
-  res.json({ success: true, data: donations });
+  // Validate filterChurchId is within scope — never let it bypass accessibleChurchIds
+  let scopedChurchIds = accessibleChurchIds;
+  if (filterChurchId && typeof filterChurchId === 'string') {
+    if (!accessibleChurchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+      return;
+    }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  const where: any = {
+    churchId: { in: scopedChurchIds },
+    ...(campaignId && { campaignId: String(campaignId) }),
+  };
+
+  const donationSelect = {
+    id: true,
+    amount: true,
+    currency: true,
+    status: true,
+    isAnonymous: true,
+    donorName: true,
+    donorEmail: true,
+    isGuest: true,
+    guestName: true,
+    guestEmail: true,
+    guestPhone: true,
+    notes: true,
+    createdAt: true,
+    paymentMethod: true,
+    campaign: { select: { name: true, category: true } },
+    church: { select: { name: true } },
+    user: { select: { firstName: true, lastName: true, email: true } },
+  };
+
+  if (isExport) {
+    // Export mode: return all records (up to 10,000 safety cap), no pagination wrapper
+    const donations = await prisma.donationTransaction.findMany({
+      where,
+      select: donationSelect,
+      orderBy: { createdAt: 'desc' },
+      take: 10000,
+    });
+    res.json({ success: true, data: donations });
+    return;
+  }
+
+  const [donations, total] = await Promise.all([
+    prisma.donationTransaction.findMany({
+      where,
+      select: donationSelect,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.donationTransaction.count({ where }),
+  ]);
+
+  res.json({ success: true, data: donations, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 const createDonationSchema = z.object({

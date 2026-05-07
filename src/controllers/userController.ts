@@ -34,7 +34,8 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
 
   // Pagination
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
-  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const isExport = req.query.export === 'true';
+  const limit = isExport ? 10000 : Math.min(parseInt(req.query.limit as string) || 100, 500);
   const skip  = (page - 1) * limit;
 
   // Query filters from request

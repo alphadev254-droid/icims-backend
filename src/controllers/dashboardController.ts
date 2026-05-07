@@ -43,12 +43,15 @@ export async function getStats(req: Request, res: Response): Promise<void> {
   }
 
   if (roleName === 'ministry_admin') {
-    // For national admin, get churches where they are the ministryAdminId
-    const churches = await prisma.church.findMany({ 
-      where: { ministryAdminId: userId },
-      select: { id: true } 
-    });
-    churchIds = churches.map(c => c.id);
+    // Use getAccessibleChurchIds consistently for all roles
+    churchIds = await getAccessibleChurchIds(
+      roleName,
+      churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId
+    );
   } else {
     // For sub-admin roles (district_admin, branch_admin, regional_admin):
     // churchId in JWT is null — they oversee multiple churches.
@@ -78,18 +81,53 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     }
   }
 
-  const [users, events, donations, attendance] = await Promise.all([
-    prisma.user.findMany({ where: { churchId: { in: churchIds } } }),
-    prisma.event.findMany({ where: { churchId: { in: churchIds } } }),
-    prisma.donationTransaction.findMany({ 
-      where: { churchId: { in: churchIds }, status: 'completed' },
-      select: { amount: true, createdAt: true }
+  const now = new Date();
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const twoMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+  const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [
+    totalMembers,
+    activeMembers,
+    newMembersThisMonth,
+    prevMonthUsers,
+    events,
+    donations,
+    lastMonthDonations,
+    prevMonthDonations,
+    attendance,
+  ] = await Promise.all([
+    // Member counts — aggregates instead of fetching all rows
+    prisma.user.count({ where: { churchId: { in: churchIds } } }),
+    prisma.user.count({ where: { churchId: { in: churchIds }, status: 'active' } }),
+    prisma.user.count({ where: { churchId: { in: churchIds }, createdAt: { gte: lastMonth, lt: now } } }),
+    prisma.user.count({ where: { churchId: { in: churchIds }, createdAt: { gte: twoMonthsAgo, lt: lastMonth } } }),
+    // Events — only need status + count, use select
+    prisma.event.findMany({
+      where: { churchId: { in: churchIds } },
+      select: { status: true },
     }),
-    prisma.attendance.findMany({ 
+    // All-time donations for total + monthly breakdown
+    prisma.donationTransaction.findMany({
+      where: { churchId: { in: churchIds }, status: 'completed' },
+      select: { amount: true, createdAt: true },
+    }),
+    // Last month donations aggregate
+    prisma.donationTransaction.aggregate({
+      where: { churchId: { in: churchIds }, status: 'completed', createdAt: { gte: lastMonth, lt: startOfThisMonth } },
+      _sum: { amount: true },
+    }),
+    // Previous month donations aggregate
+    prisma.donationTransaction.aggregate({
+      where: { churchId: { in: churchIds }, status: 'completed', createdAt: { gte: twoMonthsAgo, lt: lastMonth } },
+      _sum: { amount: true },
+    }),
+    // Attendance — last 12 records for charts
+    prisma.attendance.findMany({
       where: { churchId: { in: churchIds } },
       select: { totalAttendees: true, date: true, newVisitors: true },
       orderBy: { date: 'desc' },
-      take: 12 // Last 12 records for charts
+      take: 12,
     }),
   ]);
 
@@ -99,35 +137,29 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     ? Math.round(attendance.reduce((sum, a) => sum + a.totalAttendees, 0) / attendance.length)
     : 0;
 
-  // Calculate real growth rates
-  const now = new Date();
-  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const twoMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+  // Growth rates from pre-aggregated counts
+  const memberGrowth = prevMonthUsers > 0
+    ? Number(((newMembersThisMonth - prevMonthUsers) / prevMonthUsers * 100).toFixed(1))
+    : 0;
 
-  const lastMonthUsers = users.filter(u => new Date(u.createdAt) < now && new Date(u.createdAt) >= lastMonth).length;
-  const prevMonthUsers = users.filter(u => new Date(u.createdAt) < lastMonth && new Date(u.createdAt) >= twoMonthsAgo).length;
-  const memberGrowth = prevMonthUsers > 0 ? Number(((lastMonthUsers - prevMonthUsers) / prevMonthUsers * 100).toFixed(1)) : 0;
+  const lastMonthTotal = lastMonthDonations._sum.amount ?? 0;
+  const prevMonthTotal = prevMonthDonations._sum.amount ?? 0;
+  const donationGrowth = prevMonthTotal > 0
+    ? Number(((lastMonthTotal - prevMonthTotal) / prevMonthTotal * 100).toFixed(1))
+    : 0;
 
-  const lastMonthDonations = donations.filter(d => new Date(d.createdAt) >= lastMonth).reduce((sum, d) => sum + d.amount, 0);
-  const prevMonthDonations = donations.filter(d => new Date(d.createdAt) >= twoMonthsAgo && new Date(d.createdAt) < lastMonth).reduce((sum, d) => sum + d.amount, 0);
-  const donationGrowth = prevMonthDonations > 0 ? Number(((lastMonthDonations - prevMonthDonations) / prevMonthDonations * 100).toFixed(1)) : 0;
-
-  // New metrics
   const totalNewVisitors = attendance.reduce((sum, a) => sum + a.newVisitors, 0);
-  const activeMembers = users.filter(u => u.status === 'active').length;
-  const retentionRate = users.length > 0 ? Number(((activeMembers / users.length) * 100).toFixed(1)) : 0;
-  
-  // Attendance rate
-  const attendanceRate = users.length > 0 ? Number(((avgAttendance / users.length) * 100).toFixed(1)) : 0;
+  const retentionRate = totalMembers > 0 ? Number(((activeMembers / totalMembers) * 100).toFixed(1)) : 0;
+  const attendanceRate = totalMembers > 0 ? Number(((avgAttendance / totalMembers) * 100).toFixed(1)) : 0;
 
-  // Prepare weekly attendance data (last 4 weeks)
+  // Weekly attendance (last 4 records)
   const weeklyAttendance = attendance.slice(0, 4).reverse().map((a, idx) => ({
     week: `Week ${idx + 1}`,
     attendees: a.totalAttendees,
-    date: a.date
+    date: a.date,
   }));
 
-  // Prepare monthly giving data (last 6 months)
+  // Monthly giving (last 6 months)
   const monthlyGiving: { month: string; amount: number }[] = [];
   for (let i = 5; i >= 0; i--) {
     const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -145,7 +177,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
   res.json({
     success: true,
     data: {
-      totalMembers: users.length,
+      totalMembers,
       activeMembers,
       totalChurches,
       totalDonations,
@@ -156,7 +188,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       totalNewVisitors,
       retentionRate,
       attendanceRate,
-      newMembersThisMonth: lastMonthUsers,
+      newMembersThisMonth,
       weeklyAttendance,
       monthlyGiving,
     },

@@ -803,21 +803,33 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
     ...(byName as any[]).filter((r: any) => !phoneKeys.has(r.visitorPhone) && !emailKeys.has((r as any).visitorEmail)).map((r: any) => ({ key: r.visitorName, field: 'visitorName', visits: r._count.id })),
   ].sort((a, b) => b.visits - a.visits).slice(0, 10);
 
-  // Fetch one representative record per group for display info
-  const repeatVisitors = await Promise.all(
-    repeatVisitorKeys.map(async ({ key, field, visits }) => {
-      const sample = await prisma.cellAttendance.findFirst({
-        where: { cellId, isVisitor: true, [field]: key },
-        select: { visitorName: true, visitorPhone: true },
-      });
-      return {
-        name: sample?.visitorName ?? '',
-        phone: sample?.visitorPhone ?? null,
-        email: null as string | null, // populated post-migration
-        visits,
-      };
-    })
-  );
+  // Fetch one representative record per group for display info — single bulk query instead of N+1
+  const repeatVisitorSamples = await prisma.cellAttendance.findMany({
+    where: {
+      cellId,
+      isVisitor: true,
+      OR: repeatVisitorKeys.map(({ key, field }) => ({ [field]: key })),
+    },
+    select: { visitorName: true, visitorPhone: true },
+    distinct: ['visitorPhone', 'visitorName'],
+    take: 20,
+  });
+
+  // Build a lookup map: phone → record, name → record
+  const sampleByPhone = new Map(repeatVisitorSamples.filter(s => s.visitorPhone).map(s => [s.visitorPhone!, s]));
+  const sampleByName  = new Map(repeatVisitorSamples.filter(s => s.visitorName).map(s => [s.visitorName!, s]));
+
+  const repeatVisitors = repeatVisitorKeys.map(({ key, field, visits }) => {
+    const sample = field === 'visitorPhone'
+      ? sampleByPhone.get(key)
+      : sampleByName.get(key);
+    return {
+      name: sample?.visitorName ?? '',
+      phone: sample?.visitorPhone ?? null,
+      email: null as string | null,
+      visits,
+    };
+  });
 
   res.json({
     success: true,
@@ -949,13 +961,14 @@ export async function getCellFinanceStats(req: Request, res: Response): Promise<
     : null;
 
   // Giving participation — unique member donors (not guests/anonymous)
-  const uniqueDonors = await prisma.donationTransaction.findMany({
+  const uniqueDonorCount = await prisma.donationTransaction.findMany({
     where: { cellId, status: 'completed', userId: { not: null }, isGuest: false, isAnonymous: false },
     select: { userId: true },
     distinct: ['userId'],
-  });
+  }).then(rows => rows.length);
+
   const givingParticipationRate = totalMembers > 0
-    ? Math.round((uniqueDonors.length / totalMembers) * 100)
+    ? Math.round((uniqueDonorCount / totalMembers) * 100)
     : 0;
 
   // Average giving per contributing member
@@ -964,8 +977,8 @@ export async function getCellFinanceStats(req: Request, res: Response): Promise<
     _sum: { amount: true },
   });
   const totalRaised = allCompleted._sum.amount ?? 0;
-  const avgGivingPerContributor = uniqueDonors.length > 0
-    ? Math.round(totalRaised / uniqueDonors.length)
+  const avgGivingPerContributor = uniqueDonorCount > 0
+    ? Math.round(totalRaised / uniqueDonorCount)
     : 0;
 
   // Top contributors — one bulk user fetch instead of N+1
@@ -1023,7 +1036,7 @@ export async function getCellFinanceStats(req: Request, res: Response): Promise<
       lastMonthTotal,
       monthChange,
       totalRaised,
-      uniqueDonorCount: uniqueDonors.length,
+      uniqueDonorCount: uniqueDonorCount,
       givingParticipationRate,
       avgGivingPerContributor,
       topContributors,

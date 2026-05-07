@@ -56,50 +56,43 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const filterChurchId = req.query.churchId as string | undefined;
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
+
+  // Pagination
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const skip  = (page - 1) * limit;
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
     return;
   }
 
-  let churchIds: string[] = [];
+  // Resolve accessible church IDs using the shared helper for all roles
+  const churchIds = await getAccessibleChurchIds(
+    roleName,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
 
-  if (roleName === 'member') {
-    // Members only see events from their own church
-    if (!churchId) {
-      res.status(400).json({ success: false, message: 'No church assigned' });
-      return;
-    }
-    churchIds = [churchId];
-  } else if (roleName === 'ministry_admin') {
-    // National admin sees events from their churches
-    const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
-      select: { id: true }
-    });
-    churchIds = churches.map(c => c.id);
-  } else {
-    // Other roles use existing scope logic
-    if (!churchId) {
-      res.status(400).json({ success: false, message: 'churchId required' });
-      return;
-    }
-    churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
+  if (churchIds.length === 0) {
+    res.json({ success: true, data: {}, pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
   }
 
   // Apply church filter if provided
+  let scopedChurchIds = churchIds;
   if (filterChurchId) {
-    // Ensure the filtered church is in the accessible churches
-    if (churchIds.includes(filterChurchId)) {
-      churchIds = [filterChurchId];
-    } else {
-      // User doesn't have access to this church
-      res.json({ success: true, data: [] });
+    if (!churchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: {}, pagination: { page, limit, total: 0, totalPages: 0 } });
       return;
     }
+    scopedChurchIds = [filterChurchId];
   }
 
-  const whereClause: any = { churchId: { in: churchIds } };
+  const whereClause: any = { churchId: { in: scopedChurchIds } };
   
   // Apply date filters
   if (startDate) {
@@ -111,10 +104,42 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
     whereClause.date = { ...whereClause.date, lte: endDateTime };
   }
 
-  const events = await prisma.event.findMany({
-    where: whereClause,
-    orderBy: { date: 'asc' },
-  });
+  const [events, total] = await Promise.all([
+    prisma.event.findMany({
+      where: whereClause,
+      // Exclude heavy Text fields (description) from list view — fetch on demand via getEvent
+      select: {
+        id: true,
+        title: true,
+        date: true,
+        endDate: true,
+        time: true,
+        location: true,
+        type: true,
+        status: true,
+        attendeeCount: true,
+        requiresTicket: true,
+        isFree: true,
+        ticketPrice: true,
+        currency: true,
+        totalTickets: true,
+        ticketsSold: true,
+        ticketSalesCutoff: true,
+        allowPublicTicketing: true,
+        imageUrl: true,
+        churchId: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        contactEmail: true,
+        contactPhone: true,
+      },
+      orderBy: { date: 'asc' },
+      skip,
+      take: limit,
+    }),
+    prisma.event.count({ where: whereClause }),
+  ]);
 
   // Fetch all user tickets in one query
   const eventIds = events.map(e => e.id);
@@ -140,7 +165,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   // Group by date ranges
   const grouped = groupByDateRanges(eventsWithTicketStatus);
 
-  res.json({ success: true, data: grouped });
+  res.json({ success: true, data: grouped, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function getPublicEvent(req: Request, res: Response): Promise<void> {
