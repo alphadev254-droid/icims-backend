@@ -56,6 +56,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const filterChurchId = req.query.churchId as string | undefined;
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
+  const isSimple = req.query.simple === 'true'; // lightweight dropdown mode
 
   // Pagination
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
@@ -78,7 +79,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   );
 
   if (churchIds.length === 0) {
-    res.json({ success: true, data: {}, pagination: { page, limit, total: 0, totalPages: 0 } });
+    res.json({ success: true, data: isSimple ? [] : {} });
     return;
   }
 
@@ -86,17 +87,30 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   let scopedChurchIds = churchIds;
   if (filterChurchId) {
     if (!churchIds.includes(filterChurchId)) {
-      res.json({ success: true, data: {}, pagination: { page, limit, total: 0, totalPages: 0 } });
+      res.json({ success: true, data: isSimple ? [] : {} });
       return;
     }
     scopedChurchIds = [filterChurchId];
   }
 
   const whereClause: any = { churchId: { in: scopedChurchIds } };
-  
+
   // Apply date filters
   if (startDate) {
     whereClause.date = { ...whereClause.date, gte: new Date(startDate) };
+  }
+
+  if (isSimple) {
+    // Lightweight mode for dropdowns — only id, title, date, time, churchId
+    // No pagination, no grouping, no ticket lookup
+    const events = await prisma.event.findMany({
+      where: whereClause,
+      select: { id: true, title: true, date: true, time: true, churchId: true, requiresTicket: true },
+      orderBy: { date: 'desc' },
+      take: 500,
+    });
+    res.json({ success: true, data: events });
+    return;
   }
   if (endDate) {
     const endDateTime = new Date(endDate);
