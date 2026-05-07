@@ -47,18 +47,13 @@ export async function getRoles(req: Request, res: Response): Promise<void> {
         include: { permission: true },
       });
     } else {
-      // Try tenant-specific first
-      const tenantPerms = await prisma.rolePermission.findMany({
+      // Fetch only tenant-specific permissions for this ministry
+      // No fallback to GLOBAL — if the ministry admin hasn't customised this role yet,
+      // show 0 permissions so they know they need to configure it
+      perms = await prisma.rolePermission.findMany({
         where: { ministryAdminId, roleId: r.id },
         include: { permission: true },
       });
-      // If no tenant customisation exists yet, show GLOBAL defaults
-      perms = tenantPerms.length > 0
-        ? tenantPerms
-        : await prisma.rolePermission.findMany({
-            where: { ministryAdminId: 'GLOBAL', roleId: r.id },
-            include: { permission: true },
-          });
     }
 
     return {
