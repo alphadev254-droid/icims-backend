@@ -172,3 +172,154 @@ export async function updateTransactionStatus(req: Request, res: Response): Prom
   });
   res.json({ success: true, data: transaction });
 }
+
+// ─── GET /api/transactions/export — full export for CSV (admin only) ──────────
+
+export async function exportTransactions(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+
+  if (!userId || roleName === 'member') {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  const type = req.query.type as string | undefined;
+  const status = req.query.status as string | undefined;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const filterChurchId = req.query.churchId as string | undefined;
+
+  const churchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (churchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  let scopedChurchIds = churchIds;
+  if (filterChurchId) {
+    if (!churchIds.includes(filterChurchId)) { res.json({ success: true, data: [] }); return; }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  const where: any = { churchId: { in: scopedChurchIds } };
+  if (type) where.type = type;
+  if (status) where.status = status;
+  if (startDate || endDate) {
+    where.createdAt = {};
+    if (startDate) where.createdAt.gte = new Date(startDate);
+    if (endDate) where.createdAt.lte = new Date(endDate);
+  }
+
+  const transactions = await prisma.transaction.findMany({
+    where,
+    select: {
+      id: true, amount: true, currency: true, status: true, type: true,
+      paymentMethod: true, isManual: true, isGuest: true,
+      guestName: true, guestEmail: true,
+      baseAmount: true, gateway: true, subaccountName: true,
+      cardLast4: true, cardBank: true, reference: true, paidAt: true,
+      createdAt: true,
+      user: { select: { firstName: true, lastName: true, email: true } },
+      church: { select: { name: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10000,
+  });
+
+  res.json({ success: true, data: transactions });
+}
+
+// ─── GET /api/transactions/giving-by-member — giving totals per member ────────
+
+export async function getGivingByMember(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+
+  if (!userId || roleName === 'member') {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  const filterChurchId = req.query.churchId as string | undefined;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+
+  const churchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (churchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  let scopedChurchIds = churchIds;
+  if (filterChurchId) {
+    if (!churchIds.includes(filterChurchId)) { res.json({ success: true, data: [] }); return; }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  const dateFilter: any = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) dateFilter.lte = new Date(endDate);
+
+  // Aggregate total giving per userId
+  const grouped = await prisma.donationTransaction.groupBy({
+    by: ['userId', 'churchId'],
+    where: {
+      churchId: { in: scopedChurchIds },
+      status: 'completed',
+      userId: { not: null },
+      isGuest: false,
+      isAnonymous: false,
+      ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+    },
+    _sum: { amount: true },
+    _count: { id: true },
+    orderBy: { _sum: { amount: 'desc' } },
+    take: 10000,
+  });
+
+  if (grouped.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  // Batch-fetch user names
+  const userIds = grouped.map(g => g.userId!).filter(Boolean);
+  const [users, churches] = await Promise.all([
+    prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+    }),
+    prisma.church.findMany({
+      where: { id: { in: scopedChurchIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  const userMap = new Map(users.map(u => [u.id, u]));
+  const churchMap = new Map(churches.map(c => [c.id, c.name]));
+
+  const data = grouped.map(g => {
+    const u = userMap.get(g.userId!);
+    return {
+      userId: g.userId,
+      firstName: u?.firstName ?? '',
+      lastName: u?.lastName ?? '',
+      email: u?.email ?? '',
+      phone: u?.phone ?? '',
+      church: churchMap.get(g.churchId ?? '') ?? '',
+      totalGiven: g._sum.amount ?? 0,
+      donationCount: g._count.id,
+    };
+  });
+
+  res.json({ success: true, data });
+}

@@ -96,6 +96,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     lastMonthDonations,
     prevMonthDonations,
     attendance,
+    visitorsAggregate,
   ] = await Promise.all([
     // Member counts — aggregates instead of fetching all rows
     prisma.user.count({ where: { churchId: { in: churchIds } } }),
@@ -122,12 +123,17 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       where: { churchId: { in: churchIds }, status: 'completed', createdAt: { gte: twoMonthsAgo, lt: lastMonth } },
       _sum: { amount: true },
     }),
-    // Attendance — last 12 records for charts
+    // Attendance — last 12 records for charts only
     prisma.attendance.findMany({
       where: { churchId: { in: churchIds } },
       select: { totalAttendees: true, date: true, newVisitors: true },
       orderBy: { date: 'desc' },
       take: 12,
+    }),
+    // All-time new visitors total — separate aggregate, not limited to 12
+    prisma.attendance.aggregate({
+      where: { churchId: { in: churchIds } },
+      _sum: { newVisitors: true },
     }),
   ]);
 
@@ -148,7 +154,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     ? Number(((lastMonthTotal - prevMonthTotal) / prevMonthTotal * 100).toFixed(1))
     : 0;
 
-  const totalNewVisitors = attendance.reduce((sum, a) => sum + a.newVisitors, 0);
+  const totalNewVisitors = visitorsAggregate._sum.newVisitors ?? 0;
   const retentionRate = totalMembers > 0 ? Number(((activeMembers / totalMembers) * 100).toFixed(1)) : 0;
   const attendanceRate = totalMembers > 0 ? Number(((avgAttendance / totalMembers) * 100).toFixed(1)) : 0;
 

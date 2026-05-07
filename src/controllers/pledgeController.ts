@@ -229,9 +229,10 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
   const status         = typeof req.query.status        === 'string' ? req.query.status        : undefined;
   const filterChurchId = typeof req.query.churchId      === 'string' ? req.query.churchId      : undefined;
   const sortBy         = typeof req.query.sortBy        === 'string' ? req.query.sortBy        : 'newest';
+  const isExport       = req.query.export === 'true';
   const page           = Math.max(parseInt(typeof req.query.page  === 'string' ? req.query.page  : '1',  10) || 1, 1);
-  const limit          = Math.min(parseInt(typeof req.query.limit === 'string' ? req.query.limit : '20', 10) || 20, 100);
-  const skip           = (page - 1) * limit;
+  const limit          = isExport ? 10000 : Math.min(parseInt(typeof req.query.limit === 'string' ? req.query.limit : '20', 10) || 20, 100);
+  const skip           = isExport ? 0 : (page - 1) * limit;
 
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
