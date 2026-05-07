@@ -48,8 +48,9 @@ async function getUserWithPackage(userId: string) {
     return { ...user, package: null };
   }
 
-  // For district_admin, branch_admin, regional_admin: get package from their National Admin subscription
-  if ((roleName === 'district_admin' || roleName === 'branch_admin' || roleName === 'regional_admin') && user.ministryAdminId) {
+  // For all sub-admin roles: get package from their ministry admin's subscription
+  const subAdminRoles = ['district_admin', 'branch_admin', 'regional_admin', 'local_admin'];
+  if (subAdminRoles.includes(roleName ?? '') && user.ministryAdminId) {
     const subscription = await prisma.subscription.findFirst({
       where: { ministryAdminId: user.ministryAdminId, status: 'active' },
       include: {
@@ -327,42 +328,73 @@ export async function register(req: Request, res: Response): Promise<void> {
 
   const hashed = await hashPassword(data.password);
 
-  const user = await prisma.user.create({
-    data: {
-      email: data.email,
-      password: hashed,
-      firstName: data.firstName,
-      lastName: data.lastName,
-      title: data.title,
-      titleOther: data.titleOther,
-      ministryName: data.ministryName,
-      currentMembership: data.currentMembership,
-      numberOfBranches: data.numberOfBranches ?? 0,
-      roleId,
-      churchId,
-      ministryAdminId,
-      accountCountry: data.accountCountry,
-      phone: data.phone,
-      gender: data.gender,
-      anniversary: data.anniversary ? new Date(data.anniversary) : undefined,
-      // Member fields
-      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
-      maritalStatus: data.maritalStatus,
-      weddingDate: data.weddingDate ? new Date(data.weddingDate) : undefined,
-      residentialNeighbourhood: data.residentialNeighbourhood,
-      membershipType: data.membershipType,
-      serviceInterest: data.serviceInterest,
-      baptizedByImmersion: data.baptizedByImmersion,
-    },
-    include: USER_INCLUDE,
+  // ── All DB writes in a single transaction ─────────────────────────────────
+  const { user, churchProfileCreated } = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        email: data.email,
+        password: hashed,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        title: data.title,
+        titleOther: data.titleOther,
+        ministryName: data.ministryName,
+        currentMembership: data.currentMembership,
+        numberOfBranches: data.numberOfBranches ?? 0,
+        roleId,
+        churchId,
+        ministryAdminId,
+        accountCountry: data.accountCountry,
+        phone: data.phone,
+        gender: data.gender,
+        anniversary: data.anniversary ? new Date(data.anniversary) : undefined,
+        dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
+        maritalStatus: data.maritalStatus,
+        weddingDate: data.weddingDate ? new Date(data.weddingDate) : undefined,
+        residentialNeighbourhood: data.residentialNeighbourhood,
+        membershipType: data.membershipType,
+        serviceInterest: data.serviceInterest,
+        baptizedByImmersion: data.baptizedByImmersion,
+      },
+      include: USER_INCLUDE,
+    });
+
+    // Auto-seed ChurchProfile for ministry_admin registrations
+    let churchProfileCreated = false;
+    if (!data.inviteToken && data.ministryName) {
+      const ministryName = data.ministryName;
+      await tx.churchProfile.create({
+        data: {
+          ministryAdminId: user.id,
+          primaryColor: '#d4a574',
+          tagline: 'A place of hope, community, and faith.',
+          aboutText: `Welcome to ${ministryName} — a vibrant, Spirit-filled community committed to worship, discipleship, and service. We believe every person has a God-given purpose, and we exist to help you discover and live it out.\n\nWhether you are new to faith or have walked with God for years, there is a place for you here. Join us as we grow together in love and truth.`,
+          visionText: 'To see every person transformed by the love of Christ and empowered to impact their community.',
+          missionText: 'Making disciples who make disciples — through worship, the Word, and authentic community.',
+          pastorName: [data.title, data.firstName, data.lastName].filter(Boolean).join(' '),
+          pastorBio: 'Update this with your bio in the Church Website settings.',
+          serviceTimes: JSON.stringify([
+            { name: 'Sunday Service',        day: 'Sunday',    time: '9:00 AM',  location: 'Main Auditorium' },
+            { name: 'Sunday Second Service', day: 'Sunday',    time: '11:30 AM', location: 'Main Auditorium' },
+            { name: 'Wednesday Bible Study', day: 'Wednesday', time: '6:30 PM',  location: 'Fellowship Hall' },
+          ]),
+          phone: data.phone ?? null,
+          email: data.email,
+          isPublished: false,
+        },
+      });
+      churchProfileCreated = true;
+    }
+
+    return { user, churchProfileCreated };
   });
+  // ─────────────────────────────────────────────────────────────────────────
 
   const permissions = await getUserPermissions(user);
 
-  // ── Subdomain creation for ministry_admin registrations ──────────────────
+  // ── Subdomain creation (external API — outside transaction) ───────────────
   let subdomainValue: string | null = null;
   if (!data.inviteToken && data.ministryName) {
-    // Use custom slug if provided, otherwise derive from ministry name
     const slugSource = (data.subdomain && data.subdomain.trim())
       ? data.subdomain.trim()
       : data.ministryName;
@@ -376,7 +408,6 @@ export async function register(req: Request, res: Response): Promise<void> {
     }
   }
   // ─────────────────────────────────────────────────────────────────────────
-
   const { queueEmail } = await import('../lib/emailQueue');
   const { registrationTemplate, memberWelcomeTemplate } = await import('../lib/emailTemplates');
   

@@ -384,8 +384,14 @@ export async function createUser(req: Request, res: Response): Promise<void> {
       const creator = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
       ministryAdminIdForNewUser = creator?.ministryAdminId || undefined;
     }
-  } else if (roleName === 'district_admin' || roleName === 'branch_admin') {
-    ministryAdminIdForNewUser = userId;
+  } else if (roleName === 'district_admin' || roleName === 'branch_admin' || roleName === 'regional_admin') {
+    // Always point to the top-level ministry admin
+    if (role === 'ministry_admin') {
+      ministryAdminIdForNewUser = userId;
+    } else {
+      const caller = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
+      ministryAdminIdForNewUser = caller?.ministryAdminId || undefined;
+    }
   }
   
   const user = await prisma.user.create({
@@ -532,13 +538,31 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
       return;
     }
     updateData.roleId = roleRecord.id;
-    
-    // Clear church and membership for non-member roles
-    if (roleName !== 'member') {
+
+    // When assigning an admin role (district/branch/regional), set ministryAdminId
+    // so the user inherits the correct subscription and permissions.
+    const adminRoles = ['district_admin', 'branch_admin', 'regional_admin'];
+    if (adminRoles.includes(roleName)) {
+      // Resolve the ministry admin ID:
+      // - If the caller is ministry_admin → use their own ID
+      // - If the caller is a sub-admin → use their ministryAdminId
+      if (role === 'ministry_admin') {
+        updateData.ministryAdminId = userId;
+      } else {
+        const caller = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { ministryAdminId: true },
+        });
+        updateData.ministryAdminId = caller?.ministryAdminId ?? null;
+      }
+      // Admin roles don't belong to a specific church
       updateData.churchId = null;
       updateData.membershipType = null;
+    } else if (roleName === 'member') {
+      // Members don't have a ministryAdminId directly
+      updateData.ministryAdminId = null;
     }
-    
+
     // Clear scope fields when role changes (let caller re-supply if needed)
     if (!districts) updateData.districts = null;
     if (!traditionalAuthorities) updateData.traditionalAuthorities = null;

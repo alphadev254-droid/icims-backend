@@ -93,7 +93,7 @@ export const registrationTemplate = (data: { firstName: string; lastName: string
       <h3>Next Steps:</h3>
       <ol>
         <li><strong>Choose a Package:</strong> Select a subscription plan that fits your ministry's needs</li>
-        <li><strong>Set Up Your Profile:</strong> Add your church logo, banner, service times, and contact details — go to <a href="${FRONTEND_URL}/dashboard/church-website" style="color: #d4a574;">Church Website</a> inside your dashboard to customise your public page</li>
+        <li><strong>Customise Your Church Website:</strong> Add your logo, banner, service times and contact details — go to <a href="${FRONTEND_URL}/dashboard/church-profile" style="color: #d4a574;">Church Website</a> inside your dashboard to edit your public page</li>
         <li><strong>Add Your Branches:</strong> Register your church branches and locations</li>
         <li><strong>Invite Your Team:</strong> Add staff and leaders to help manage your ministry</li>
       </ol>
