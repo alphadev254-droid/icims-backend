@@ -228,6 +228,8 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
   const campaignId     = typeof req.query.campaignId    === 'string' ? req.query.campaignId    : undefined;
   const status         = typeof req.query.status        === 'string' ? req.query.status        : undefined;
   const filterChurchId = typeof req.query.churchId      === 'string' ? req.query.churchId      : undefined;
+  const startDate      = typeof req.query.startDate     === 'string' ? req.query.startDate     : undefined;
+  const endDate        = typeof req.query.endDate       === 'string' ? req.query.endDate       : undefined;
   const sortBy         = typeof req.query.sortBy        === 'string' ? req.query.sortBy        : 'newest';
   const isExport       = req.query.export === 'true';
   const page           = Math.max(parseInt(typeof req.query.page  === 'string' ? req.query.page  : '1',  10) || 1, 1);
@@ -243,10 +245,19 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
     userId
   );
 
+  const dateFilter: any = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    dateFilter.lte = end;
+  }
+
   const where: any = {
     churchId: { in: accessibleChurchIds },
     ...(campaignId && { campaignId }),
     ...(status && status !== 'all' && { status }),
+    ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
   };
 
   // Apply church filter only if it's within the accessible scope

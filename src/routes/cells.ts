@@ -10,6 +10,7 @@ import {
   getCellsOverviewStats,
   getCellsSimple,
   getCellChurchMembers,
+  getCellVisitors,
 } from '../controllers/cellController';
 
 const router = Router();
@@ -18,6 +19,7 @@ router.use(authenticate);
 // Cells CRUD
 router.get('/overview-stats',     getCellsOverviewStats);  // must be before /:id
 router.get('/simple',             getCellsSimple);          // lightweight dropdown list
+router.get('/visitors',           getCellVisitors);         // visitor report — must be before /:id
 router.get('/',                   getCells);
 router.get('/:id',                getCell);
 router.post('/',          authorizePermission('cells:create'), createCell);

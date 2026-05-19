@@ -107,7 +107,49 @@ async function getUserIdsByCountry(country: string): Promise<string[]> {
   return [...new Set([...adminIds, ...linkedUsers.map((u: any) => u.id), ...churchUsers.map((u: any) => u.id)])];
 }
 
+// ─── Helper: resolve all user IDs belonging to a ministry ────────────────────
+
+async function getUserIdsByMinistry(ministryAdminId: string): Promise<string[]> {
+  const [directUsers, churchUsers] = await Promise.all([
+    prisma.user.findMany({ where: { ministryAdminId }, select: { id: true } }),
+    prisma.user.findMany({ where: { church: { ministryAdminId } }, select: { id: true } }),
+  ]);
+  return [...new Set([ministryAdminId, ...directUsers.map((u: any) => u.id), ...churchUsers.map((u: any) => u.id)])];
+}
+
+// ─── GET /api/admin/ministries ────────────────────────────────────────────────
+
+export async function getAdminMinistries(_req: Request, res: Response): Promise<void> {
+  const ministryAdminRole = await prisma.role.findUnique({ where: { name: 'ministry_admin' }, select: { id: true } });
+  if (!ministryAdminRole) { res.json({ success: true, data: [] }); return; }
+
+  const admins = await prisma.user.findMany({
+    where: { roleId: ministryAdminRole.id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      ministryName: true,
+      accountCountry: true,
+      ownedChurches: { select: { name: true }, take: 1 },
+    },
+    orderBy: { firstName: 'asc' },
+  });
+
+  res.json({
+    success: true,
+    data: admins.map(a => ({
+      id: a.id,
+      label: a.ministryName ?? a.ownedChurches[0]?.name ?? `${a.firstName} ${a.lastName}`,
+      country: a.accountCountry ?? null,
+    })),
+  });
+}
+
 // ─── GET /api/admin/users ─────────────────────────────────────────────────────
+// Scoping: protected by authorizeSystemAdmin middleware — only system_admin role
+// can reach this endpoint, so we intentionally show ALL platform users without
+// getAccessibleChurchIds filtering (which would incorrectly limit to one ministry).
 
 export async function getAdminUsers(req: Request, res: Response): Promise<void> {
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
@@ -118,6 +160,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
   const roleFilter = req.query.role as string | undefined;
   const countryFilter = req.query.country as string | undefined;
   const statusFilter = req.query.status as string | undefined;
+  const ministryFilter = req.query.ministry as string | undefined; // ministry_admin user id
 
   const where: any = {};
 
@@ -138,11 +181,32 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     where.id = { in: await getUserIdsByCountry(countryFilter) };
   }
   if (statusFilter) where.status = statusFilter;
+  if (ministryFilter) {
+    // Include the ministry_admin themselves + all users under them
+    const underMinistry = await getUserIdsByMinistry(ministryFilter);
+    if (where.id) {
+      // Intersect with existing id filter (e.g. from countryFilter)
+      const existing = new Set(where.id.in as string[]);
+      where.id = { in: underMinistry.filter(id => existing.has(id)) };
+    } else {
+      where.id = { in: underMinistry };
+    }
+  }
 
   const [users, total] = await Promise.all([
     prisma.user.findMany({
       where,
-      include: {
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        status: true,
+        accountCountry: true,
+        ministryAdminId: true,
+        ministryName: true,
+        createdAt: true,
         role: { select: { id: true, name: true, displayName: true } },
         church: { select: { id: true, name: true, ministryAdminId: true } },
         _count: { select: { ownedChurches: true } },
@@ -154,34 +218,69 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     prisma.user.count({ where }),
   ]);
 
-  // Resolve country in one batch query
+  // Batch resolve country + ministryName via a single admin lookup
   const allAdminIds = new Set<string>();
   for (const u of users) {
-    if (!u.accountCountry) {
-      if (u.ministryAdminId) allAdminIds.add(u.ministryAdminId);
-      else if ((u.church as any)?.ministryAdminId) allAdminIds.add((u.church as any).ministryAdminId);
-    }
+    const adminId = (u as any).ministryAdminId ?? (u.church as any)?.ministryAdminId;
+    if (adminId) allAdminIds.add(adminId);
+    // ministry_admin: also add themselves so we can resolve their own info
+    if (u.role?.name === 'ministry_admin') allAdminIds.add(u.id);
   }
 
-  const adminCountryMap: Record<string, string | null> = {};
+  const adminInfoMap: Record<string, { accountCountry: string | null; ministryName: string | null; churchName: string | null }> = {};
   if (allAdminIds.size > 0) {
     const adminList = await prisma.user.findMany({
       where: { id: { in: [...allAdminIds] } },
-      select: { id: true, accountCountry: true },
+      select: {
+        id: true,
+        accountCountry: true,
+        ministryName: true,
+        ownedChurches: { select: { name: true }, take: 1 },
+      },
     });
-    for (const a of adminList) adminCountryMap[a.id] = a.accountCountry ?? null;
+    for (const a of adminList) {
+      adminInfoMap[a.id] = {
+        accountCountry: a.accountCountry ?? null,
+        // Fall back to first owned church name if ministryName not set
+        ministryName: a.ministryName ?? (a.ownedChurches[0]?.name ?? null),
+        churchName: a.ownedChurches[0]?.name ?? null,
+      };
+    }
   }
 
   function resolveCountry(u: any): string | null {
     if (u.accountCountry) return u.accountCountry;
-    if (u.ministryAdminId) return adminCountryMap[u.ministryAdminId] ?? null;
-    const churchAdminId = (u.church as any)?.ministryAdminId;
-    return churchAdminId ? (adminCountryMap[churchAdminId] ?? null) : null;
+    const adminId = (u as any).ministryAdminId ?? (u.church as any)?.ministryAdminId;
+    return adminId ? (adminInfoMap[adminId]?.accountCountry ?? null) : null;
+  }
+
+  function resolveMinistryName(u: any): string | null {
+    // ministry_admin: use their own ministryName, fall back to their first church name
+    if (u.role?.name === 'ministry_admin') {
+      return (u as any).ministryName ?? adminInfoMap[u.id]?.churchName ?? null;
+    }
+    // All other roles: trace up to their ministry admin
+    const adminId = (u as any).ministryAdminId ?? (u.church as any)?.ministryAdminId;
+    return adminId ? (adminInfoMap[adminId]?.ministryName ?? null) : null;
   }
 
   res.json({
     success: true,
-    data: users.map(u => ({ ...safeUser(u), churchCount: u._count.ownedChurches, resolvedCountry: resolveCountry(u) })),
+    data: users.map(u => ({
+      id: u.id,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      email: u.email,
+      phone: u.phone ?? null,
+      status: u.status,
+      createdAt: u.createdAt,
+      role: u.role,
+      roleName: u.role?.name ?? null,
+      church: u.church ? { id: u.church.id, name: u.church.name } : null,
+      churchCount: u._count.ownedChurches,
+      resolvedCountry: resolveCountry(u),
+      resolvedMinistryName: resolveMinistryName(u),
+    })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 }

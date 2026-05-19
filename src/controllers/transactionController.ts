@@ -231,7 +231,23 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
     take: 10000,
   });
 
-  res.json({ success: true, data: transactions });
+  // Enrich donation-type transactions with campaign name + category
+  const donationTxIds = transactions.filter(t => t.type === 'donation').map(t => t.id);
+  const donationDetails = donationTxIds.length > 0
+    ? await prisma.donationTransaction.findMany({
+        where: { transactionId: { in: donationTxIds } },
+        select: { transactionId: true, campaign: { select: { name: true, category: true } } },
+      })
+    : [];
+  const campaignMap = new Map(donationDetails.map((d: any) => [d.transactionId, d.campaign]));
+
+  const enriched = transactions.map(t => ({
+    ...t,
+    campaignName: (campaignMap.get(t.id) as any)?.name ?? null,
+    campaignCategory: (campaignMap.get(t.id) as any)?.category ?? null,
+  }));
+
+  res.json({ success: true, data: enriched });
 }
 
 // ─── GET /api/transactions/giving-by-member — giving totals per member ────────

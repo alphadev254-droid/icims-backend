@@ -16,6 +16,7 @@ import {
   updateAdminChurch,
   deleteAdminChurch,
   updateAdminChurchUser,
+  getAdminMinistries,
 } from '../controllers/adminController';
 import {
   getPackages,
@@ -30,6 +31,8 @@ const router = Router();
 router.use(authenticate, authorizeSystemAdmin);
 
 router.get('/stats', getAdminStats);
+
+router.get('/ministries', getAdminMinistries);
 
 router.get('/users', getAdminUsers);
 router.get('/users/:id', getAdminUser);

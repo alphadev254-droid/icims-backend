@@ -486,10 +486,30 @@ model Attendance {
   notes          String?  @db.Text
   createdAt      DateTime @default(now())
 
-  church         Church   @relation(fields: [churchId], references: [id])
+  church         Church             @relation(fields: [churchId], references: [id])
+  visitors       AttendanceVisitor[]
 
   @@index([churchId, date])
   @@map("attendance")
+}
+
+model AttendanceVisitor {
+  id              String   @id @default(cuid())
+  attendanceId    String
+  name            String
+  phone           String?
+  email           String?
+  residentialArea String?
+  gender          String?  // male | female | other
+  ageBracket      String?  // 0-12 | 13-17 | 18-35 | 36-59 | 60+
+  howHeard        String?  // invited_by_friend | street_outreach | social_media | tv_program | radio | website | other
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  attendance  Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+
+  @@index([attendanceId])
+  @@map("attendance_visitors")
 }
 
 // ─── Meetings ──────────────────────────────────────────────────────────────────

@@ -368,7 +368,7 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
 export async function getDonations(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;
-  const { campaignId, churchId: filterChurchId } = req.query;
+  const { campaignId, churchId: filterChurchId, category, startDate, endDate } = req.query;
 
   // Pagination
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
@@ -376,11 +376,22 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
   const skip  = (page - 1) * limit;
   const isExport = req.query.export === 'true';
 
+  // Build date filter
+  const dateFilter: any = {};
+  if (startDate && typeof startDate === 'string') dateFilter.gte = new Date(startDate);
+  if (endDate && typeof endDate === 'string') {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    dateFilter.lte = end;
+  }
+
   // Members see only their own donations
   if (roleName === 'member') {
     const where: any = {
       userId,
       ...(campaignId && { campaignId: String(campaignId) }),
+      ...(category && { campaign: { category: String(category) } }),
+      ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
     };
     const [donations, total] = await Promise.all([
       prisma.donationTransaction.findMany({
@@ -428,6 +439,8 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
   const where: any = {
     churchId: { in: scopedChurchIds },
     ...(campaignId && { campaignId: String(campaignId) }),
+    ...(category && { campaign: { category: String(category) } }),
+    ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
   };
 
   const donationSelect = {

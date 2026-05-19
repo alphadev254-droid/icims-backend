@@ -1208,6 +1208,106 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   });
 }
 
+// ─── GET /api/cells/visitors — visitor report across all accessible cells ─────
+
+export async function getCellVisitors(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId!;
+  const roleName = req.user?.role ?? 'member';
+  const churchId = req.user?.churchId;
+
+  const filterCellId = req.query.cellId as string | undefined;
+  const filterChurchId = req.query.churchId as string | undefined;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const isExport = req.query.export === 'true';
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = isExport ? 10000 : Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+  const skip = isExport ? 0 : (page - 1) * limit;
+
+  // Resolve accessible church IDs
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (accessibleChurchIds.length === 0) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
+
+  // Narrow by filterChurchId if provided and in scope
+  const scopedChurchIds = filterChurchId && accessibleChurchIds.includes(filterChurchId)
+    ? [filterChurchId]
+    : accessibleChurchIds;
+
+  // Get accessible cell IDs within scoped churches
+  const cellsInScope = await prisma.cell.findMany({
+    where: {
+      churchId: { in: scopedChurchIds },
+      ...(filterCellId && { id: filterCellId }),
+    },
+    select: { id: true },
+  });
+  const cellIds = cellsInScope.map((c: any) => c.id);
+
+  if (cellIds.length === 0) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
+
+  // Build date filter on meeting.date
+  const dateFilter: any = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    dateFilter.lte = end;
+  }
+
+  const where: any = {
+    cellId: { in: cellIds },
+    isVisitor: true,
+    ...(Object.keys(dateFilter).length > 0 && { meeting: { date: dateFilter } }),
+  };
+
+  const [total, visitors] = await Promise.all([
+    prisma.cellAttendance.count({ where }),
+    prisma.cellAttendance.findMany({
+      where,
+      select: {
+        id: true,
+        visitorName: true,
+        visitorPhone: true,
+        visitorEmail: true,
+        isFirstTime: true,
+        notes: true,
+        createdAt: true,
+        meeting: {
+          select: {
+            date: true,
+            topic: true,
+            cell: {
+              select: {
+                name: true,
+                zone: true,
+                church: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+      orderBy: [{ meeting: { date: 'desc' } }],
+      skip,
+      take: limit,
+    }),
+  ]);
+
+  res.json({
+    success: true,
+    data: visitors,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+}
+
 // ─── GET /api/cells/simple — lightweight list for dropdowns ──────────────────
 
 export async function getCellsSimple(req: Request, res: Response): Promise<void> {

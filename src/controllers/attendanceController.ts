@@ -3,6 +3,17 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
+const visitorSchema = z.object({
+  name: z.string().min(1, 'Visitor name required'),
+  phone: z.string().optional(),
+  email: z.string().optional(),
+  residentialArea: z.string().optional(),
+  gender: z.string().optional(),
+  ageBracket: z.string().optional(),
+  howHeard: z.string().optional(),
+  notes: z.string().optional(),
+});
+
 const schema = z.object({
   date: z.string().min(1, 'Date required'),
   totalAttendees: z.number().int().positive(),
@@ -18,6 +29,7 @@ const schema = z.object({
   notes: z.string().optional(),
   eventId: z.string().optional(),
   churchId: z.string().min(1, 'Church ID required'),
+  visitors: z.array(visitorSchema).optional(),
 });
 
 export async function getAttendance(req: Request, res: Response): Promise<void> {
@@ -98,6 +110,7 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
         eventId: true,
         createdAt: true,
         church: { select: { id: true, name: true } },
+        _count: { select: { visitors: true } },
       },
       orderBy: { date: 'desc' },
       take: 10000,
@@ -127,6 +140,7 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
         eventId: true,
         createdAt: true,
         church: { select: { id: true, name: true } },
+        _count: { select: { visitors: true } },
       },
       orderBy: { date: 'desc' },
       skip,
@@ -156,7 +170,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { churchId: targetChurchId, eventId, ...data } = parsed.data;
+  const { churchId: targetChurchId, eventId, visitors, ...data } = parsed.data;
 
   // Verify user has access to this church
   const accessibleChurchIds = await getAccessibleChurchIds(
@@ -176,6 +190,9 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   const attendanceDate = new Date(data.date);
   const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
 
+  // Auto-set newVisitors count from visitors array if provided
+  const newVisitorsCount = visitors && visitors.length > 0 ? visitors.length : data.newVisitors;
+
   // For event attendance, check if record exists for same event and date
   if (eventId) {
     const existing = await prisma.attendance.findFirst({
@@ -190,7 +207,6 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     });
 
     if (existing) {
-      // Update existing record
       const updated = await prisma.attendance.update({
         where: { id: existing.id },
         data: {
@@ -202,25 +218,33 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
           youngAdults: data.youngAdults,
           adults: data.adults,
           seniors: data.seniors,
-          newVisitors: data.newVisitors,
+          newVisitors: newVisitorsCount,
           notes: data.notes,
         },
       });
+      if (visitors?.length) {
+        await prisma.attendanceVisitor.createMany({
+          data: visitors.map(v => ({ ...v, attendanceId: existing.id })),
+        });
+      }
       res.json({ success: true, data: updated, updated: true });
       return;
     }
   }
 
-  // Create new record
-  const record = await prisma.attendance.create({
-    data: {
-      ...data,
-      churchId: targetChurchId,
-      eventId,
-      date: attendanceDate,
-    },
+  // Create new record with visitors in a transaction
+  const record = await prisma.$transaction(async (tx) => {
+    const attendance = await tx.attendance.create({
+      data: { ...data, newVisitors: newVisitorsCount, churchId: targetChurchId, eventId, date: attendanceDate },
+    });
+    if (visitors?.length) {
+      await tx.attendanceVisitor.createMany({
+        data: visitors.map(v => ({ ...v, attendanceId: attendance.id })),
+      });
+    }
+    return attendance;
   });
-  
+
   res.status(201).json({ success: true, data: record });
 }
 
@@ -236,7 +260,7 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { churchId: targetChurchId, eventId, ...data } = parsed.data;
+  const { churchId: targetChurchId, eventId, visitors, ...data } = parsed.data;
 
   const record = await prisma.attendance.findUnique({ where: { id }, include: { church: true } });
   if (!record) {
@@ -259,17 +283,73 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const updated = await prisma.attendance.update({
-    where: { id },
-    data: {
-      ...data,
-      date: new Date(data.date),
-      churchId: targetChurchId,
-      eventId,
-    },
+  const newVisitorsCount = visitors && visitors.length > 0 ? visitors.length : data.newVisitors;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const attendance = await tx.attendance.update({
+      where: { id },
+      data: { ...data, newVisitors: newVisitorsCount, date: new Date(data.date), churchId: targetChurchId, eventId },
+    });
+    if (visitors !== undefined) {
+      await tx.attendanceVisitor.deleteMany({ where: { attendanceId: id } });
+      if (visitors.length > 0) {
+        await tx.attendanceVisitor.createMany({
+          data: visitors.map(v => ({ ...v, attendanceId: id })),
+        });
+      }
+    }
+    return attendance;
   });
 
   res.json({ success: true, data: updated });
+}
+
+export async function getAttendanceVisitors(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+  const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const skip  = (page - 1) * limit;
+
+  const [visitors, total] = await Promise.all([
+    prisma.attendanceVisitor.findMany({
+      where: { attendanceId: id },
+      orderBy: { createdAt: 'asc' },
+      skip,
+      take: limit,
+    }),
+    prisma.attendanceVisitor.count({ where: { attendanceId: id } }),
+  ]);
+
+  res.json({ success: true, data: visitors, total, hasMore: skip + visitors.length < total, page, limit });
+}
+
+export async function addAttendanceVisitor(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const parsed = visitorSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+  const visitor = await prisma.attendanceVisitor.create({
+    data: { ...parsed.data, attendanceId },
+  });
+  // Keep newVisitors count in sync
+  await prisma.attendance.update({
+    where: { id: attendanceId },
+    data: { newVisitors: { increment: 1 } },
+  });
+  res.status(201).json({ success: true, data: visitor });
+}
+
+export async function deleteAttendanceVisitor(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const visitorId = String(req.params.visitorId);
+  await prisma.attendanceVisitor.delete({ where: { id: visitorId } });
+  await prisma.attendance.update({
+    where: { id: attendanceId },
+    data: { newVisitors: { decrement: 1 } },
+  });
+  res.json({ success: true });
 }
 
 export async function deleteAttendance(req: Request, res: Response): Promise<void> {
