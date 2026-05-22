@@ -5,6 +5,7 @@ import path from 'path';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueEmail } from '../lib/emailQueue';
 import { teamCommunicationNotificationTemplate } from '../lib/teamEmailTemplates';
+import { sendPushToUsers } from '../lib/fcm';
 import { groupByDateRanges } from '../lib/dateGrouping';
 
 const prisma = new PrismaClient();
@@ -223,6 +224,21 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
           authorName: `${author?.firstName} ${author?.lastName}`
         })
       );
+    }
+
+    // Send push notifications to all team members except author
+    try {
+      const teamMemberIds = teamMembers.map(m => m.userId);
+      if (teamMemberIds.length > 0) {
+        await sendPushToUsers(
+          teamMemberIds,
+          `${communication.team.church.name} · ${communication.team.name}`,
+          `${author?.firstName} ${author?.lastName}: ${title}`,
+          { type: 'team_communication', id: communication.id, teamId }
+        );
+      }
+    } catch (pushError) {
+      console.error('[TeamCommunication] Failed to send push notifications:', pushError);
     }
 
     res.status(201).json({ ...communication, author, team: { id: communication.team.id, name: communication.team.name, color: communication.team.color } });

@@ -190,6 +190,9 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
   const filterChurchId = req.query.churchId as string | undefined;
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 5000, 5000);
+  const skip = (page - 1) * limit;
 
   const churchIds = await getAccessibleChurchIds(
     roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
@@ -215,21 +218,25 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
     if (endDate) where.createdAt.lte = new Date(endDate);
   }
 
-  const transactions = await prisma.transaction.findMany({
-    where,
-    select: {
-      id: true, amount: true, currency: true, status: true, type: true,
-      paymentMethod: true, isManual: true, isGuest: true,
-      guestName: true, guestEmail: true,
-      baseAmount: true, gateway: true, subaccountName: true,
-      cardLast4: true, cardBank: true, reference: true, paidAt: true,
-      createdAt: true,
-      user: { select: { firstName: true, lastName: true, email: true } },
-      church: { select: { name: true } },
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 10000,
-  });
+  const [transactions, total] = await Promise.all([
+    prisma.transaction.findMany({
+      where,
+      select: {
+        id: true, amount: true, currency: true, status: true, type: true,
+        paymentMethod: true, isManual: true, isGuest: true,
+        guestName: true, guestEmail: true,
+        baseAmount: true, gateway: true, subaccountName: true,
+        cardLast4: true, cardBank: true, reference: true, paidAt: true,
+        createdAt: true,
+        user: { select: { firstName: true, lastName: true, email: true } },
+        church: { select: { name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.transaction.count({ where }),
+  ]);
 
   // Enrich donation-type transactions with campaign name + category
   const donationTxIds = transactions.filter(t => t.type === 'donation').map(t => t.id);
@@ -247,7 +254,7 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
     campaignCategory: (campaignMap.get(t.id) as any)?.category ?? null,
   }));
 
-  res.json({ success: true, data: enriched });
+  res.json({ success: true, data: enriched, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 // ─── GET /api/transactions/giving-by-member — giving totals per member ────────
@@ -312,7 +319,15 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
   const [users, churches] = await Promise.all([
     prisma.user.findMany({
       where: { id: { in: userIds } },
-      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+      select: {
+        id: true, firstName: true, lastName: true, email: true, phone: true,
+        gender: true, membershipType: true, status: true,
+        cellMemberships: {
+          where: { status: { not: 'inactive' } },
+          select: { cell: { select: { name: true } } },
+          take: 1,
+        },
+      },
     }),
     prisma.church.findMany({
       where: { id: { in: scopedChurchIds } },
@@ -324,13 +339,17 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
   const churchMap = new Map(churches.map(c => [c.id, c.name]));
 
   const data = grouped.map(g => {
-    const u = userMap.get(g.userId!);
+    const u = userMap.get(g.userId!) as any;
     return {
       userId: g.userId,
       firstName: u?.firstName ?? '',
       lastName: u?.lastName ?? '',
       email: u?.email ?? '',
       phone: u?.phone ?? '',
+      gender: u?.gender ?? '',
+      membershipType: u?.membershipType ?? '',
+      status: u?.status ?? '',
+      cell: u?.cellMemberships?.[0]?.cell?.name ?? '',
       church: churchMap.get(g.churchId ?? '') ?? '',
       totalGiven: g._sum.amount ?? 0,
       donationCount: g._count.id,

@@ -39,21 +39,34 @@ export async function getCells(req: Request, res: Response): Promise<void> {
 
   const {
     churchId: filterChurchId,
+    cellId: filterCellId,
     search,
     status: statusFilter,
+    startDate,
+    endDate,
     page = '1',
     limit = '50',
   } = req.query as Record<string, string>;
 
+  const isExport = req.query.export === 'true';
   const pageNum = Math.max(1, parseInt(page));
-  const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
+  const limitNum = isExport
+    ? Math.min(5000, Math.max(1, parseInt(limit) || 5000))
+    : Math.min(200, Math.max(1, parseInt(limit)));
   const skip = (pageNum - 1) * limitNum;
 
   const churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
   const scopedChurchId = filterChurchId && churchIds.includes(filterChurchId) ? filterChurchId : undefined;
 
+  // Optionally scope to a single cell within accessible scope
+  const dateFilter: any = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); dateFilter.lte = e; }
+  const hasDates = Object.keys(dateFilter).length > 0;
+
   const where: any = {
     churchId: scopedChurchId ?? { in: churchIds },
+    ...(filterCellId && { id: filterCellId }),
     ...(statusFilter && { status: statusFilter }),
     ...(search && {
       OR: [
@@ -84,12 +97,13 @@ export async function getCells(req: Request, res: Response): Promise<void> {
 
   const cellIds = cells.map(c => c.id);
 
-  // Round 2: all enrichment in parallel, scoped to page cell IDs
+  // Round 2: all enrichment in parallel, scoped to page cell IDs (and optional date range)
   const [lastMeetingsRaw, attendanceStatsScoped, visitorPhonesPerCell] = await Promise.all([
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds } },
+      where: { cellId: { in: cellIds }, ...(hasDates && { date: dateFilter }) },
       _max: { date: true },
+      _count: { _all: true },
     }),
     prisma.cellAttendance.groupBy({
       by: ['cellId', 'status'],
@@ -136,9 +150,17 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     cellConvertedPhones.get(m.cellId)!.add(m.user.phone);
   }
 
+  const meetingCountMap = new Map(lastMeetingsRaw.map(m => [m.cellId, (m._count as any)?._all ?? 0]));
+
   const enriched = cells.map(c => ({
     ...c,
     lastMeetingDate: lastMeetingMap.get(c.id) ?? null,
+    meetingsInPeriod: hasDates ? (meetingCountMap.get(c.id) ?? 0) : (c._count?.meetings ?? 0),
+    totalVisitors: cellVisitorPhones.get(c.id)?.size ?? 0,
+    leaderName: (() => {
+      const leaders = (c as any).members?.filter((m: any) => m.isLeader);
+      return leaders?.map((m: any) => `${m.user?.firstName ?? ''} ${m.user?.lastName ?? ''}`.trim()).join(', ') || '';
+    })(),
     attendanceRate: (() => {
       const a = attMap.get(c.id);
       return a && a.total > 0 ? Math.round((a.present / a.total) * 100) : null;
@@ -1221,8 +1243,10 @@ export async function getCellVisitors(req: Request, res: Response): Promise<void
   const endDate = req.query.endDate as string | undefined;
   const isExport = req.query.export === 'true';
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
-  const limit = isExport ? 10000 : Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
-  const skip = isExport ? 0 : (page - 1) * limit;
+  const limit = isExport
+    ? Math.min(5000, Math.max(1, parseInt(req.query.limit as string) || 5000))
+    : Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+  const skip = (page - 1) * limit;
 
   // Resolve accessible church IDs
   const accessibleChurchIds = await getAccessibleChurchIds(

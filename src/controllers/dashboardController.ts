@@ -143,6 +143,13 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     ? Math.round(attendance.reduce((sum, a) => sum + a.totalAttendees, 0) / attendance.length)
     : 0;
 
+  // Estimate member-only attendance by subtracting new visitors from total attendees.
+  // totalAttendees includes visitors/guests, so totalAttendees - newVisitors gives a
+  // rough count of members + returning visitors who attended.
+  const avgMemberAttendance = attendance.length
+    ? Math.round(attendance.reduce((sum, a) => sum + Math.max(0, a.totalAttendees - a.newVisitors), 0) / attendance.length)
+    : 0;
+
   // Growth rates from pre-aggregated counts
   const memberGrowth = prevMonthUsers > 0
     ? Number(((newMembersThisMonth - prevMonthUsers) / prevMonthUsers * 100).toFixed(1))
@@ -156,7 +163,9 @@ export async function getStats(req: Request, res: Response): Promise<void> {
 
   const totalNewVisitors = visitorsAggregate._sum.newVisitors ?? 0;
   const retentionRate = totalMembers > 0 ? Number(((activeMembers / totalMembers) * 100).toFixed(1)) : 0;
-  const attendanceRate = totalMembers > 0 ? Number(((avgAttendance / totalMembers) * 100).toFixed(1)) : 0;
+  const attendanceRate = totalMembers > 0
+    ? Number(Math.min(100, ((avgMemberAttendance / totalMembers) * 100)).toFixed(1))
+    : 0;
 
   // Weekly attendance (last 4 records)
   const weeklyAttendance = attendance.slice(0, 4).reverse().map((a, idx) => ({

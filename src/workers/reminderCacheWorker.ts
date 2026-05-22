@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import prisma from '../lib/prisma';
+import { sendPushNotification, sendPushToUsers } from '../lib/fcm';
 
 // Runs daily at 2 AM
 cron.schedule('0 2 * * *', async () => {
@@ -243,6 +244,120 @@ export async function refreshReminderCache() {
   }
 
   console.log(`[ReminderCache] Refreshed ${reminders.length} reminders`);
+
+  // Send push notifications for today's reminders
+  try {
+    const todayReminders = await prisma.reminderCache.findMany({
+      where: { daysUntil: 0 },
+      select: {
+        userId: true,
+        type: true,
+        eventTitle: true,
+        age: true,
+        years: true,
+        churchId: true,
+      },
+    });
+
+    if (todayReminders.length > 0) {
+      // Collect unique church IDs to fetch church names
+      const churchIds = [...new Set(todayReminders.map(r => r.churchId).filter(Boolean))] as string[];
+      const churches = churchIds.length > 0
+        ? await prisma.church.findMany({
+            where: { id: { in: churchIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+      const churchNameMap = new Map(churches.map(c => [c.id, c.name]));
+
+      // Build a map of userId -> churchId
+      const userChurchMap = new Map<string, string>();
+      for (const r of todayReminders) {
+        if (r.churchId && !userChurchMap.has(r.userId)) {
+          userChurchMap.set(r.userId, r.churchId);
+        }
+      }
+
+      // Group reminders by userId
+      const userRemindersMap = new Map<string, Array<{ type: string; eventTitle?: string | null; age?: number | null; years?: number | null }>>();
+      for (const r of todayReminders) {
+        if (!userRemindersMap.has(r.userId)) {
+          userRemindersMap.set(r.userId, []);
+        }
+        userRemindersMap.get(r.userId)!.push({ type: r.type, eventTitle: r.eventTitle, age: r.age, years: r.years });
+      }
+
+      for (const [uid, remindersList] of userRemindersMap) {
+        // Get church name for this user
+        const userChurchId = userChurchMap.get(uid);
+        const churchName = userChurchId ? churchNameMap.get(userChurchId) : undefined;
+
+        // Compose a summary message for the user
+        const lines = remindersList.map(r => {
+          switch (r.type) {
+            case 'birthday': return `Birthday — Age ${r.age}`;
+            case 'wedding': return `Wedding Anniversary — ${r.years} year(s)`;
+            case 'member_anniversary': return `Member Anniversary — ${r.years} year(s)`;
+            case 'church_founded': return `Church Founded Anniversary — ${r.years} year(s)`;
+            case 'event': return `Event Today: ${r.eventTitle || 'Upcoming event'}`;
+            default: return `Reminder: ${r.type}`;
+          }
+        });
+
+        const titlePrefix = churchName ? `${churchName} · ` : '';
+        await sendPushNotification(
+          uid,
+          `${titlePrefix}Today's Reminders`,
+          lines.join(' · '),
+          { type: 'reminder' }
+        );
+      }
+    }
+  } catch (pushError) {
+    console.error('[ReminderCache] Failed to send push notifications:', pushError);
+  }
+
+  // Send push notifications for today's cell meetings
+  try {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const todayDayName = dayNames[today.getDay()];
+
+    const todayCells = await prisma.cell.findMany({
+      where: {
+        meetingDay: todayDayName,
+        status: 'active',
+      },
+      select: {
+        id: true,
+        name: true,
+        meetingTime: true,
+        church: { select: { name: true } },
+        members: {
+          where: { status: 'active' },
+          select: { userId: true },
+        },
+      },
+    });
+
+    for (const cell of todayCells) {
+      const memberIds = cell.members.map(m => m.userId);
+      if (memberIds.length === 0) continue;
+
+      const timeStr = cell.meetingTime ? ` at ${cell.meetingTime}` : '';
+      await sendPushToUsers(
+        memberIds,
+        `${cell.church.name} · Cell Meeting Today`,
+        `${cell.name}${timeStr}`,
+        { type: 'cell_meeting', cellId: cell.id }
+      );
+    }
+
+    if (todayCells.length > 0) {
+      console.log(`[ReminderCache] Sent cell meeting notifications for ${todayCells.length} cells`);
+    }
+  } catch (pushError) {
+    console.error('[ReminderCache] Failed to send cell meeting push notifications:', pushError);
+  }
 }
 
 function getNextOccurrence(date: Date, from: Date): Date {

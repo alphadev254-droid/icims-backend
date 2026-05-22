@@ -368,13 +368,15 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
 export async function getDonations(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;
-  const { campaignId, churchId: filterChurchId, category, startDate, endDate } = req.query;
+  const { campaignId, churchId: filterChurchId, category, cellId, startDate, endDate } = req.query;
 
   // Pagination
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
-  const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
-  const skip  = (page - 1) * limit;
   const isExport = req.query.export === 'true';
+  const limit = isExport
+    ? Math.min(parseInt(req.query.limit as string) || 10000, 10000)
+    : Math.min(parseInt(req.query.limit as string) || 50, 500);
+  const skip  = (page - 1) * limit;
 
   // Build date filter
   const dateFilter: any = {};
@@ -440,6 +442,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     churchId: { in: scopedChurchIds },
     ...(campaignId && { campaignId: String(campaignId) }),
     ...(category && { campaign: { category: String(category) } }),
+    ...(cellId && { cellId: String(cellId) }),
     ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
   };
 
@@ -449,6 +452,8 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     currency: true,
     status: true,
     isAnonymous: true,
+    isManual: true,
+    reference: true,
     donorName: true,
     donorEmail: true,
     isGuest: true,
@@ -460,16 +465,18 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     paymentMethod: true,
     campaign: { select: { name: true, category: true } },
     church: { select: { name: true } },
-    user: { select: { firstName: true, lastName: true, email: true } },
+    user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+    cell: { select: { name: true } },
   };
 
   if (isExport) {
-    // Export mode: return all records (up to 10,000 safety cap), no pagination wrapper
+    // Export mode: respects limit + page for batched downloads
     const donations = await prisma.donationTransaction.findMany({
       where,
       select: donationSelect,
       orderBy: { createdAt: 'desc' },
-      take: 10000,
+      skip,
+      take: limit,
     });
     res.json({ success: true, data: donations });
     return;

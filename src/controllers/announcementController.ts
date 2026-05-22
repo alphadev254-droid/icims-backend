@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { sendPushToUsers } from '../lib/fcm';
 
 const schema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -116,6 +117,37 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
       createdById: userId!,
     },
   });
+
+  // Send push notification to all active members of the church
+  try {
+    const church = await prisma.church.findUnique({
+      where: { id: targetChurchId },
+      select: { name: true },
+    });
+    const churchName = church?.name || 'Church';
+
+    const churchMembers = await prisma.user.findMany({
+      where: {
+        churchId: targetChurchId,
+        status: 'active',
+      },
+      select: { id: true },
+    });
+    if (churchMembers.length > 0) {
+      const memberIds = churchMembers.map(m => m.id);
+      const typeLabel = item.type === 'newsletter' ? 'Newsletter' : item.type === 'prayer_request' ? 'Prayer Request' : 'Announcement';
+      const prefix = parsed.data.priority === 'urgent' ? 'URGENT - ' : '';
+      await sendPushToUsers(
+        memberIds,
+        `${churchName} · ${prefix}${typeLabel}`,
+        item.title,
+        { type: 'announcement', id: item.id, churchId: targetChurchId }
+      );
+    }
+  } catch (pushError) {
+    console.error('[Announcement] Failed to send push notifications:', pushError);
+  }
+
   res.status(201).json({ success: true, data: item });
 }
 

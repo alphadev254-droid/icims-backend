@@ -5,6 +5,7 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { groupByDateRanges } from '../lib/dateGrouping';
+import { sendPushToUsers } from '../lib/fcm';
 
 type StoredFile = { url: string; name: string; size: number; mimeType: string };
 
@@ -107,6 +108,33 @@ export async function createResource(req: Request, res: Response): Promise<void>
       churchId, createdById,
     } as any,
   });
+
+  // Send push notification to all active church members
+  try {
+    const church = await prisma.church.findUnique({
+      where: { id: churchId },
+      select: { name: true },
+    });
+    const churchName = church?.name || 'Church';
+
+    const churchMembers = await prisma.user.findMany({
+      where: { churchId, status: 'active' },
+      select: { id: true },
+    });
+    const memberIds = churchMembers.map(m => m.id);
+    if (memberIds.length > 0) {
+      const categoryLabel = category === 'bible' ? 'Bible Study' : category === 'devotional' ? 'Devotional' : category === 'study_plan' ? 'Study Plan' : category === 'sermon' ? 'Sermon' : category === 'worship' ? 'Worship' : 'Resource';
+      await sendPushToUsers(
+        memberIds,
+        `${churchName} · New ${categoryLabel}`,
+        title,
+        { type: 'resource', id: resource.id, churchId }
+      );
+    }
+  } catch (pushError) {
+    console.error('[Resource] Failed to send push notifications:', pushError);
+  }
+
   res.status(201).json({ success: true, data: resource });
 }
 

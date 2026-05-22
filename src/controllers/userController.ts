@@ -35,7 +35,9 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   // Pagination
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
   const isExport = req.query.export === 'true';
-  const limit = isExport ? 10000 : Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const limit = isExport
+    ? Math.min(parseInt(req.query.limit as string) || 10000, 10000)
+    : Math.min(parseInt(req.query.limit as string) || 100, 500);
   const skip  = (page - 1) * limit;
 
   // Query filters from request
@@ -43,6 +45,8 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const filterChurchId = req.query.churchId as string | undefined;
   const filterRole    = req.query.role      as string | undefined;
   const filterCellId  = req.query.cellId    as string | undefined;
+  const filterStatus  = req.query.status    as string | undefined;
+  const filterTeamId  = req.query.teamId    as string | undefined;
   const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
 
@@ -113,6 +117,9 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   } else if (filterCellId) {
     andConditions.push({ cellMemberships: { some: { cellId: filterCellId, status: { not: 'inactive' } } } });
   }
+
+  if (filterStatus) andConditions.push({ status: filterStatus });
+  if (filterTeamId) andConditions.push({ teams: { some: { teamId: filterTeamId } } });
 
   // Search: scoped with AND so it narrows within the ministry, never widens
   if (search) {

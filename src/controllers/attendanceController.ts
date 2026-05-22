@@ -89,33 +89,39 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
   const isExport = req.query.export === 'true';
 
   if (isExport) {
-    // Export mode: return all records (up to 10,000 safety cap), no pagination wrapper
-    const records = await prisma.attendance.findMany({
-      where: whereClause,
-      select: {
-        id: true,
-        churchId: true,
-        date: true,
-        totalAttendees: true,
-        maleCount: true,
-        femaleCount: true,
-        children: true,
-        youth: true,
-        youngAdults: true,
-        adults: true,
-        seniors: true,
-        newVisitors: true,
-        serviceType: true,
-        notes: true,
-        eventId: true,
-        createdAt: true,
-        church: { select: { id: true, name: true } },
-        _count: { select: { visitors: true } },
-      },
-      orderBy: { date: 'desc' },
-      take: 10000,
-    });
-    res.json({ success: true, data: records });
+    // Export mode: respect limit+page params (capped at 5000 per batch), return pagination wrapper
+    const exportLimit = Math.min(parseInt(req.query.limit as string) || 5000, 5000);
+    const exportSkip = (page - 1) * exportLimit;
+    const [records, total] = await Promise.all([
+      prisma.attendance.findMany({
+        where: whereClause,
+        select: {
+          id: true,
+          churchId: true,
+          date: true,
+          totalAttendees: true,
+          maleCount: true,
+          femaleCount: true,
+          children: true,
+          youth: true,
+          youngAdults: true,
+          adults: true,
+          seniors: true,
+          newVisitors: true,
+          serviceType: true,
+          notes: true,
+          eventId: true,
+          createdAt: true,
+          church: { select: { id: true, name: true } },
+          _count: { select: { visitors: true } },
+        },
+        orderBy: { date: 'desc' },
+        skip: exportSkip,
+        take: exportLimit,
+      }),
+      prisma.attendance.count({ where: whereClause }),
+    ]);
+    res.json({ success: true, data: records, pagination: { page, limit: exportLimit, total, totalPages: Math.ceil(total / exportLimit) } });
     return;
   }
 
@@ -350,6 +356,54 @@ export async function deleteAttendanceVisitor(req: Request, res: Response): Prom
     data: { newVisitors: { decrement: 1 } },
   });
   res.json({ success: true });
+}
+
+export async function getServiceVisitorsReport(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+  const { churchId: filterChurchId, serviceType, startDate, endDate } = req.query;
+
+  if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (accessibleChurchIds.length === 0) { res.json({ success: true, data: [] }); return; }
+
+  let scopedChurchIds = accessibleChurchIds;
+  if (filterChurchId && typeof filterChurchId === 'string') {
+    if (!accessibleChurchIds.includes(filterChurchId)) { res.json({ success: true, data: [] }); return; }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  const attendanceWhere: any = { churchId: { in: scopedChurchIds } };
+  if (serviceType && typeof serviceType === 'string') attendanceWhere.serviceType = serviceType;
+  if (startDate || endDate) {
+    attendanceWhere.date = {};
+    if (startDate) attendanceWhere.date.gte = new Date(startDate as string);
+    if (endDate) { const end = new Date(endDate as string); end.setHours(23, 59, 59, 999); attendanceWhere.date.lte = end; }
+  }
+
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 5000, 5000);
+  const skip = (page - 1) * limit;
+
+  const [visitors, total] = await Promise.all([
+    prisma.attendanceVisitor.findMany({
+      where: { attendance: attendanceWhere },
+      include: {
+        attendance: { select: { date: true, serviceType: true, church: { select: { name: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.attendanceVisitor.count({ where: { attendance: attendanceWhere } }),
+  ]);
+
+  res.json({ success: true, data: visitors, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function deleteAttendance(req: Request, res: Response): Promise<void> {

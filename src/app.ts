@@ -31,6 +31,8 @@ import adminRoutes from './routes/adminRoutes';
 import cellRoutes from './routes/cells';
 import contactRoutes from './routes/contact';
 import churchProfileRoutes from './routes/churchProfile';
+import pushRoutes from './routes/pushRoutes';
+import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/sharedAccessRoutes';
 import { errorHandler } from './middleware/errorHandler';
 
 declare global {
@@ -110,6 +112,9 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/cells', cellRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api', churchProfileRoutes);  // mounts /api/church-profile and /api/p/:slug
+app.use('/api/push', pushRoutes);
+app.use('/api/shared-access', sharedAccessProtectedRoutes);
+app.use('/api/public/shared-access', sharedAccessPublicRoutes);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────
 app.use((_req, res) => {

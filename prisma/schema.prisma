@@ -115,7 +115,9 @@ model User {
   cellMemberships        CellMember[]
   cellAttendance         CellAttendance[]
   pledges                Pledge[]
-  churchProfile          ChurchProfile?
+  churchProfile         ChurchProfile?
+  deviceTokens          DeviceToken[]
+  sharedAccessLinks     SharedAccessLink[]
 
   @@index([churchId, roleId, status, createdAt])
   @@index([dateOfBirth])
@@ -182,6 +184,7 @@ model Church {
   reminders     ReminderCache[]
   cells         Cell[]
   pledges       Pledge[]
+  sharedAccessLinks SharedAccessLink[]
 
   @@map("churches")
 }
@@ -483,13 +486,16 @@ model Attendance {
   seniors        Int      @default(0)  // 60+ years
   newVisitors    Int      @default(0)
   serviceType    String   @default("Sunday Service")
-  notes          String?  @db.Text
-  createdAt      DateTime @default(now())
+  sharedAccessLinkId String?
+  notes              String?  @db.Text
+  createdAt          DateTime @default(now())
 
-  church         Church             @relation(fields: [churchId], references: [id])
-  visitors       AttendanceVisitor[]
+  church            Church              @relation(fields: [churchId], references: [id])
+  sharedAccessLink  SharedAccessLink?   @relation(fields: [sharedAccessLinkId], references: [id], onDelete: SetNull)
+  visitors          AttendanceVisitor[]
 
   @@index([churchId, date])
+  @@index([sharedAccessLinkId])
   @@map("attendance")
 }
 
@@ -510,6 +516,42 @@ model AttendanceVisitor {
 
   @@index([attendanceId])
   @@map("attendance_visitors")
+}
+
+// ─── Shared Access Links ──────────────────────────────────────────────────────────
+
+model SharedAccessLink {
+  id          String   @id @default(cuid())
+  token       String   @unique                      // Short random hash for URL lookup
+  type        String   @default("attendance")       // "attendance" — extensible for future types
+  churchId    String                                 // Scoped to a specific church
+  serviceType String?  @default("Sunday Service")   // Pre-selected service type for the form
+  eventId     String?                                // Optional — for event-specific attendance
+  accessCode  String?                                // bcrypt hash of the 4-digit access code (optional)
+
+  // Time window
+  validFrom   DateTime @default(now())              // Link becomes active at this time
+  expiresAt   DateTime                               // Link expires at this time
+
+  // Usage controls
+  isActive    Boolean  @default(true)
+  useCount    Int      @default(0)
+  usageLimit  Int?                                   // Null = unlimited, e.g. 1 = one-time use
+  lastUsedAt  DateTime?
+
+  // Audit
+  createdBy   String                                 // userId of the admin who created it
+  createdAt   DateTime @default(now())
+
+  // Relations
+  church      Church           @relation(fields: [churchId], references: [id])
+  creator     User             @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  attendance  Attendance[]
+
+  @@index([token])
+  @@index([churchId])
+  @@index([createdBy])
+  @@map("shared_access_links")
 }
 
 // ─── Meetings ──────────────────────────────────────────────────────────────────
@@ -1048,6 +1090,26 @@ model CellAttendance {
   @@index([cellId])
   @@index([userId])
   @@map("cell_attendance")
+}
+
+// ─── Church Public Profile ────────────────────────────────────────────────────
+
+// ─── Push Notification Device Tokens ─────────────────────────────────────
+
+model DeviceToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token      String   @unique  // FCM registration token
+  platform   String   @default("web")  // web | android | ios
+  userAgent  String?  // Browser user agent string
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("device_tokens")
 }
 
 // ─── Church Public Profile ────────────────────────────────────────────────────
