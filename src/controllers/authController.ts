@@ -234,6 +234,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     role: (userWithPackage.role?.name || 'member') as UserRole,
     churchId: userWithPackage.churchId,
     permissions,
+    accountCountry: userWithPackage.accountCountry ?? undefined,
     districts: parseJson(userWithPackage.districts),
     traditionalAuthorities: parseJson(userWithPackage.traditionalAuthorities),
   });
@@ -464,6 +465,7 @@ export async function register(req: Request, res: Response): Promise<void> {
     role: (user.role?.name || 'member') as UserRole,
     churchId: user.churchId,
     permissions,
+    accountCountry: user.accountCountry ?? undefined,
     districts: parseJson(user.districts),
     traditionalAuthorities: parseJson(user.traditionalAuthorities),
   });

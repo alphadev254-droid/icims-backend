@@ -189,9 +189,14 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     monthlyGiving.push({ month: monthName, amount: Math.round(monthTotal) });
   }
 
+  // Determine currency from account country
+  const accountCountry = req.user?.accountCountry || 'Malawi';
+  const currency = accountCountry === 'Kenya' ? 'KES' : 'MWK';
+
   res.json({
     success: true,
     data: {
+      currency,
       totalMembers,
       activeMembers,
       totalChurches,
