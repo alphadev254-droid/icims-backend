@@ -169,7 +169,7 @@ export async function revokeLink(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { id } = req.params;
+  const id = String(req.params.id);
 
   const link = await prisma.sharedAccessLink.findUnique({ where: { id } });
   if (!link) {
@@ -286,7 +286,7 @@ const attendanceSchema = z.object({
 });
 
 export async function submitAttendance(req: Request, res: Response): Promise<void> {
-  const { token } = req.params;
+  const token = String(req.params.token);
 
   if (!token) {
     res.status(400).json({ success: false, message: 'Token is required' });
@@ -385,7 +385,7 @@ export async function submitAttendance(req: Request, res: Response): Promise<voi
 // ─── Public: Get attendance records by link token ──────────────────────────
 
 export async function getAttendanceByLink(req: Request, res: Response): Promise<void> {
-  const { token } = req.params;
+  const token = String(req.params.token);
 
   if (!token) {
     res.status(400).json({ success: false, message: 'Token is required' });
