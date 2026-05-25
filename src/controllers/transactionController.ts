@@ -345,6 +345,8 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
       distinct: ['userId', 'campaignId'],
     }),
   ]);
+  const userMap = new Map(users.map(u => [u.id, u]));
+  const churchMap = new Map(churches.map(c => [c.id, c.name]));
   const campaignsByUser = new Map<string, string[]>();
   for (const uc of userCampaigns) {
     if (!uc.userId) continue;
