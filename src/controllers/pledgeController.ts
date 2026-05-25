@@ -278,7 +278,16 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
       include: {
         campaign: { select: { id: true, name: true, category: true, currency: true } },
         church: { select: { name: true } },
-        user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+        user: {
+          select: {
+            firstName: true, lastName: true, email: true, phone: true,
+            cellMemberships: {
+              where: { status: { not: 'inactive' } },
+              select: { cell: { select: { name: true } } },
+              take: 1,
+            },
+          },
+        },
         payments: {
           where: { status: 'completed' },
           select: { id: true, amount: true, currency: true, createdAt: true, paymentMethod: true },

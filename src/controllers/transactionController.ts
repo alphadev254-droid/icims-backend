@@ -243,15 +243,16 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
   const donationDetails = donationTxIds.length > 0
     ? await prisma.donationTransaction.findMany({
         where: { transactionId: { in: donationTxIds } },
-        select: { transactionId: true, campaign: { select: { name: true, category: true } } },
+        select: { transactionId: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
       })
     : [];
-  const campaignMap = new Map(donationDetails.map((d: any) => [d.transactionId, d.campaign]));
+  const donationDetailMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
 
   const enriched = transactions.map(t => ({
     ...t,
-    campaignName: (campaignMap.get(t.id) as any)?.name ?? null,
-    campaignCategory: (campaignMap.get(t.id) as any)?.category ?? null,
+    campaignName: (donationDetailMap.get(t.id) as any)?.campaign?.name ?? null,
+    campaignCategory: (donationDetailMap.get(t.id) as any)?.campaign?.category ?? null,
+    cellName: (donationDetailMap.get(t.id) as any)?.cell?.name ?? null,
   }));
 
   res.json({ success: true, data: enriched, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
@@ -314,9 +315,9 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
     return;
   }
 
-  // Batch-fetch user names
+  // Batch-fetch all enrichment data in parallel
   const userIds = grouped.map(g => g.userId!).filter(Boolean);
-  const [users, churches] = await Promise.all([
+  const [users, churches, userCampaigns] = await Promise.all([
     prisma.user.findMany({
       where: { id: { in: userIds } },
       select: {
@@ -333,10 +334,24 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
       where: { id: { in: scopedChurchIds } },
       select: { id: true, name: true },
     }),
+    prisma.donationTransaction.findMany({
+      where: {
+        userId: { in: userIds },
+        status: 'completed',
+        churchId: { in: scopedChurchIds },
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+      },
+      select: { userId: true, campaignId: true, campaign: { select: { name: true } } },
+      distinct: ['userId', 'campaignId'],
+    }),
   ]);
-
-  const userMap = new Map(users.map(u => [u.id, u]));
-  const churchMap = new Map(churches.map(c => [c.id, c.name]));
+  const campaignsByUser = new Map<string, string[]>();
+  for (const uc of userCampaigns) {
+    if (!uc.userId) continue;
+    if (!campaignsByUser.has(uc.userId)) campaignsByUser.set(uc.userId, []);
+    const name = (uc as any).campaign?.name;
+    if (name) campaignsByUser.get(uc.userId)!.push(name);
+  }
 
   const data = grouped.map(g => {
     const u = userMap.get(g.userId!) as any;
@@ -351,8 +366,9 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
       status: u?.status ?? '',
       cell: u?.cellMemberships?.[0]?.cell?.name ?? '',
       church: churchMap.get(g.churchId ?? '') ?? '',
+      campaigns: campaignsByUser.get(g.userId!)?.join('; ') ?? '',
       totalGiven: g._sum.amount ?? 0,
-      donationCount: g._count.id,
+      transactionCount: g._count.id,
     };
   });
 

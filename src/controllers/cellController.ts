@@ -98,7 +98,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   const cellIds = cells.map(c => c.id);
 
   // Round 2: all enrichment in parallel, scoped to page cell IDs (and optional date range)
-  const [lastMeetingsRaw, attendanceStatsScoped, visitorPhonesPerCell] = await Promise.all([
+  const [lastMeetingsRaw, attendanceStatsScoped, visitorPhonesPerCell, offeringStatsRaw] = await Promise.all([
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds }, ...(hasDates && { date: dateFilter }) },
@@ -114,6 +114,11 @@ export async function getCells(req: Request, res: Response): Promise<void> {
       where: { cellId: { in: cellIds }, isVisitor: true, visitorPhone: { not: null } },
       select: { cellId: true, visitorPhone: true },
       distinct: ['cellId', 'visitorPhone'],
+    }),
+    (prisma as any).donationTransaction.groupBy({
+      by: ['cellId'],
+      where: { cellId: { in: cellIds }, status: 'completed' },
+      _sum: { amount: true },
     }),
   ]);
 
@@ -151,12 +156,14 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   }
 
   const meetingCountMap = new Map(lastMeetingsRaw.map(m => [m.cellId, (m._count as any)?._all ?? 0]));
+  const offeringMap = new Map((offeringStatsRaw as any[]).map((o: any) => [o.cellId, o._sum?.amount ?? 0]));
 
   const enriched = cells.map(c => ({
     ...c,
     lastMeetingDate: lastMeetingMap.get(c.id) ?? null,
     meetingsInPeriod: hasDates ? (meetingCountMap.get(c.id) ?? 0) : (c._count?.meetings ?? 0),
     totalVisitors: cellVisitorPhones.get(c.id)?.size ?? 0,
+    totalOffering: offeringMap.get(c.id) ?? 0,
     leaderName: (() => {
       const leaders = (c as any).members?.filter((m: any) => m.isLeader);
       return leaders?.map((m: any) => `${m.user?.firstName ?? ''} ${m.user?.lastName ?? ''}`.trim()).join(', ') || '';
