@@ -173,7 +173,7 @@ if (pendingTx.type === 'donation') {
   console.log(`[${traceId}] ========== CALLBACK: donation ==========`);
 
   // 1. Check if already fully processed (webhook got here first)
-  const existingTx = await prisma.transaction.findFirst({
+ const existingTx = await prisma.transaction.findFirst({
     where: { reference: String(tx_ref) },
     select: { type: true, isGuest: true, guestEmail: true, guestName: true, baseAmount: true, currency: true },
   });
@@ -192,20 +192,6 @@ if (pendingTx.type === 'donation') {
       }),
     });
     res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
-    return;
-  }
-
-  // 2. Not yet processed — verify with Paychangu before doing anything
-  console.log(`[${traceId}] Not yet processed — verifying with Paychangu API...`);
-  const verifyResponse = await axios.get(
-    `https://api.paychangu.com/verify-payment/${tx_ref}`,
-    { headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}` } }
-  );
-  const verified = verifyResponse.data.data?.status === 'success';
-  console.log(`[${traceId}] Paychangu verification: ${verified}`);
-
-  if (!verified) {
-    res.redirect(`${FRONTEND_URL}/payment/callback?status=failed&reference=${tx_ref}`);
     return;
   }
 
