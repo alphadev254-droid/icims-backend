@@ -599,12 +599,19 @@ gatewayResponse: req.rawBody ? req.rawBody.toString() : JSON.stringify(req.body)
       where: { id: pendingTx.id }
     });
     
-    console.log(`[${traceId}] Pending transaction deleted`);
-    console.log(`[${traceId}] Webhook processed successfully`);
+   console.log(`[${traceId}] Pending transaction deleted`);
+console.log(`[${traceId}] Webhook processed successfully`);
+
+// ADD THESE BEFORE res.json:
+console.log(`[${traceId}] About to send response...`);
+console.log(`[${traceId}] res.headersSent:`, res.headersSent);
+
+console.log(`[${traceId}] Response sent ✓`);
     res.json({ received: true });
 
   } catch (error: any) {
     console.error(`[${traceId}] ERROR:`, error.message);
+    console.error(`[${traceId}] STACK:`, error.stack); // ADD THIS
     res.status(500).json({ received: true, error: error.message });
   }
 }
