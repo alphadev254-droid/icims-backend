@@ -64,10 +64,21 @@ app.use(cors({
 }));
 
 
-app.use('/api/webhooks/paychangu', express.raw({ type: 'application/json' }), (req, _res, next) => {
-  req.rawBody = req.body as Buffer;
-  req.body = JSON.parse(req.body.toString());
-  next();
+app.use('/api/webhooks/paychangu', (req, res, next) => {
+  // Only apply raw body parsing to POST requests (webhook), not GET (callback)
+  if (req.method !== 'POST') return next();
+  express.raw({ type: 'application/json' })(req, res, (err) => {
+    if (err) return next(err);
+    if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+      req.rawBody = req.body;
+      try {
+        req.body = JSON.parse(req.body.toString());
+      } catch (e) {
+        return next(e);
+      }
+    }
+    next();
+  });
 });
 
 // ─── Raw body capture for webhook signature verification ──────────────────
