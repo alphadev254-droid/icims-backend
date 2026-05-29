@@ -63,6 +63,13 @@ app.use(cors({
   credentials: true,
 }));
 
+
+app.use('/api/webhooks/paychangu', express.raw({ type: 'application/json' }), (req, _res, next) => {
+  req.rawBody = req.body as Buffer;
+  req.body = JSON.parse(req.body.toString());
+  next();
+});
+
 // ─── Raw body capture for webhook signature verification ──────────────────
 app.use('/api/webhooks/paystack', express.raw({ type: 'application/json' }), (req, _res, next) => {
   req.rawBody = req.body as Buffer;
