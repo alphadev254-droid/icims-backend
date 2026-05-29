@@ -36,16 +36,23 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
   console.log(`[${traceId}] Body:`, JSON.stringify(req.body, null, 2));
 
   console.log(`[${traceId}] Headers:`, JSON.stringify(req.headers));
-console.log(`[${traceId}] Signature header:`, req.headers['x-paychangu-signature']);
+    console.log(`[${traceId}] Signature header:`, req.headers['signature']);
 
-
-  // Verify webhook signature
-  const signature = req.headers['signature'] as string;
-  if (signature && !verifyWebhookSignature(req.body, signature)) {
-    console.error(`[${traceId}] Invalid webhook signature`);
-    res.status(401).json({ received: false, error: 'Invalid signature' });
-    return;
-  }
+    const signature = req.headers['signature'] as string;
+    if (signature) {
+      const crypto = await import('crypto');
+      const computedSig = crypto.default
+        .createHmac('sha256', process.env.PAYCHANGU_WEBHOOK_SECRET || process.env.PAYCHANGU_SECRET_KEY!)
+        .update(req.rawBody!)
+        .digest('hex');
+      
+      if (computedSig !== signature) {
+        console.error(`[${traceId}] Invalid signature — computed: ${computedSig}, received: ${signature}`);
+        res.status(200).json({ received: false }); // always 200, not 401
+        return;
+      }
+      console.log(`[${traceId}] Signature verified ✓`);
+    }
 
   const { tx_ref, status, amount, currency, customer, event_type, charge_id, reference } = req.body;
 
@@ -142,8 +149,11 @@ console.log(`[${traceId}] Signature header:`, req.headers['x-paychangu-signature
     console.log(`[${traceId}] Pending transaction found: ${pendingTx.id}`);
     console.log(`[${traceId}] Type: ${pendingTx.type}`);
     
-    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
-    console.log(`[${traceId}] Metadata:`, metadata);
+    const metadata = pendingTx.metadata
+      ? (typeof pendingTx.metadata === 'string' ? JSON.parse(pendingTx.metadata) : pendingTx.metadata)
+      : {};
+    
+       console.log(`[${traceId}] Metadata:`, metadata);
 
     // Handle package subscriptions
     if (pendingTx.type === 'package_subscription') {

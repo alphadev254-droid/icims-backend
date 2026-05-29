@@ -170,89 +170,112 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
    // Replace the bottom "just redirect" block with full processing:
 
 if (pendingTx.type === 'donation') {
-  console.log(`[${traceId}] ========== CALLBACK FALLBACK: donation ==========`);
+  console.log(`[${traceId}] ========== CALLBACK: donation ==========`);
 
-  // Check duplicate
-  const existingTx = await prisma.transaction.findFirst({ where: { reference: String(tx_ref) } });
-  if (!existingTx) {
-    const transaction = await prisma.transaction.create({
-      data: {
-        userId: metadata.isGuest ? null : pendingTx.userId,
-        churchId: pendingTx.churchId,
-        type: 'donation',
-        amount: metadata.totalAmount,
-        baseAmount: metadata.baseAmount,
-        convenienceFee: metadata.convenienceFee,
-        systemFeeAmount: metadata.systemFeeAmount,
-        ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
-        totalAmount: metadata.totalAmount,
-        currency: pendingTx.currency,
-        status: 'completed',
-        gateway: metadata.gateway,
-        gatewayCountry: metadata.gatewayCountry,
-        reference: String(tx_ref),
-        paymentMethod: 'mobile_money',
-        paidAt: new Date(),
-        isGuest: metadata.isGuest === true,
-        guestName: metadata.isGuest ? metadata.guestName : null,
-        guestEmail: metadata.isGuest ? metadata.guestEmail : null,
-        guestPhone: metadata.isGuest ? metadata.guestPhone : null,
-      },
+  // 1. Check if already fully processed (webhook got here first)
+  const existingTx = await prisma.transaction.findFirst({
+    where: { reference: String(tx_ref) },
+    select: { type: true, isGuest: true, guestEmail: true, guestName: true, baseAmount: true, currency: true },
+  });
+
+  if (existingTx) {
+    console.log(`[${traceId}] Already processed — redirecting`);
+    await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
+    const params = new URLSearchParams({
+      status: 'success', type: 'donation', reference: String(tx_ref),
+      ...(existingTx.isGuest && {
+        isGuest: 'true',
+        guestEmail: existingTx.guestEmail || '',
+        guestName: existingTx.guestName || '',
+        amount: String(existingTx.baseAmount || ''),
+        currency: existingTx.currency || '',
+      }),
     });
-
-    const donationTx = await prisma.donationTransaction.create({
-      data: {
-        campaignId: metadata.campaignId,
-        userId: metadata.isGuest ? null : pendingTx.userId,
-        churchId: pendingTx.churchId,
-        amount: metadata.baseAmount,
-        currency: pendingTx.currency,
-        transactionId: transaction.id,
-        reference: String(tx_ref),
-        status: 'completed',
-        isAnonymous: metadata.isAnonymous || false,
-        isGuest: metadata.isGuest === true,
-        guestName: metadata.isGuest ? metadata.guestName : null,
-        guestEmail: metadata.isGuest ? metadata.guestEmail : null,
-        guestPhone: metadata.isGuest ? metadata.guestPhone : null,
-        donorName: metadata.donorName,
-        donorPhone: metadata.donorPhone,
-        notes: metadata.notes,
-        cellId: metadata.cellId || null,
-        pledgeId: metadata.pledgeId || null,
-      },
-    });
-
-    // Pledge auto-link
-    if (metadata.pledgeId) {
-      const { recalculatePledgeStatus } = await import('./pledgeController');
-      await recalculatePledgeStatus(metadata.pledgeId);
-    } else if (!metadata.isGuest && pendingTx.userId && metadata.campaignId) {
-      const activePledge = await prisma.pledge.findFirst({
-        where: { userId: pendingTx.userId, campaignId: metadata.campaignId, status: { in: ['pending', 'partial', 'overdue'] } },
-      });
-      if (activePledge) {
-        await prisma.donationTransaction.update({ where: { id: donationTx.id }, data: { pledgeId: activePledge.id } });
-        const { recalculatePledgeStatus } = await import('./pledgeController');
-        await recalculatePledgeStatus(activePledge.id);
-      }
-    }
-
-    // Credit church wallet
-    const { creditChurchWallet } = await import('../utils/walletOperations');
-    await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName}`);
-
-    // Guest receipt email
-    if (metadata.isGuest && metadata.guestEmail) {
-      // ... your existing email logic
-    }
-
-    console.log(`[${traceId}] Donation processed successfully`);
-  } else {
-    console.log(`[${traceId}] Donation already processed, skipping`);
+    res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
+    return;
   }
 
-  await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
+  // 2. Not yet processed — verify with Paychangu before doing anything
+  console.log(`[${traceId}] Not yet processed — verifying with Paychangu API...`);
+  const verifyResponse = await axios.get(
+    `https://api.paychangu.com/verify-payment/${tx_ref}`,
+    { headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}` } }
+  );
+  const verified = verifyResponse.data.data?.status === 'success';
+  console.log(`[${traceId}] Paychangu verification: ${verified}`);
+
+  if (!verified) {
+    res.redirect(`${FRONTEND_URL}/payment/callback?status=failed&reference=${tx_ref}`);
+    return;
+  }
+
+  // 3. Verified + not processed — create records
+  const transaction = await prisma.transaction.create({
+    data: {
+      userId: metadata.isGuest ? null : pendingTx.userId,
+      churchId: pendingTx.churchId,
+      type: 'donation',
+      amount: metadata.totalAmount,
+      baseAmount: metadata.baseAmount,
+      convenienceFee: metadata.convenienceFee,
+      systemFeeAmount: metadata.systemFeeAmount,
+      ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
+      totalAmount: metadata.totalAmount,
+      currency: pendingTx.currency,
+      status: 'completed',
+      gateway: metadata.gateway,
+      gatewayCountry: metadata.gatewayCountry,
+      reference: String(tx_ref),
+      paymentMethod: 'mobile_money',
+      paidAt: new Date(),
+      isGuest: metadata.isGuest === true,
+      guestName: metadata.isGuest ? metadata.guestName : null,
+      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
+      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+    },
+  });
+
+  const donationTx = await prisma.donationTransaction.create({
+    data: {
+      campaignId: metadata.campaignId,
+      userId: metadata.isGuest ? null : pendingTx.userId,
+      churchId: pendingTx.churchId,
+      amount: metadata.baseAmount,
+      currency: pendingTx.currency,
+      transactionId: transaction.id,
+      reference: String(tx_ref),
+      status: 'completed',
+      isAnonymous: metadata.isAnonymous || false,
+      isGuest: metadata.isGuest === true,
+      guestName: metadata.isGuest ? metadata.guestName : null,
+      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
+      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+      donorName: metadata.donorName,
+      donorPhone: metadata.donorPhone,
+      notes: metadata.notes,
+      cellId: metadata.cellId || null,
+      pledgeId: metadata.pledgeId || null,
+    },
+  });
+
+  // Pledge auto-link
+  if (metadata.pledgeId) {
+    const { recalculatePledgeStatus } = await import('./pledgeController');
+    await recalculatePledgeStatus(metadata.pledgeId);
+  } else if (!metadata.isGuest && pendingTx.userId && metadata.campaignId) {
+    const activePledge = await prisma.pledge.findFirst({
+      where: { userId: pendingTx.userId, campaignId: metadata.campaignId, status: { in: ['pending', 'partial', 'overdue'] } },
+    });
+    if (activePledge) {
+      await prisma.donationTransaction.update({ where: { id: donationTx.id }, data: { pledgeId: activePledge.id } });
+      const { recalculatePledgeStatus } = await import('./pledgeController');
+      await recalculatePledgeStatus(activePledge.id);
+    }
+  }
+
+  // Credit church wallet
+  const { creditChurchWallet } = await import('../utils/walletOperations');
+  await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName}`);
 
   // Guest receipt email
   if (metadata.isGuest && metadata.guestEmail) {
@@ -296,13 +319,23 @@ if (pendingTx.type === 'donation') {
     }
   }
 
+  console.log(`[${traceId}] Donation processed successfully`);
+  await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
+
   const params = new URLSearchParams({
     status: 'success', type: 'donation', reference: String(tx_ref),
-    ...(metadata.isGuest && { isGuest: 'true', guestEmail: metadata.guestEmail || '', guestName: metadata.guestName || '', amount: String(metadata.baseAmount || ''), currency: pendingTx.currency || '' }),
+    ...(metadata.isGuest && {
+      isGuest: 'true',
+      guestEmail: metadata.guestEmail || '',
+      guestName: metadata.guestName || '',
+      amount: String(metadata.baseAmount || ''),
+      currency: pendingTx.currency || '',
+    }),
   });
   res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
   return;
 }
+
 
   } catch (error: any) {
     console.error(`[${traceId}] Callback error:`, error.message);
