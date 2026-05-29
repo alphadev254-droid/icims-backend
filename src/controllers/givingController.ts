@@ -169,28 +169,43 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
 
   const campaignIds = campaigns.map(c => c.id);
 
-  // ── Batch all per-campaign stats in 2 queries instead of N*3 ─────────────
-  const [raisedStats, donorStats] = await Promise.all([
-    // Total raised per campaign
-    prisma.donationTransaction.groupBy({
-      by: ['campaignId'],
-      where: { campaignId: { in: campaignIds }, status: 'completed' },
-      _sum: { amount: true },
-    }),
-    // Unique donor count per campaign (distinct userId, excluding nulls)
-    prisma.donationTransaction.findMany({
-      where: { campaignId: { in: campaignIds }, status: 'completed', userId: { not: null } },
-      select: { campaignId: true, userId: true },
-      distinct: ['campaignId', 'userId'],
-    }),
-  ]);
+ const [raisedStats, memberDonorStats, guestDonorStats] = await Promise.all([
+  // Total raised per campaign
+  prisma.donationTransaction.groupBy({
+    by: ['campaignId'],
+    where: { campaignId: { in: campaignIds }, status: 'completed' },
+    _sum: { amount: true },
+  }),
+  // Unique MEMBER donors (distinct userId)
+  prisma.donationTransaction.findMany({
+    where: { campaignId: { in: campaignIds }, status: 'completed', userId: { not: null } },
+    select: { campaignId: true, userId: true },
+    distinct: ['campaignId', 'userId'],
+  }),
+  // Unique GUEST donors (distinct by guestEmail per campaign)
+  prisma.donationTransaction.findMany({
+    where: { 
+      campaignId: { in: campaignIds }, 
+      status: 'completed', 
+      userId: null,
+      guestEmail: { not: null },
+    },
+    select: { campaignId: true, guestEmail: true },
+    distinct: ['campaignId', 'guestEmail'],
+  }),
+]);
 
-  const raisedMap = new Map(raisedStats.map(r => [r.campaignId, r._sum.amount ?? 0]));
-  // Count distinct donors per campaign
-  const donorCountMap = new Map<string, number>();
-  for (const d of donorStats) {
-    donorCountMap.set(d.campaignId, (donorCountMap.get(d.campaignId) ?? 0) + 1);
-  }
+const raisedMap = new Map(raisedStats.map(r => [r.campaignId, r._sum.amount ?? 0]));
+
+// Build donor count map combining members + unique guests per campaign
+const donorCountMap = new Map<string, number>();
+
+for (const d of memberDonorStats) {
+  donorCountMap.set(d.campaignId, (donorCountMap.get(d.campaignId) ?? 0) + 1);
+}
+for (const d of guestDonorStats) {
+  donorCountMap.set(d.campaignId, (donorCountMap.get(d.campaignId) ?? 0) + 1);
+}
 
   // For members: batch-fetch their donations across all campaigns in one query
   let memberDonationMap = new Map<string, { hasDonated: boolean; total: number }>();
