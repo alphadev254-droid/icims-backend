@@ -452,7 +452,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     currency: true,
     status: true,
     isAnonymous: true,
-    isManual: true,
+    // isManual: true,
     reference: true,
     donorName: true,
     donorEmail: true,
