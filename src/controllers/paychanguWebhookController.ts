@@ -25,12 +25,22 @@ function verifyWebhookSignature(payload: any, signature: string): boolean {
 
 export async function paychanguWebhook(req: Request, res: Response): Promise<void> {
   const traceId = `PAYCHANGU-${Date.now()}`;
+
+  console.log('PAYCHANGU WEBHOOK HIT');
+  console.log('URL:', req.originalUrl);
+  console.log('Method:', req.method);
+  console.log('Headers:', JSON.stringify(req.headers));
+  console.log('Body:', JSON.stringify(req.body));
   
   console.log(`[${traceId}] ========== PAYCHANGU WEBHOOK ==========`);
   console.log(`[${traceId}] Body:`, JSON.stringify(req.body, null, 2));
 
+  console.log(`[${traceId}] Headers:`, JSON.stringify(req.headers));
+console.log(`[${traceId}] Signature header:`, req.headers['x-paychangu-signature']);
+
+
   // Verify webhook signature
-  const signature = req.headers['x-paychangu-signature'] as string;
+  const signature = req.headers['signature'] as string;
   if (signature && !verifyWebhookSignature(req.body, signature)) {
     console.error(`[${traceId}] Invalid webhook signature`);
     res.status(401).json({ received: false, error: 'Invalid signature' });
