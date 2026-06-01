@@ -277,6 +277,11 @@ export const withdrawalRequestUserTemplate = (data: {
   method: string;
   withdrawalId: string;
   churchName?: string;
+  mobileOperator?: string;
+  mobileNumber?: string;
+  bankCode?: string;
+  accountName?: string;
+  accountNumber?: string;
 }) => `
 <!DOCTYPE html>
 <html>
@@ -298,15 +303,32 @@ export const withdrawalRequestUserTemplate = (data: {
         <p><strong>Processing Fee:</strong> ${data.currency} ${data.fee.toLocaleString()}</p>
         <p><strong>Net Amount:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
         <p><strong>Method:</strong> ${data.method === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}</p>
+        ${data.churchName ? `<p><strong>Ministry:</strong> ${data.churchName}</p>` : ''}
+        <p><strong>Platform:</strong> ${SYSTEM_NAME}</p>
         <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
       </div>
-      
+
+      ${data.method === 'mobile_money' ? `
+      <div class="info-box">
+        <h3>Mobile Money Details</h3>
+        <p><strong>Operator:</strong> ${data.mobileOperator === 'airtel' ? 'Airtel Money' : 'TNM Mpamba'}</p>
+        <p><strong>Mobile Number:</strong> ${data.mobileNumber}</p>
+      </div>
+      ` : `
+      <div class="info-box">
+        <h3>Bank Transfer Details</h3>
+        <p><strong>Bank Code:</strong> ${data.bankCode}</p>
+        <p><strong>Account Name:</strong> ${data.accountName}</p>
+        <p><strong>Account Number:</strong> ${data.accountNumber}</p>
+      </div>
+      `}
+
       <p>Your funds will be transferred to your account once the request is approved and processed.</p>
       
       <a href="${FRONTEND_URL}/withdrawals" class="button">View Withdrawal Status</a>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+      <p>&​copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
@@ -350,6 +372,8 @@ export const withdrawalRequestAdminTemplate = (data: {
         <p><strong>Processing Fee:</strong> ${data.currency} ${data.fee.toLocaleString()}</p>
         <p><strong>Net Amount:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
         <p><strong>Method:</strong> ${data.method === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}</p>
+        ${data.churchName ? `<p><strong>Ministry:</strong> ${data.churchName}</p>` : ''}
+        <p><strong>Platform:</strong> ${SYSTEM_NAME}</p>
         <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
       </div>
       
@@ -372,6 +396,76 @@ export const withdrawalRequestAdminTemplate = (data: {
     </div>
     <div class="footer">
       <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+
+export const withdrawalFinalStatusTemplate = (data: {
+  firstName: string;
+  email: string;
+  amount: number;
+  fee: number;
+  netAmount: number;
+  currency: string;
+  method: string;
+  status: 'completed' | 'failed';
+  withdrawalId: string;
+  mobileOperator?: string;
+  mobileNumber?: string;
+  bankCode?: string;
+  accountName?: string;
+  accountNumber?: string;
+  churchName?: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>Withdrawal ${data.status === 'completed' ? 'Completed' : 'Failed'}</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>Your withdrawal request (${data.withdrawalId}) has been <strong>${data.status}</strong>.</p>
+      <div class="info-box">
+        <h3>Withdrawal Summary</h3>
+        <p><strong>Amount:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
+        <p><strong>Processing Fee:</strong> ${data.currency} ${data.fee.toLocaleString()}</p>
+        <p><strong>Net Amount:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
+        <p><strong>Method:</strong> ${data.method === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}</p>
+        ${data.churchName ? `<p><strong>Ministry:</strong> ${data.churchName}</p>` : ''}
+        <p><strong>Platform:</strong> ${SYSTEM_NAME}</p>
+        <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+      </div>
+
+      ${data.method === 'mobile_money' ? `
+      <div class="info-box">
+        <h3>Mobile Money Details</h3>
+        <p><strong>Operator:</strong> ${data.mobileOperator === 'airtel' ? 'Airtel Money' : 'TNM Mpamba'}</p>
+        <p><strong>Mobile Number:</strong> ${data.mobileNumber}</p>
+      </div>
+      ` : `
+      <div class="info-box">
+        <h3>Bank Transfer Details</h3>
+        <p><strong>Bank Code:</strong> ${data.bankCode}</p>
+        <p><strong>Account Name:</strong> ${data.accountName}</p>
+        <p><strong>Account Number:</strong> ${data.accountNumber}</p>
+      </div>
+      `}
+
+      ${data.status === 'failed'
+        ? '<p>The amount has been returned to your ministry wallet balance.</p>'
+        : '<p>The funds have been sent to the destination account you provided.</p>'}
+
+      <a href="${FRONTEND_URL}/withdrawals" class="button">View Withdrawal History</a>
+    </div>
+    <div class="footer">
+      <p>&​copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>

@@ -334,18 +334,30 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   });
 
   // Send email to user
-  if (user?.email) {
-    const userEmailHtml = withdrawalRequestUserTemplate({
-      firstName: user.firstName,
-      amount,
-      fee: fees.fee,
-      netAmount: fees.netAmount,
-      currency: selectedWallet.currency,
-      method,
-      withdrawalId: withdrawal.id
-    });
-    await queueEmail(user.email, 'Withdrawal Request Received', userEmailHtml, 'withdrawal_request_user');
-  }
+ // Send email to user
+if (user?.email) {
+  const userEmailHtml = withdrawalRequestUserTemplate({
+    firstName: user.firstName,
+    amount,
+    fee: fees.fee,
+    netAmount: fees.netAmount,
+    currency: selectedWallet.currency,
+    method,
+    withdrawalId: withdrawal.id,
+    churchName: selectedWallet.church.name,
+    mobileOperator,
+    mobileNumber,
+    bankCode,
+    accountName,
+    accountNumber,
+  });
+  await queueEmail(
+    user.email,
+    'Withdrawal Request Received',
+    userEmailHtml,
+    'withdrawal_request_user',
+  );
+}
 
   // Send email to national admin (only if requester is not the national admin)
   const adminId = roleName === 'ministry_admin' ? userId : (user?.ministryAdminId || selectedWallet.church.ministryAdminId);
@@ -369,7 +381,8 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
         mobileNumber,
         bankCode,
         accountName,
-        accountNumber
+        accountNumber,
+        churchName: selectedWallet.church.name,
       });
       await queueEmail(ministryAdmin.email, 'New Withdrawal Request', adminEmailHtml, 'withdrawal_request_admin');
     }

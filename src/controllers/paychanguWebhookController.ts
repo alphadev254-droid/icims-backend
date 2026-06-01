@@ -3,7 +3,7 @@ import prisma from '../lib/prisma';
 import axios from 'axios';
 import crypto from 'crypto';
 import { queueEmail } from '../lib/emailQueue';
-import { packageSubscriptionTemplate, ticketPurchaseTemplate } from '../lib/emailTemplates';
+import { packageSubscriptionTemplate, ticketPurchaseTemplate, withdrawalFinalStatusTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { refundWithdrawal } from '../utils/walletOperations';
@@ -71,9 +71,17 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
       return;
     }
     
-    const withdrawal = await prisma.withdrawal.findUnique({
-      where: { id: withdrawalId },
-    });
+   const withdrawal = await prisma.withdrawal.findUnique({
+  where: { id: withdrawalId },
+  include: {
+    wallet: {
+      select: {
+        currency: true,
+        church: { select: { name: true } },
+      },
+    },
+  },
+});
     
     if (!withdrawal) {
       console.log(`[${traceId}] Withdrawal not found: ${withdrawalId}`);
@@ -91,6 +99,41 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
             gatewayResponse: JSON.stringify(req.body),
           },
         });
+
+        if (withdrawal.initiatedBy) {
+          const initiator = await prisma.user.findUnique({
+            where: { id: withdrawal.initiatedBy },
+            select: { firstName: true, email: true },
+          });
+
+          if (initiator?.email) {
+            const html = withdrawalFinalStatusTemplate({
+              firstName: initiator.firstName,
+              email: initiator.email,
+              amount: withdrawal.amount,
+              fee: withdrawal.fee,
+              netAmount: withdrawal.netAmount,
+              currency: withdrawal.wallet?.currency || 'MWK',
+              method: withdrawal.method,
+              status: 'completed',
+              withdrawalId,
+              mobileOperator: withdrawal.mobileOperator || undefined,
+              mobileNumber: withdrawal.mobileNumber || undefined,
+              bankCode: withdrawal.bankCode || undefined,
+              accountName: withdrawal.accountName || undefined,
+              accountNumber: withdrawal.accountNumber || undefined,
+              churchName: withdrawal.wallet?.church?.name,
+            });
+
+            await queueEmail(
+              initiator.email,
+              'Withdrawal Completed',
+              html,
+              'withdrawal_final_status',
+            );
+          }
+        }
+
         console.log(`[${traceId}] ✅ Withdrawal marked as completed`);
       } else {
         console.log(`[${traceId}] Withdrawal already completed, skipping update`);
@@ -112,6 +155,41 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
             failureReason: JSON.stringify(req.body),
           },
         });
+
+        if (withdrawal.initiatedBy) {
+          const initiator = await prisma.user.findUnique({
+            where: { id: withdrawal.initiatedBy },
+            select: { firstName: true, email: true },
+          });
+
+          if (initiator?.email) {
+            const html = withdrawalFinalStatusTemplate({
+              firstName: initiator.firstName,
+              email: initiator.email,
+              amount: withdrawal.amount,
+              fee: withdrawal.fee,
+              netAmount: withdrawal.netAmount,
+              currency: withdrawal.wallet?.currency || 'MWK',
+              method: withdrawal.method,
+              status: 'failed',
+              withdrawalId,
+              mobileOperator: withdrawal.mobileOperator || undefined,
+              mobileNumber: withdrawal.mobileNumber || undefined,
+              bankCode: withdrawal.bankCode || undefined,
+              accountName: withdrawal.accountName || undefined,
+              accountNumber: withdrawal.accountNumber || undefined,
+              churchName: withdrawal.wallet?.church?.name,
+            });
+
+            await queueEmail(
+              initiator.email,
+              'Withdrawal Failed',
+              html,
+              'withdrawal_final_status',
+            );
+          }
+        }
+
         console.log(`[${traceId}] ❌ Withdrawal marked as failed`);
       } else {
         console.log(`[${traceId}] Withdrawal already failed, skipping update/refund`);
