@@ -859,6 +859,34 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
     }),
   ]);
 
+  // Enrich with campaign and event names for display (single batch each)
+  const txList = transactions as any[];
+
+  const donationTxIds = txList.filter(t => t.type === 'donation').map((t: any) => t.id);
+  const donationDetails = donationTxIds.length > 0
+    ? await prisma.donationTransaction.findMany({
+        where: { transactionId: { in: donationTxIds } },
+        select: { transactionId: true, campaign: { select: { name: true, category: true } } },
+      })
+    : [];
+  const donationMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+
+  const eventTxIds = txList.filter(t => t.type === 'event_ticket').map((t: any) => t.id);
+  const eventDetails = eventTxIds.length > 0
+    ? await prisma.eventTicket.findMany({
+        where: { transactionId: { in: eventTxIds } },
+        select: { transactionId: true, event: { select: { title: true } } },
+      })
+    : [];
+  const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
+
+  const enriched = txList.map(t => ({
+    ...t,
+    campaignName: (donationMap.get(t.id) as any)?.campaign?.name ?? null,
+    campaignCategory: (donationMap.get(t.id) as any)?.campaign?.category ?? null,
+    eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
+  }));
+
   const buildCurrencySummary = (agg: any, currency: string) => ({
     currency,
     count: agg._count?._all ?? 0,
@@ -870,7 +898,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
 
   res.json({
     success: true,
-    data: transactions,
+    data: enriched,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     summary: {
       total,
