@@ -6,6 +6,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate, ticketPurchaseTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
+import { refundWithdrawal } from '../utils/walletOperations';
 
 function verifyWebhookSignature(payload: any, signature: string): boolean {
   const WEBHOOK_SECRET = process.env.PAYCHANGU_WEBHOOK_SECRET || process.env.TEST_WEBHOOK_SECRET;
@@ -71,7 +72,7 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
     }
     
     const withdrawal = await prisma.withdrawal.findUnique({
-      where: { id: withdrawalId }
+      where: { id: withdrawalId },
     });
     
     if (!withdrawal) {
@@ -81,24 +82,40 @@ export async function paychanguWebhook(req: Request, res: Response): Promise<voi
     }
     
     if (status === 'success') {
-      await prisma.withdrawal.update({
-        where: { id: withdrawalId },
-        data: {
-          status: 'completed',
-          processedAt: new Date(),
-          gatewayResponse: JSON.stringify(req.body)
-        }
-      });
-      console.log(`[${traceId}] ✅ Withdrawal marked as completed`);
+      if (withdrawal.status !== 'completed') {
+        await prisma.withdrawal.update({
+          where: { id: withdrawalId },
+          data: {
+            status: 'completed',
+            processedAt: new Date(),
+            gatewayResponse: JSON.stringify(req.body),
+          },
+        });
+        console.log(`[${traceId}] ✅ Withdrawal marked as completed`);
+      } else {
+        console.log(`[${traceId}] Withdrawal already completed, skipping update`);
+      }
     } else {
-      await prisma.withdrawal.update({
-        where: { id: withdrawalId },
-        data: {
-          status: 'failed',
-          failureReason: JSON.stringify(req.body)
+      if (withdrawal.status !== 'failed') {
+        // Refund wallet balance for failed payout
+        try {
+          await refundWithdrawal(withdrawalId);
+          console.log(`[${traceId}] ✅ Wallet refunded for failed withdrawal`);
+        } catch (err: any) {
+          console.error(`[${traceId}] ❌ Failed to refund wallet for withdrawal ${withdrawalId}:`, err?.message || err);
         }
-      });
-      console.log(`[${traceId}] ❌ Withdrawal marked as failed`);
+
+        await prisma.withdrawal.update({
+          where: { id: withdrawalId },
+          data: {
+            status: 'failed',
+            failureReason: JSON.stringify(req.body),
+          },
+        });
+        console.log(`[${traceId}] ❌ Withdrawal marked as failed`);
+      } else {
+        console.log(`[${traceId}] Withdrawal already failed, skipping update/refund`);
+      }
     }
     
     res.json({ received: true });

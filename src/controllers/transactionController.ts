@@ -304,11 +304,22 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
     : [];
   const donationDetailMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
 
+  // Enrich event-ticket transactions with event title
+  const eventTxIds = transactions.filter(t => t.type === 'event_ticket').map(t => t.id);
+  const eventDetails = eventTxIds.length > 0
+    ? await prisma.eventTicket.findMany({
+        where: { transactionId: { in: eventTxIds } },
+        select: { transactionId: true, event: { select: { title: true } } },
+      })
+    : [];
+  const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
+
   const enriched = transactions.map(t => ({
     ...t,
     campaignName: (donationDetailMap.get(t.id) as any)?.campaign?.name ?? null,
     campaignCategory: (donationDetailMap.get(t.id) as any)?.campaign?.category ?? null,
     cellName: (donationDetailMap.get(t.id) as any)?.cell?.name ?? null,
+    eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
   }));
 
   res.json({ success: true, data: enriched, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });

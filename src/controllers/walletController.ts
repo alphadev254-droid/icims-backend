@@ -10,6 +10,35 @@ import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate } from '.
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 
+// Simple in-memory cache for Paychangu supported banks/operators
+let paychanguBanksCache: any[] | null = null;
+let paychanguBanksCacheAt: number | null = null;
+const BANKS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function fetchPaychanguBanks(): Promise<any[]> {
+  const now = Date.now();
+  if (paychanguBanksCache && paychanguBanksCacheAt && now - paychanguBanksCacheAt < BANKS_CACHE_TTL_MS) {
+    return paychanguBanksCache;
+  }
+
+  const response = await axios.get(
+    'https://api.paychangu.com/direct-charge/payouts/supported-banks?currency=MWK',
+    {
+      headers: {
+        Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`,
+      },
+    },
+  );
+
+  const payload = response.data;
+  const banks = Array.isArray(payload?.data) ? payload.data : payload;
+
+  paychanguBanksCache = banks;
+  paychanguBanksCacheAt = now;
+
+  return banks;
+}
+
 export async function getWalletBalance(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
@@ -460,6 +489,16 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
   res.json({ success: true, data: withdrawals, total });
 }
 
+export async function getSupportedBanks(req: Request, res: Response): Promise<void> {
+  try {
+    const banks = await fetchPaychanguBanks();
+    res.json({ success: true, data: banks });
+  } catch (error: any) {
+    console.error('❌ Failed to fetch Paychangu supported banks', error.response?.data || error.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch supported banks' });
+  }
+}
+
 async function processPaychanguPayout(withdrawal: any) {
   try {
     console.log('=== PAYCHANGU PAYOUT ===');
@@ -467,48 +506,73 @@ async function processPaychanguPayout(withdrawal: any) {
     console.log('Method:', withdrawal.method);
     console.log('Net Amount:', withdrawal.netAmount);
 
-    let response;
+    // Map withdrawal details to Paychangu direct-charge payout payload
+    let bankUuid: string;
+    let accountNumber: string;
+    let accountName: string | undefined = withdrawal.accountName || undefined;
 
     if (withdrawal.method === 'mobile_money') {
-      const operatorMap: Record<string, string> = {
-        'airtel': '20be6c20-adeb-4b5b-a7ba-0769820df4fb',
-        'tnm': 'tnm-uuid-here'
-      };
+      // Dynamically resolve operator UUID from supported-banks list
+      const banks = await fetchPaychanguBanks();
+      const op = String(withdrawal.mobileOperator || '').toLowerCase();
 
-      // Remove leading 0 or 265 from mobile number to get 9 digits
-      let mobile = withdrawal.mobileNumber.replace(/^(0|265)/, '');
-      
-      const payload = {
-        mobile_money_operator_ref_id: operatorMap[withdrawal.mobileOperator],
-        mobile: mobile,
-        amount: Math.round(withdrawal.netAmount), // Paychangu requires integer
-        charge_id: `PAYOUT-${withdrawal.id}`
-      };
+      const match = banks.find((b: any) => {
+        const name: string = String(b.name || '').toLowerCase();
+        if (op === 'airtel') return name.includes('airtel');
+        if (op === 'tnm') return name.includes('tnm') || name.includes('mpamba');
+        return false;
+      });
 
-      console.log('Mobile Money Payload:', payload);
+      const uuid = match?.uuid || match?.id || match?.bank_uuid;
+      if (!uuid) {
+        throw new Error(`Unable to resolve Paychangu bank UUID for mobile operator: ${withdrawal.mobileOperator}`);
+      }
+      bankUuid = uuid;
 
-      response = await axios.post(
-        'https://api.paychangu.com/mobile-money/payouts/initialize',
-        payload,
-        { headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}` } }
-      );
+      // Normalise MSISDN to international format 265XXXXXXXXX
+      if (!withdrawal.mobileNumber) {
+        throw new Error('Missing mobileNumber for mobile money withdrawal');
+      }
+      let msisdn = String(withdrawal.mobileNumber).replace(/\D/g, '');
+      if (msisdn.startsWith('0')) {
+        msisdn = `265${msisdn.slice(1)}`;
+      } else if (!msisdn.startsWith('265')) {
+        msisdn = `265${msisdn}`;
+      }
+      accountNumber = msisdn;
+      if (!accountName) accountName = 'Mobile Money Withdrawal';
     } else {
-      const payload = {
-        bank_ref_id: withdrawal.bankCode,
-        account_name: withdrawal.accountName,
-        account_number: withdrawal.accountNumber,
-        amount: Math.round(withdrawal.netAmount), // Paychangu requires integer
-        charge_id: `PAYOUT-${withdrawal.id}`
-      };
-
-      console.log('Bank Transfer Payload:', payload);
-
-      response = await axios.post(
-        'https://api.paychangu.com/bank-transfer/payouts/initialize',
-        payload,
-        { headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}` } }
-      );
+      // Bank transfer — bankCode is expected to hold the Paychangu bank_uuid
+      if (!withdrawal.bankCode || !withdrawal.accountNumber) {
+        throw new Error('Missing bank details for bank transfer withdrawal');
+      }
+      bankUuid = withdrawal.bankCode;
+      accountNumber = String(withdrawal.accountNumber);
+      if (!accountName) accountName = 'Bank Withdrawal';
     }
+
+    const payoutPayload = {
+      payout_method: 'bank_transfer',
+      bank_uuid: bankUuid,
+      amount: String(Math.round(withdrawal.netAmount)),
+      charge_id: `PAYOUT-${withdrawal.id}`,
+      bank_account_name: accountName,
+      bank_account_number: accountNumber,
+    };
+
+    console.log('Paychangu Payout Payload:', payoutPayload);
+
+    const response = await axios.post(
+      'https://api.paychangu.com/direct-charge/payouts/initialize',
+      payoutPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+      },
+    );
 
     console.log('✅ Paychangu Response Status:', response.status);
     console.log('✅ Paychangu Response Data:', JSON.stringify(response.data, null, 2));
@@ -528,8 +592,8 @@ async function processPaychanguPayout(withdrawal: any) {
       data: {
         status: 'processing',
         chargeId: `PAYOUT-${withdrawal.id}`,
-        gatewayResponse: JSON.stringify(response.data)
-      }
+        gatewayResponse: JSON.stringify(response.data),
+      },
     });
 
     console.log('✅ Withdrawal status updated to processing');
