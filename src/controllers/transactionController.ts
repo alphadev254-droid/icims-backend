@@ -66,6 +66,8 @@ export async function getTransactions(req: Request, res: Response): Promise<void
           isGuest: true,
           guestName: true,
           guestEmail: true,
+          reference: true,
+          notes: true,
           createdAt: true,
           church: { select: { name: true } },
         },
@@ -75,7 +77,33 @@ export async function getTransactions(req: Request, res: Response): Promise<void
       }),
       prisma.transaction.count({ where: whereClause }),
     ]);
-    res.json({ success: true, data: transactions, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+
+    const txList = transactions as any[];
+    const donationTxIds = txList.filter(t => t.type === 'donation').map((t: any) => t.id);
+    const donationDetails = donationTxIds.length > 0
+      ? await prisma.donationTransaction.findMany({
+          where: { transactionId: { in: donationTxIds } },
+          select: { transactionId: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+        })
+      : [];
+    const donationMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+    const eventTxIds = txList.filter(t => t.type === 'event_ticket').map((t: any) => t.id);
+    const eventDetails = eventTxIds.length > 0
+      ? await prisma.eventTicket.findMany({
+          where: { transactionId: { in: eventTxIds } },
+          select: { transactionId: true, event: { select: { title: true } } },
+        })
+      : [];
+    const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
+    const enriched = txList.map(t => ({
+      ...t,
+      campaignName: (donationMap.get(t.id) as any)?.campaign?.name ?? null,
+      campaignCategory: (donationMap.get(t.id) as any)?.campaign?.category ?? null,
+      cellName: (donationMap.get(t.id) as any)?.cell?.name ?? null,
+      eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
+    }));
+
+    res.json({ success: true, data: enriched, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     return;
   } else {
     // All admin roles — use getAccessibleChurchIds which handles ministry_admin, sub-admins, etc.
@@ -133,6 +161,8 @@ export async function getTransactions(req: Request, res: Response): Promise<void
         isGuest: true,
         guestName: true,
         guestEmail: true,
+        reference: true,
+        notes: true,
         createdAt: true,
         user: { select: { firstName: true, lastName: true, email: true } },
         church: { select: { name: true } },
@@ -143,7 +173,33 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     }),
     prisma.transaction.count({ where: whereClause }),
   ]);
-  res.json({ success: true, data: transactions, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+
+  const txList = transactions as any[];
+  const donationTxIds = txList.filter(t => t.type === 'donation').map((t: any) => t.id);
+  const donationDetails = donationTxIds.length > 0
+    ? await prisma.donationTransaction.findMany({
+        where: { transactionId: { in: donationTxIds } },
+        select: { transactionId: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+      })
+    : [];
+  const donationMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+  const eventTxIds = txList.filter(t => t.type === 'event_ticket').map((t: any) => t.id);
+  const eventDetails = eventTxIds.length > 0
+    ? await prisma.eventTicket.findMany({
+        where: { transactionId: { in: eventTxIds } },
+        select: { transactionId: true, event: { select: { title: true } } },
+      })
+    : [];
+  const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
+  const enriched = txList.map(t => ({
+    ...t,
+    campaignName: (donationMap.get(t.id) as any)?.campaign?.name ?? null,
+    campaignCategory: (donationMap.get(t.id) as any)?.campaign?.category ?? null,
+    cellName: (donationMap.get(t.id) as any)?.cell?.name ?? null,
+    eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
+  }));
+
+  res.json({ success: true, data: enriched, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function getTransaction(req: Request, res: Response): Promise<void> {
