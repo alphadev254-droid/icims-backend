@@ -3,7 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
-import { createSubdomain, toSlug } from '../lib/hostingerDns';
+import { createSubdomain, toSlug } from '../lib/cloudflareDns';
 import type { UserRole } from '../types';
 
 const isProd = process.env.NODE_ENV === 'production';
