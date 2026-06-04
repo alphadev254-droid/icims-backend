@@ -4,17 +4,14 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
 import { sendEmail } from './email';
 
-// Redis connection for external server
-const redisConnection = new IORedis({
+// Redis connection options (plain object to avoid type conflicts)
+const redisConnection = {
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379'),
   password: process.env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: null, // Required for BullMQ
-  enableReadyCheck: false,    // Required for BullMQ
-});
+};
 
 // Email attachment type
 export interface EmailAttachment {
@@ -36,7 +33,7 @@ export interface EmailJobData {
 
 // Create queue
 export const emailQueue = new Queue<EmailJobData>('emails', {
-  connection: redisConnection,
+  connection: redisConnection as any,
   defaultJobOptions: {
     attempts: 3,
     backoff: {
@@ -73,7 +70,7 @@ export const emailWorker = new Worker<EmailJobData>(
     return { sent: true, to, subject };
   },
   {
-    connection: redisConnection,
+    connection: redisConnection as any,
     concurrency: 5, // Process up to 5 emails concurrently
   }
 );
@@ -121,7 +118,7 @@ export async function queueEmailBull(
   }));
 
   const job = await emailQueue.add(
-    'send-email',
+    'send-email' as any,
     {
       to,
       subject,

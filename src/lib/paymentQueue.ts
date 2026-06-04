@@ -4,15 +4,13 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
 
-const redisConnection = new IORedis({
+// Redis connection options (plain object to avoid type conflicts)
+const redisConnection = {
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379'),
   password: process.env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-});
+};
 
 export interface PaymentJobData {
   gateway: 'paychangu' | 'paystack';
@@ -20,7 +18,7 @@ export interface PaymentJobData {
 }
 
 export const paymentQueue = new Queue<PaymentJobData>('payments', {
-  connection: redisConnection,
+  connection: redisConnection as any,
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },
@@ -30,7 +28,7 @@ export const paymentQueue = new Queue<PaymentJobData>('payments', {
 });
 
 export async function queuePaymentProcessing(data: PaymentJobData): Promise<void> {
-  const job = await paymentQueue.add('process-payment', data);
+  const job = await paymentQueue.add('process-payment' as any, data);
   console.log(`[PaymentQueue] Queued ${data.gateway} job ${job.id}`);
 }
 
@@ -56,7 +54,7 @@ export const paymentWorker = new Worker<PaymentJobData>(
       throw error;
     }
   },
-  { connection: redisConnection, concurrency: 10 }
+  { connection: redisConnection as any, concurrency: 10 }
 );
 
 console.log('[PaymentWorker] Payment worker started with concurrency: 10');

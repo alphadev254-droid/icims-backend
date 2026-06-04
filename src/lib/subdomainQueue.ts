@@ -4,18 +4,15 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
 import { createSubdomain, toSlug } from './cloudflareDns';
 import prisma from './prisma';
 
-// Redis connection
-const redisConnection = new IORedis({
+// Redis connection options (plain object to avoid type conflicts)
+const redisConnection = {
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379'),
   password: process.env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-});
+};
 
 // Subdomain job data
 export interface SubdomainJobData {
@@ -28,7 +25,7 @@ export interface SubdomainJobData {
 
 // Create queue
 export const subdomainQueue = new Queue<SubdomainJobData>('subdomains', {
-  connection: redisConnection,
+  connection: redisConnection as any,
   defaultJobOptions: {
     attempts: 5,
     backoff: {
@@ -102,7 +99,7 @@ export const subdomainWorker = new Worker<SubdomainJobData>(
     };
   },
   {
-    connection: redisConnection,
+    connection: redisConnection as any,
     concurrency: 2, // Limit concurrent Cloudflare API calls
   }
 );
@@ -129,7 +126,7 @@ console.log('[SubdomainWorker] Subdomain worker started with concurrency: 2');
  */
 export async function queueSubdomainCreation(data: SubdomainJobData): Promise<void> {
   const job = await subdomainQueue.add(
-    'create-subdomain',
+    'create-subdomain' as any,
     data,
     {
       delay: 0, // Process immediately
