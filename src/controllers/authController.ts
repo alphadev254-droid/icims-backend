@@ -409,28 +409,28 @@ export async function register(req: Request, res: Response): Promise<void> {
 
   const permissions = await getUserPermissions(user);
 
-  // ── Subdomain creation (external API — outside transaction) ───────────────
+  // ── Subdomain creation (async via BullMQ queue) ──────────────────────────
   let subdomainValue: string | null = null;
   if (!data.inviteToken && data.ministryName) {
-    const slugSource = (data.subdomain && data.subdomain.trim())
-      ? data.subdomain.trim()
-      : data.ministryName;
-    const fullSubdomain = await createSubdomain(toSlug(slugSource));
-    if (fullSubdomain) {
-      subdomainValue = fullSubdomain;
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { subdomain: fullSubdomain },
-      });
-    }
+    const { queueSubdomainCreation } = await import('../lib/subdomainQueue');
+    await queueSubdomainCreation({
+      userId: user.id,
+      ministryName: data.ministryName,
+      customSubdomain: data.subdomain,
+      email: user.email,
+      firstName: user.firstName,
+    });
+    // Subdomain will be created asynchronously and email sent when ready
+    console.log(`[Registration] Subdomain creation queued for user ${user.id}`);
   }
   // ─────────────────────────────────────────────────────────────────────────
+
   const { queueEmail } = await import('../lib/emailQueue');
-  const { registrationTemplate, memberWelcomeTemplate } = await import('../lib/emailTemplates');
+  const { memberWelcomeTemplate } = await import('../lib/emailTemplates');
   
   // Send different email based on role
   if (data.inviteToken && user.church) {
-    // Member registration - send welcome to church email
+    // Member registration - send welcome to church email immediately
     queueEmail(
       user.email,
       `Welcome to ${user.church.name}`,
@@ -442,22 +442,8 @@ export async function register(req: Request, res: Response): Promise<void> {
       }),
       'registration'
     ).catch(err => console.error('Failed to queue member welcome email:', err));
-  } else {
-    // National admin registration - send full registration email
-    queueEmail(
-      user.email,
-      'Welcome to ICIMS',
-      registrationTemplate({
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        ministryName: data.ministryName,
-        siteUrl: subdomainValue ? `https://${subdomainValue}` : undefined,
-        roleName: user.role?.displayName,
-      }),
-      'registration'
-    ).catch(err => console.error('Failed to queue registration email:', err));
   }
+  // Note: Ministry admin welcome email is now sent AFTER subdomain is created (in queue worker)
 
   const token = signToken({
     userId: user.id,

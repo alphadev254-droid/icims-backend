@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
-import prisma from '../lib/prisma';
-import axios from 'axios';
 import crypto from 'crypto';
+import prisma from '../lib/prisma';
 import { queueEmail } from '../lib/emailQueue';
-import { ticketPurchaseTemplate, donationReceiptTemplate, packageSubscriptionTemplate } from '../lib/emailTemplates';
+import { packageSubscriptionTemplate, ticketPurchaseTemplate, donationReceiptTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
+import { queuePaymentProcessing } from '../lib/paymentQueue';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -24,55 +24,60 @@ function verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {
 }
 
 export async function paystackWebhook(req: Request, res: Response): Promise<void> {
-  const traceId = `PAYSTACK-WEBHOOK-${Date.now()}`;
+  const traceId = `PAYSTACK-${Date.now()}`;
 
-  console.log(`[${traceId}] ========== PAYSTACK WEBHOOK HIT ==========`);
-  console.log(`[${traceId}] Timestamp: ${new Date().toISOString()}`);
-  console.log(`[${traceId}] URL: ${req.originalUrl}`);
-  console.log(`[${traceId}] Method: ${req.method}`);
-  console.log(`[${traceId}] Headers:`, JSON.stringify(req.headers, null, 2));
-  console.log(`[${traceId}] Body:`, JSON.stringify(req.body, null, 2));
-  console.log(`[${traceId}] Raw body exists: ${!!req.rawBody}`);
+  console.log(`[${traceId}] WEBHOOK HIT - Queuing for async processing`);
 
+  // Verify signature
   const signature = req.headers['x-paystack-signature'] as string;
-  console.log(`[${traceId}] Signature header: ${signature || 'MISSING'}`);
-
   if (!signature || !req.rawBody || !verifyWebhookSignature(req.rawBody, signature)) {
-    console.error(`[${traceId}] ❌ Invalid webhook signature — signature: ${signature}, rawBody: ${!!req.rawBody}`);
+    console.error(`[${traceId}] Invalid signature`);
     res.status(401).json({ received: false });
     return;
   }
 
   const { event, data } = req.body;
-  console.log(`[${traceId}] ✅ Signature valid — event: ${event}`);
-
   if (event !== 'charge.success') {
-    console.log(`[${traceId}] Ignoring event type: ${event}`);
     res.json({ received: true });
     return;
   }
 
-  console.log(`[${traceId}] charge.success - reference: ${data.reference}`);
+  // Queue for processing - return 200 immediately
+  await queuePaymentProcessing({
+    gateway: 'paystack',
+    payload: req.body,
+  });
+
+  console.log(`[${traceId}] ✅ Queued, returning 200`);
+  res.json({ received: true, queued: true });
+}
+
+// Process Paystack payment (called by worker)
+export async function processPaystackPayment(payload: any, traceId: string): Promise<void> {
+  try {
+  const { data } = payload;
+  const reference = data.reference;
+
+  console.log(`[${traceId}] Processing Paystack payment - ref: ${reference}`);
 
   // Verify with Paystack API
-  try {
-    const verifyResponse = await axios.get(
-      `${PAYSTACK_BASE_URL}/transaction/verify/${data.reference}`,
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` } }
-    );
+  const axios = (await import('axios')).default;
+  const verifyResponse = await axios.get(
+    `${process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co'}/transaction/verify/${reference}`,
+    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
+  );
 
-    if (verifyResponse.data.data?.status !== 'success') {
-      console.log(`[${traceId}] Payment verification failed`);
-      res.json({ received: true });
-      return;
-    }
+  if (verifyResponse.data.data?.status !== 'success') {
+    console.log(`[${traceId}] Verification failed`);
+    return;
+  }
 
-    const txData = verifyResponse.data.data;
-    const { metadata } = txData;
-    const amount = txData.amount / 100;
-    const type = metadata?.type || 'event_ticket';
+  const txData = verifyResponse.data.data;
+  const { metadata } = txData;
+  const type = metadata?.type || 'event_ticket';
 
-    console.log(`[${traceId}] Verified - type: ${type}, amount: ${amount}`);
+  console.log(`[${traceId}] Verified - type: ${type}`);
+  // Continue processing...
 
     if (type === 'package_subscription') {
       console.log(`[${traceId}] ========== PACKAGE SUBSCRIPTION ==========`);
@@ -85,17 +90,18 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
       const existingPayment = await prisma.payment.findFirst({ where: { reference: txData.reference } });
       if (existingPayment) {
         console.log(`[${traceId}] Already processed: ${existingPayment.id}`);
-        res.json({ received: true });
         return;
       }
       console.log(`[${traceId}] No duplicate found — proceeding`);
+
+      const amount = txData.amount / 100;
 
       const pendingTx = await prisma.pendingTransaction.findUnique({ where: { id: metadata.pendingTxId } });
       console.log(`[${traceId}] PendingTransaction found: ${pendingTx ? pendingTx.id : 'NOT FOUND'}`);
       const pendingMetadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
       console.log(`[${traceId}] PendingMetadata:`, pendingMetadata);
 
-      const baseAmount = pendingMetadata.baseAmount || amount;
+      const baseAmount = pendingMetadata.baseAmount || (txData.amount / 100);
       const convenienceFee = pendingMetadata.convenienceFee || 0;
       const systemFeeAmount = pendingMetadata.systemFeeAmount || 0;
       const ceilRoundingAmount = pendingMetadata.ceilRoundingAmount || 0;
@@ -205,18 +211,17 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
       const existingTransaction = await prisma.transaction.findFirst({ where: { reference: txData.reference } });
       if (existingTransaction) {
         console.log(`[${traceId}] Already processed: ${existingTransaction.id}`);
-        res.json({ received: true });
         return;
       }
 
       const pendingTx = await prisma.pendingTransaction.findUnique({ where: { reference: txData.reference } });
       if (!pendingTx) {
         console.log(`[${traceId}] Pending transaction not found`);
-        res.json({ received: true });
         return;
       }
 
       const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+      const amount = txData.amount / 100;
 
       const transaction = await prisma.transaction.create({
         data: {
@@ -348,18 +353,17 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
       const existingTransaction = await prisma.transaction.findFirst({ where: { reference: txData.reference } });
       if (existingTransaction) {
         console.log(`[${traceId}] Already processed: ${existingTransaction.id}`);
-        res.json({ received: true });
         return;
       }
 
       const pendingTx = await prisma.pendingTransaction.findUnique({ where: { reference: txData.reference } });
       if (!pendingTx) {
         console.log(`[${traceId}] Pending transaction not found`);
-        res.json({ received: true });
         return;
       }
 
       const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+      const amount = txData.amount / 100;
 
       const transaction = await prisma.transaction.create({
         data: {
@@ -468,10 +472,9 @@ export async function paystackWebhook(req: Request, res: Response): Promise<void
     }
 
     console.log(`[${traceId}] Webhook processed successfully`);
-    res.json({ received: true });
 
   } catch (error: any) {
     console.error(`[${traceId}] ERROR:`, error.message);
-    res.status(500).json({ received: true, error: error.message });
+    throw error;
   }
 }
