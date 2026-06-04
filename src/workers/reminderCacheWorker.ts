@@ -8,6 +8,14 @@ cron.schedule('0 2 * * *', async () => {
   await refreshReminderCache();
 });
 
+// Run immediately on server startup (to handle missed cron jobs)
+console.log('[ReminderCache] Running startup refresh...');
+refreshReminderCache().then(() => {
+  console.log('[ReminderCache] ✅ Startup refresh completed');
+}).catch(err => {
+  console.error('[ReminderCache] ❌ Startup refresh failed:', err.message);
+});
+
 export async function refreshReminderCache() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
