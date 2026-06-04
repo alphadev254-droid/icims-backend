@@ -127,13 +127,8 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
         uniqueReminders.push(eventReminderData);
       }
     } else {
-      // For other reminders, only include if user is the person with the birthday/wedding/anniversary
-      if (reminder.userId !== userId) {
-        const { user, ministryAdminId, ...reminderData } = reminder;
-        uniqueReminders.push(reminderData);
-      } else {
-        uniqueReminders.push(reminder);
-      }
+      // For non-event reminders, always include the full reminder with user object
+      uniqueReminders.push(reminder);
     }
   }
 
