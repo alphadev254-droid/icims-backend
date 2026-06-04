@@ -224,34 +224,57 @@ export async function refreshReminderCache() {
     }
   }
 
-  // Batch upsert reminders
+  // Batch insert reminders — skip duplicates (unique constraint handles deduplication)
+  // We use createMany with skipDuplicates to avoid the null-in-unique-key Prisma limitation
   const batchSize = 100;
   for (let i = 0; i < reminders.length; i += batchSize) {
     const batch = reminders.slice(i, i + batchSize);
-    await Promise.all(
-      batch.map(async (reminder: any) => {
-        const uniqueKey = {
-          userId: reminder.userId,
-          type: reminder.type,
-          upcomingDate: reminder.upcomingDate,
-          eventId: reminder.eventId || null, // MySQL unique constraint needs explicit null
-        };
+    await prisma.reminderCache.createMany({
+      data: batch.map((r: any) => ({
+        userId: r.userId,
+        type: r.type,
+        originalDate: r.originalDate,
+        upcomingDate: r.upcomingDate,
+        daysUntil: r.daysUntil,
+        age: r.age ?? null,
+        years: r.years ?? null,
+        churchId: r.churchId,
+        ministryAdminId: r.ministryAdminId ?? null,
+        eventId: r.eventId ?? null,
+        eventTitle: r.eventTitle ?? null,
+      })),
+      skipDuplicates: true,
+    });
+  }
 
-        return prisma.reminderCache.upsert({
-          where: { userId_type_upcomingDate_eventId: uniqueKey },
-          update: {
-            daysUntil: reminder.daysUntil,
-            age: reminder.age,
-            years: reminder.years,
-            eventTitle: reminder.eventTitle || null,
+  // Update daysUntil for existing reminders that are still in the window
+  // (createMany with skipDuplicates won't update existing rows, so we update separately)
+  await prisma.reminderCache.updateMany({
+    where: { upcomingDate: { gte: today } },
+    data: {}, // trigger updatedAt — actual daysUntil needs per-row update below
+  });
+
+  // Per-row daysUntil update in batches
+  const batchUpdate = 100;
+  for (let i = 0; i < reminders.length; i += batchUpdate) {
+    const batch = reminders.slice(i, i + batchUpdate);
+    await Promise.all(
+      batch.map((r: any) =>
+        prisma.reminderCache.updateMany({
+          where: {
+            userId: r.userId,
+            type: r.type,
+            upcomingDate: r.upcomingDate,
+            eventId: r.eventId ?? null,
           },
-          create: {
-            ...reminder,
-            eventId: reminder.eventId || null,
-            eventTitle: reminder.eventTitle || null,
+          data: {
+            daysUntil: r.daysUntil,
+            age: r.age ?? null,
+            years: r.years ?? null,
+            eventTitle: r.eventTitle ?? null,
           },
-        });
-      })
+        })
+      )
     );
   }
 
