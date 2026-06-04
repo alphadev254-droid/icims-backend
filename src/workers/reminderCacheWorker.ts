@@ -22,10 +22,9 @@ export async function refreshReminderCache() {
   const thirtyDaysFromNow = new Date(today);
   thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
 
-  // Clear old cache (past reminders)
-  await prisma.reminderCache.deleteMany({
-    where: { upcomingDate: { lt: today } }
-  });
+  // Clear entire cache at start of each refresh — we rebuild it completely
+  // This avoids duplicate rows from partial previous runs
+  await prisma.reminderCache.deleteMany({});
 
   // Get all active users with date fields
   const users = await prisma.user.findMany({
@@ -224,13 +223,46 @@ export async function refreshReminderCache() {
     }
   }
 
-  // Batch insert reminders — skip duplicates (unique constraint handles deduplication)
-  // We use createMany with skipDuplicates to avoid the null-in-unique-key Prisma limitation
+  // ── Dedup in-memory before persisting ────────────────────────────────────────
+  // Key: userId|type|upcomingDate|eventId — prevents duplicate objects built in
+  // the same run (e.g. user appears in two query paths) from reaching the DB.
+  const seen = new Set<string>();
+  const uniqueReminders = (reminders as any[]).filter(r => {
+    const key = `${r.userId}|${r.type}|${r.upcomingDate.getTime()}|${r.eventId ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // ── Persist reminders ────────────────────────────────────────────────────────
+  // Strategy: clear-and-rebuild daily (full table wipe already done above).
+  // Additionally guard per-user/per-event to be safe if called concurrently.
+
+  const affectedUserIds = [...new Set(
+    uniqueReminders.filter(r => r.type !== 'event').map(r => r.userId)
+  )];
+  const affectedEventIds = [...new Set(
+    uniqueReminders.filter(r => r.type === 'event' && r.eventId).map(r => r.eventId)
+  )];
+
+  // Belt-and-suspenders: delete any stale rows that somehow survived the full wipe
+  if (affectedUserIds.length > 0) {
+    await prisma.reminderCache.deleteMany({
+      where: { userId: { in: affectedUserIds }, type: { not: 'event' } },
+    });
+  }
+  if (affectedEventIds.length > 0) {
+    await prisma.reminderCache.deleteMany({
+      where: { eventId: { in: affectedEventIds } },
+    });
+  }
+
+  // Insert deduplicated reminders in batches
   const batchSize = 100;
-  for (let i = 0; i < reminders.length; i += batchSize) {
-    const batch = reminders.slice(i, i + batchSize);
+  for (let i = 0; i < uniqueReminders.length; i += batchSize) {
+    const batch = uniqueReminders.slice(i, i + batchSize);
     await prisma.reminderCache.createMany({
-      data: batch.map((r: any) => ({
+      data: batch.map(r => ({
         userId: r.userId,
         type: r.type,
         originalDate: r.originalDate,
@@ -243,42 +275,10 @@ export async function refreshReminderCache() {
         eventId: r.eventId ?? null,
         eventTitle: r.eventTitle ?? null,
       })),
-      skipDuplicates: true,
     });
   }
 
-  // Update daysUntil for existing reminders that are still in the window
-  // (createMany with skipDuplicates won't update existing rows, so we update separately)
-  await prisma.reminderCache.updateMany({
-    where: { upcomingDate: { gte: today } },
-    data: {}, // trigger updatedAt — actual daysUntil needs per-row update below
-  });
-
-  // Per-row daysUntil update in batches
-  const batchUpdate = 100;
-  for (let i = 0; i < reminders.length; i += batchUpdate) {
-    const batch = reminders.slice(i, i + batchUpdate);
-    await Promise.all(
-      batch.map((r: any) =>
-        prisma.reminderCache.updateMany({
-          where: {
-            userId: r.userId,
-            type: r.type,
-            upcomingDate: r.upcomingDate,
-            eventId: r.eventId ?? null,
-          },
-          data: {
-            daysUntil: r.daysUntil,
-            age: r.age ?? null,
-            years: r.years ?? null,
-            eventTitle: r.eventTitle ?? null,
-          },
-        })
-      )
-    );
-  }
-
-  console.log(`[ReminderCache] Refreshed ${reminders.length} reminders`);
+  console.log(`[ReminderCache] Refreshed ${uniqueReminders.length} reminders (${reminders.length - uniqueReminders.length} duplicates removed)`);
 
   // Send push notifications for today's reminders
   try {
