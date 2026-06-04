@@ -70,8 +70,6 @@ export async function refreshReminderCache() {
           age: next.getFullYear() - user.dateOfBirth.getFullYear(),
           churchId: user.churchId!,
           ministryAdminId,
-          eventId: null,
-          eventTitle: null,
         });
       }
     }
@@ -90,8 +88,6 @@ export async function refreshReminderCache() {
           years: next.getFullYear() - user.weddingDate.getFullYear(),
           churchId: user.churchId!,
           ministryAdminId,
-          eventId: null,
-          eventTitle: null,
         });
       }
     }
@@ -110,8 +106,6 @@ export async function refreshReminderCache() {
         years: memberYears,
         churchId: user.churchId!,
         ministryAdminId,
-        eventId: null,
-        eventTitle: null,
       });
     }
 
@@ -129,8 +123,6 @@ export async function refreshReminderCache() {
           years: next.getFullYear() - user.anniversary.getFullYear(),
           churchId: user.churchId!,
           ministryAdminId,
-          eventId: null,
-          eventTitle: null,
         });
       }
     }
@@ -237,23 +229,27 @@ export async function refreshReminderCache() {
   for (let i = 0; i < reminders.length; i += batchSize) {
     const batch = reminders.slice(i, i + batchSize);
     await Promise.all(
-      batch.map(async (reminder) => {
+      batch.map(async (reminder: any) => {
         const uniqueKey = {
           userId: reminder.userId,
           type: reminder.type,
           upcomingDate: reminder.upcomingDate,
-          eventId: reminder.eventId || null,
+          eventId: reminder.eventId || null, // MySQL unique constraint needs explicit null
         };
 
         return prisma.reminderCache.upsert({
-          where: { userId_type_upcomingDate_eventId: uniqueKey as any },
+          where: { userId_type_upcomingDate_eventId: uniqueKey },
           update: {
             daysUntil: reminder.daysUntil,
             age: reminder.age,
             years: reminder.years,
-            eventTitle: reminder.eventTitle,
+            eventTitle: reminder.eventTitle || null,
           },
-          create: reminder,
+          create: {
+            ...reminder,
+            eventId: reminder.eventId || null,
+            eventTitle: reminder.eventTitle || null,
+          },
         });
       })
     );
