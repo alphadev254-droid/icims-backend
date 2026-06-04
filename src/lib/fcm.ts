@@ -1,15 +1,32 @@
 import admin from 'firebase-admin';
 import prisma from './prisma';
 
-// Initialize Firebase Admin SDK if not already initialized
+// Initialize Firebase Admin SDK only when credentials are available
+let fcmReady = false;
+
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
-    projectId: process.env.FIREBASE_PROJECT_ID,
-  });
+  const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+
+  if (credPath && projectId) {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId,
+      });
+      fcmReady = true;
+      console.log('[FCM] Firebase Admin SDK initialized');
+    } catch (err: any) {
+      console.warn('[FCM] Firebase init failed — push notifications disabled:', err.message);
+    }
+  } else {
+    console.warn('[FCM] GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_PROJECT_ID not set — push notifications disabled');
+  }
+} else {
+  fcmReady = true;
 }
 
-const messaging = admin.messaging();
+const messaging = fcmReady ? admin.messaging() : null;
 
 /**
  * Send a push notification to a specific user (all their devices).
@@ -21,6 +38,8 @@ export async function sendPushNotification(
   body: string,
   data?: Record<string, string>
 ): Promise<void> {
+  if (!fcmReady || !messaging) return; // FCM not configured — skip silently
+
   try {
     const deviceTokens = await prisma.deviceToken.findMany({
       where: { userId },
