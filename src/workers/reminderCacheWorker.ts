@@ -70,6 +70,8 @@ export async function refreshReminderCache() {
           age: next.getFullYear() - user.dateOfBirth.getFullYear(),
           churchId: user.churchId!,
           ministryAdminId,
+          eventId: null,
+          eventTitle: null,
         });
       }
     }
@@ -88,6 +90,8 @@ export async function refreshReminderCache() {
           years: next.getFullYear() - user.weddingDate.getFullYear(),
           churchId: user.churchId!,
           ministryAdminId,
+          eventId: null,
+          eventTitle: null,
         });
       }
     }
@@ -106,6 +110,8 @@ export async function refreshReminderCache() {
         years: memberYears,
         churchId: user.churchId!,
         ministryAdminId,
+        eventId: null,
+        eventTitle: null,
       });
     }
 
@@ -123,6 +129,8 @@ export async function refreshReminderCache() {
           years: next.getFullYear() - user.anniversary.getFullYear(),
           churchId: user.churchId!,
           ministryAdminId,
+          eventId: null,
+          eventTitle: null,
         });
       }
     }
