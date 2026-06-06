@@ -66,4 +66,16 @@ router.get('/packages/features', getAllFeatures);
 // Pending transaction metadata (superadmin debug tool)
 router.get('/pending-transactions', getAdminPendingTransactions);
 
+// All churches list (for filter dropdowns)
+router.get('/all-churches', async (req, res) => {
+  const ministry = req.query.ministry as string | undefined;
+  const churches = await (await import('../lib/prisma')).default.church.findMany({
+    where: ministry ? { ministryAdminId: ministry } : {},
+    select: { id: true, name: true, ministryAdminId: true },
+    orderBy: { name: 'asc' },
+    take: 500,
+  });
+  res.json({ success: true, data: churches });
+});
+
 export default router;

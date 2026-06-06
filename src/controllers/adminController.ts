@@ -768,6 +768,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   const gatewayFilter  = req.query.gateway as string | undefined;
   const countryFilter  = req.query.country as string | undefined;
   const churchIdFilter = req.query.churchId as string | undefined;
+  const ministryFilter = req.query.ministry as string | undefined;
   const dateFrom       = req.query.dateFrom as string | undefined;
   const dateTo         = req.query.dateTo as string | undefined;
 
@@ -803,8 +804,23 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   // Country — gatewayCountry is already stored on the transaction row
   if (countryFilter) andConditions.push({ gatewayCountry: countryFilter });
 
-  // Specific church filter
-  if (churchIdFilter) andConditions.push({ churchId: churchIdFilter });
+  // Ministry filter — resolve all churchIds belonging to this ministry admin
+  if (ministryFilter) {
+    const ministryChurches = await prisma.church.findMany({
+      where: { ministryAdminId: ministryFilter },
+      select: { id: true },
+    });
+    const ministryChurchIds = ministryChurches.map((c: any) => c.id);
+    // If a churchId filter is also set, intersect the two sets
+    if (churchIdFilter) {
+      andConditions.push({ churchId: ministryChurchIds.includes(churchIdFilter) ? churchIdFilter : '__no_match__' });
+    } else {
+      andConditions.push({ churchId: { in: ministryChurchIds } });
+    }
+  } else if (churchIdFilter) {
+    // Specific church filter (no ministry filter)
+    andConditions.push({ churchId: churchIdFilter });
+  }
 
   if (dateFrom || dateTo) {
     const dateCondition: any = {};
@@ -920,6 +936,8 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
   const status   = req.query.status  as string | undefined;
   const type     = req.query.type    as string | undefined;
   const search   = (req.query.search as string)?.trim() || '';
+  const churchId = req.query.churchId as string | undefined;
+  const ministry = req.query.ministry as string | undefined;
   const dateFrom = req.query.dateFrom as string | undefined;
   const dateTo   = req.query.dateTo   as string | undefined;
 
@@ -936,6 +954,23 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
       { reference: { contains: search } },
       { id:        { contains: search } },
     ];
+  }
+
+  // Ministry filter — resolve all churchIds belonging to this ministry admin
+  if (ministry) {
+    const ministryChurches = await prisma.church.findMany({
+      where: { ministryAdminId: ministry },
+      select: { id: true },
+    });
+    const ministryChurchIds = ministryChurches.map((c: any) => c.id);
+    if (churchId) {
+      // Intersect: only apply churchId if it belongs to the ministry
+      where.churchId = ministryChurchIds.includes(churchId) ? churchId : '__no_match__';
+    } else {
+      where.churchId = { in: ministryChurchIds };
+    }
+  } else if (churchId) {
+    where.churchId = churchId;
   }
 
   const [rows, total] = await Promise.all([

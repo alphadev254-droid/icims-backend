@@ -582,6 +582,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
         traceId,
         campaignId,
         campaignName: campaign.name,
+        isGuest: false,
         isAnonymous,
         donorName,
         donorPhone,
