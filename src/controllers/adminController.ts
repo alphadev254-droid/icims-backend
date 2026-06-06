@@ -926,6 +926,54 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   });
 }
 
+// ─── GET /api/admin/system-transactions/:id ──────────────────────────────────
+
+export async function getAdminSystemTransaction(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+
+  const tx = await prisma.transaction.findUnique({
+    where: { id },
+    include: {
+      user:   { select: { firstName: true, lastName: true, email: true, phone: true } },
+      church: { select: { id: true, name: true } },
+      tickets: { select: { ticketNumber: true, status: true } },
+    },
+  }) as any;
+
+  if (!tx) { res.status(404).json({ success: false, message: 'Transaction not found' }); return; }
+
+  // Enrich with campaign name for donations
+  let campaignName: string | null = null;
+  let campaignCategory: string | null = null;
+  let cellName: string | null = null;
+  if (tx.type === 'donation') {
+    const donationTx = await prisma.donationTransaction.findFirst({
+      where: { transactionId: id },
+      select: { campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+    });
+    campaignName     = donationTx?.campaign?.name ?? null;
+    campaignCategory = donationTx?.campaign?.category ?? null;
+    cellName         = donationTx?.cell?.name ?? null;
+  }
+
+  // Parse gatewayResponse so frontend gets a real object
+  let gatewayResponseParsed: any = null;
+  if (tx.gatewayResponse) {
+    try { gatewayResponseParsed = JSON.parse(tx.gatewayResponse); } catch {}
+  }
+
+  res.json({
+    success: true,
+    data: {
+      ...tx,
+      campaignName,
+      campaignCategory,
+      cellName,
+      gatewayResponseParsed,
+    },
+  });
+}
+
 // ─── GET /api/admin/pending-transactions ─────────────────────────────────────
 
 export async function getAdminPendingTransactions(req: Request, res: Response): Promise<void> {

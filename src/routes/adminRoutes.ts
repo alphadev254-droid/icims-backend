@@ -12,6 +12,7 @@ import {
   updateAdminSubscription,
   getAdminTransactions,
   getAdminSystemTransactions,
+  getAdminSystemTransaction,
   getAdminChurch,
   updateAdminChurch,
   deleteAdminChurch,
@@ -46,6 +47,7 @@ router.put('/users/:id/subscription/:subId', updateAdminSubscription);
 
 router.get('/transactions', getAdminTransactions);
 router.get('/system-transactions', getAdminSystemTransactions);
+router.get('/system-transactions/:id', getAdminSystemTransaction);
 
 router.get('/churches/:id', getAdminChurch);
 router.put('/churches/:id', updateAdminChurch);
