@@ -17,6 +17,7 @@ import {
   deleteAdminChurch,
   updateAdminChurchUser,
   getAdminMinistries,
+  getAdminPendingTransactions,
 } from '../controllers/adminController';
 import {
   getPackages,
@@ -61,5 +62,8 @@ router.delete('/packages/:id', deletePackage);
 
 // Feature management (read-only — features are seeded, not created via UI)
 router.get('/packages/features', getAllFeatures);
+
+// Pending transaction metadata (superadmin debug tool)
+router.get('/pending-transactions', getAdminPendingTransactions);
 
 export default router;

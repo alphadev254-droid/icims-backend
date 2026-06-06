@@ -909,3 +909,78 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
     },
   });
 }
+
+// ─── GET /api/admin/pending-transactions ─────────────────────────────────────
+
+export async function getAdminPendingTransactions(req: Request, res: Response): Promise<void> {
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(req.query.limit as string) || 50));
+  const skip  = (page - 1) * limit;
+
+  const status   = req.query.status  as string | undefined;
+  const type     = req.query.type    as string | undefined;
+  const search   = (req.query.search as string)?.trim() || '';
+  const dateFrom = req.query.dateFrom as string | undefined;
+  const dateTo   = req.query.dateTo   as string | undefined;
+
+  const where: any = {};
+  if (status) where.status = status;
+  if (type)   where.type   = type;
+  if (dateFrom || dateTo) {
+    where.createdAt = {};
+    if (dateFrom) where.createdAt.gte = new Date(dateFrom);
+    if (dateTo)   where.createdAt.lte = new Date(dateTo + 'T23:59:59Z');
+  }
+  if (search) {
+    where.OR = [
+      { reference: { contains: search } },
+      { id:        { contains: search } },
+    ];
+  }
+
+  const [rows, total] = await Promise.all([
+    prisma.pendingTransaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.pendingTransaction.count({ where }),
+  ]);
+
+  // Resolve userId → user name/email in one batch
+  const userIds = [...new Set(rows.map(r => r.userId).filter(Boolean))] as string[];
+  const users = userIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      })
+    : [];
+  const userMap = Object.fromEntries(users.map(u => [u.id, u]));
+
+  // Resolve churchId → church name in one batch
+  const churchIds = [...new Set(rows.map(r => r.churchId).filter(Boolean))] as string[];
+  const churches = churchIds.length
+    ? await prisma.church.findMany({
+        where: { id: { in: churchIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const churchMap = Object.fromEntries(churches.map(c => [c.id, c.name]));
+
+  const enriched = rows.map(r => ({
+    ...r,
+    user:       r.userId   ? (userMap[r.userId]   ?? null) : null,
+    churchName: r.churchId ? (churchMap[r.churchId] ?? null) : null,
+    // Parse metadata JSON so the frontend gets an object, not a raw string
+    metadataParsed: (() => {
+      try { return r.metadata ? JSON.parse(r.metadata) : null; } catch { return null; }
+    })(),
+  }));
+
+  res.json({
+    success: true,
+    data: enriched,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+}

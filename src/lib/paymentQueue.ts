@@ -4,6 +4,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import prisma from '../lib/prisma';
 
 // Redis connection options (plain object to avoid type conflicts)
 const redisConnection = {
@@ -51,6 +52,23 @@ export const paymentWorker = new Worker<PaymentJobData>(
       return { success: true, gateway };
     } catch (error: any) {
       console.error(`[${traceId}] ❌ Error:`, error.message);
+
+      // On final attempt, mark the PendingTransaction as 'failed' so it is:
+      // 1. Preserved in DB for investigation (not cleaned up by cron)
+      // 2. Distinguishable from abandoned/never-paid records (status: 'pending')
+      // This covers: payment succeeded at gateway but our system crashed while processing.
+      const isLastAttempt = job.attemptsMade >= (job.opts.attempts ?? 3) - 1;
+      if (isLastAttempt) {
+        const ref = payload.tx_ref || payload.reference || payload.data?.reference;
+        if (ref) {
+          await prisma.pendingTransaction.updateMany({
+            where: { reference: ref, status: 'pending' },
+            data: { status: 'failed' },
+          }).catch((e) => console.error(`[${traceId}] Could not mark pendingTx as failed:`, e.message));
+          console.error(`[${traceId}] ⚠️  Marked PendingTransaction ref=${ref} as failed — payment may have succeeded at ${gateway}. Manual review required.`);
+        }
+      }
+
       throw error;
     }
   },

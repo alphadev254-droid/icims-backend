@@ -8,12 +8,12 @@ import prisma from '../lib/prisma';
 
 const router = Router();
 
-// GET /api/payment/status/:reference
-router.get('/status/:reference', async (req, res) => {
+// GET /api/payment-status/:reference
+router.get('/:reference', async (req, res) => {
   const { reference } = req.params;
 
   try {
-    // Check payments (subscriptions)
+    // 1. Check payments (package subscriptions)
     const payment = await prisma.payment.findFirst({
       where: { reference },
       select: { id: true, status: true, amount: true, currency: true, paidAt: true }
@@ -30,7 +30,7 @@ router.get('/status/:reference', async (req, res) => {
       });
     }
 
-    // Check transactions (tickets, donations)
+    // 2. Check transactions (event tickets)
     const transaction = await prisma.transaction.findFirst({
       where: { reference },
       select: { id: true, status: true, amount: true, currency: true, paidAt: true, type: true }
@@ -47,7 +47,24 @@ router.get('/status/:reference', async (req, res) => {
       });
     }
 
-    // Not found yet - still processing
+    // 3. Check donation transactions (DON-xxx references)
+    const donation = await prisma.donationTransaction.findFirst({
+      where: { reference },
+      select: { id: true, status: true, amount: true, currency: true, createdAt: true }
+    });
+
+    if (donation) {
+      return res.json({
+        found: true,
+        status: donation.status,
+        type: 'donation',
+        amount: donation.amount,
+        currency: donation.currency,
+        paidAt: donation.createdAt,
+      });
+    }
+
+    // Not found yet — still processing
     return res.json({
       found: false,
       status: 'pending',

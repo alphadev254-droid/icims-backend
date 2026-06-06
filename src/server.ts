@@ -4,7 +4,7 @@ import { emailQueue, emailWorker } from './lib/bullQueue'; // BullMQ with Redis
 import { subdomainQueue, subdomainWorker } from './lib/subdomainQueue'; // Subdomain creation queue
 import { paymentQueue, paymentWorker } from './lib/paymentQueue'; // Payment processing queue
 import './workers/reminderCacheWorker';
-import { startSubscriptionCron, startKPICron } from './workers/subscriptionCron';
+import { startSubscriptionCron, startKPICron, startPendingTransactionCleanup } from './workers/subscriptionCron';
 import { startEventStatusWorker } from './workers/eventStatusWorker';
 
 const PORT = process.env.PORT || 5000;
@@ -21,6 +21,7 @@ async function main() {
   startSubscriptionCron();
   startKPICron();
   startEventStatusWorker();
+  startPendingTransactionCleanup();
   console.log('📅 Cron jobs initialized');
 
   app.listen(PORT, () => {

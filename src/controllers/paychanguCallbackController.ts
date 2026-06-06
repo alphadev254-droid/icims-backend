@@ -167,15 +167,171 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
 
     
 
-   // Replace the bottom "just redirect" block with full processing:
+  // Replace the bottom "just redirect" block with full processing:
+
+if (pendingTx.type === 'event_ticket') {
+  console.log(`[${traceId}] ========== CALLBACK: event_ticket ==========`);
+
+  const existingTx = await prisma.transaction.findFirst({
+    where: { reference: String(tx_ref) },
+    select: { type: true, isGuest: true, guestEmail: true, guestName: true, baseAmount: true, currency: true, eventId: true },
+  });
+
+  if (existingTx) {
+    console.log(`[${traceId}] Already processed — redirecting`);
+    await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
+    const params = new URLSearchParams({
+      status: 'success', type: 'event_ticket', reference: String(tx_ref),
+      ...(existingTx.isGuest && {
+        isGuest: 'true',
+        guestEmail: existingTx.guestEmail || '',
+        guestName: existingTx.guestName || '',
+        amount: String(existingTx.baseAmount || ''),
+        currency: existingTx.currency || '',
+        eventId: existingTx.eventId || '',
+      }),
+    });
+    res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
+    return;
+  }
+
+  // Not yet processed — create records
+  const transaction = await prisma.transaction.create({
+    data: {
+      userId: metadata.isGuest ? null : pendingTx.userId,
+      churchId: pendingTx.churchId,
+      eventId: metadata.eventId,
+      type: 'event_ticket',
+      amount: metadata.totalAmount,
+      baseAmount: metadata.baseAmount,
+      convenienceFee: metadata.convenienceFee,
+      systemFeeAmount: metadata.systemFeeAmount,
+      ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
+      totalAmount: metadata.totalAmount,
+      currency: pendingTx.currency,
+      status: 'completed',
+      gateway: metadata.gateway,
+      gatewayCountry: metadata.gatewayCountry,
+      reference: String(tx_ref),
+      paymentMethod: 'mobile_money',
+      paidAt: new Date(),
+      isGuest: metadata.isGuest === true,
+      guestName: metadata.isGuest ? metadata.guestName : null,
+      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
+      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+    },
+  });
+
+  const quantity = metadata.quantity || 1;
+  const event = await prisma.event.findUnique({ where: { id: metadata.eventId }, include: { church: true } });
+  const user = metadata.isGuest ? null : await prisma.user.findUnique({ where: { id: pendingTx.userId! } });
+  const isGuestTicket = metadata.isGuest === true;
+
+  for (let i = 0; i < quantity; i++) {
+    const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
+    const ticketCount = await prisma.eventTicket.count({ where: { eventId: metadata.eventId } });
+    const eventPrefix = event!.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
+    const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
+
+    await prisma.eventTicket.create({
+      data: {
+        ticketNumber,
+        eventId: metadata.eventId,
+        userId: isGuestTicket ? null : pendingTx.userId,
+        transactionId: transaction.id,
+        status: 'confirmed',
+        isGuest: isGuestTicket,
+        guestName: isGuestTicket ? metadata.guestName : null,
+        guestEmail: isGuestTicket ? metadata.guestEmail : null,
+        guestPhone: isGuestTicket ? metadata.guestPhone : null,
+      },
+    });
+
+    const attendeeName = isGuestTicket ? metadata.guestName : `${user!.firstName} ${user!.lastName}`;
+    const emailTo = isGuestTicket ? metadata.guestEmail : user!.email;
+
+    if (event && emailTo) {
+      const { generateTicketPDF } = await import('../lib/ticketPDF');
+      const { ticketPurchaseTemplate } = await import('../lib/emailTemplates');
+      const ticketPDF = await generateTicketPDF({
+        ticketNumber,
+        eventTitle: event.title,
+        eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+        eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+        eventLocation: event.location,
+        attendeeName,
+        churchName: event.church.name,
+        amount: metadata.baseAmount,
+        currency: pendingTx.currency,
+      });
+      const receiptPDF = await generateReceiptPDF({
+        receiptNumber: String(tx_ref),
+        type: 'event_ticket',
+        customerName: attendeeName,
+        customerEmail: emailTo,
+        amount: metadata.baseAmount,
+        currency: pendingTx.currency,
+        paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        paymentMethod: 'mobile_money',
+        description: `Event Ticket - ${event.title}`,
+        itemDetails: [
+          { label: 'Event', value: event.title },
+          { label: 'Church', value: event.church.name },
+          { label: 'Date', value: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+          { label: 'Location', value: event.location },
+          { label: 'Ticket Number', value: ticketNumber },
+        ],
+      });
+      queueEmail(
+        emailTo,
+        `Ticket Confirmation - ${event.title}`,
+        ticketPurchaseTemplate({
+          firstName: isGuestTicket ? metadata.guestName.split(' ')[0] : user!.firstName,
+          eventTitle: event.title,
+          ticketNumber,
+          amount: metadata.baseAmount,
+          currency: pendingTx.currency,
+          eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+          eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+          eventLocation: event.location,
+          churchName: event.church.name,
+          ...(isGuestTicket && {
+            viewUrl: `${FRONTEND_URL}/payment/callback?status=success&type=event_ticket&isGuest=true&reference=${tx_ref}&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${pendingTx.currency}&eventId=${metadata.eventId}`,
+          }),
+        }),
+        [
+          { filename: `ticket-${ticketNumber}.pdf`, content: ticketPDF },
+          { filename: `receipt-${tx_ref}.pdf`, content: receiptPDF },
+        ]
+      );
+    }
+  }
+
+  await prisma.event.update({ where: { id: metadata.eventId }, data: { ticketsSold: { increment: quantity } } });
+  await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
+
+  const params = new URLSearchParams({
+    status: 'success', type: 'event_ticket', reference: String(tx_ref),
+    ...(isGuestTicket && {
+      isGuest: 'true',
+      guestEmail: metadata.guestEmail || '',
+      guestName: metadata.guestName || '',
+      amount: String(metadata.baseAmount || ''),
+      currency: pendingTx.currency || '',
+      eventId: metadata.eventId || '',
+    }),
+  });
+  res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
+  return;
+}
 
 if (pendingTx.type === 'donation') {
   console.log(`[${traceId}] ========== CALLBACK: donation ==========`);
 
   // 1. Check if already fully processed (webhook got here first)
- const existingTx = await prisma.transaction.findFirst({
+  const existingTx = await prisma.donationTransaction.findFirst({
     where: { reference: String(tx_ref) },
-    select: { type: true, isGuest: true, guestEmail: true, guestName: true, baseAmount: true, currency: true },
+    select: { isGuest: true, guestEmail: true, guestName: true, amount: true, currency: true },
   });
 
   if (existingTx) {
@@ -187,7 +343,7 @@ if (pendingTx.type === 'donation') {
         isGuest: 'true',
         guestEmail: existingTx.guestEmail || '',
         guestName: existingTx.guestName || '',
-        amount: String(existingTx.baseAmount || ''),
+        amount: String(existingTx.amount || ''),
         currency: existingTx.currency || '',
       }),
     });

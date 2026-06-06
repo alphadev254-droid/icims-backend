@@ -621,15 +621,19 @@ async function processPaychanguPayout(withdrawal: any) {
     console.log('✅ Refund processed');
     
     // Convert error response to string for storage
-    const failureReason = error.response?.data 
+    const fullReason = error.response?.data 
       ? JSON.stringify(error.response.data) 
       : error.message;
+    
+    // failureReason is TEXT in DB — keep full detail; truncate only as safety net
+    const failureReason = fullReason.substring(0, 2000);
     
     await prisma.withdrawal.update({
       where: { id: withdrawal.id },
       data: {
         status: 'failed',
-        failureReason
+        failureReason,
+        gatewayResponse: fullReason.length > 2000 ? fullReason : undefined,
       }
     });
 

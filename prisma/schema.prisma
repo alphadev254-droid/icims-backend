@@ -814,7 +814,7 @@ model Withdrawal {
   accountNumber   String?
   chargeId        String?  @unique
   gatewayResponse String?  @db.Text
-  failureReason   String?
+  failureReason   String?  @db.Text
   processedAt     DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

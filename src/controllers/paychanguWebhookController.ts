@@ -88,7 +88,11 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
         await refundWithdrawal(withdrawalId);
         await prisma.withdrawal.update({
           where: { id: withdrawalId },
-          data: { status: 'failed', failureReason: JSON.stringify(payload) },
+          data: {
+            status: 'failed',
+            failureReason: String(payload.message || payload.status || 'Payout failed').substring(0, 500),
+            gatewayResponse: JSON.stringify(payload),
+          },
         });
       }
       return;
@@ -150,23 +154,6 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
     return;
   }
 
-  const payment = await prisma.payment.create({
-    data: {
-      ministryAdminId: metadata.ministryAdminId,
-      packageId: metadata.packageId,
-      amount: metadata.totalAmount,
-      currency: pendingTx.currency,
-      type: 'subscription',
-      status: 'completed',
-      gateway: metadata.gateway,
-      reference: pendingTx.reference,
-      billingCycle: metadata.billingCycle,
-      paidAt: new Date(),
-      createdById: pendingTx.userId || metadata.ministryAdminId,
-    },
-  });
-
-  // Activate subscription
   const startsAt = new Date();
   const expiresAt = new Date(startsAt);
   if (metadata.billingCycle === 'monthly') {
@@ -174,6 +161,37 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
   } else {
     expiresAt.setFullYear(expiresAt.getFullYear() + 1);
   }
+
+  const pkg = await prisma.package.findUnique({
+    where: { id: metadata.packageId },
+    include: { features: { include: { feature: true } } },
+  });
+
+  await prisma.payment.create({
+    data: {
+      ministryAdminId: metadata.ministryAdminId,
+      packageId: metadata.packageId,
+      packageName: pkg?.name || metadata.packageName || 'Unknown',
+      amount: metadata.totalAmount,
+      baseAmount: metadata.baseAmount,
+      convenienceFee: metadata.convenienceFee,
+      systemFeeAmount: metadata.systemFeeAmount,
+      ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
+      totalAmount: metadata.totalAmount,
+      currency: pendingTx.currency,
+      type: 'subscription',
+      status: 'completed',
+      gateway: metadata.gateway,
+      reference: pendingTx.reference,
+      billingCycle: metadata.billingCycle,
+      paymentMethod: 'mobile_money',
+      paidAt: new Date(),
+      systemGatewayFeeRate: metadata.gatewayFeeRate || 0,
+      systemFeeRate: metadata.systemFeeRate || 0,
+      createdById: pendingTx.userId || metadata.ministryAdminId,
+      expiresAt,
+    },
+  });
 
   await prisma.subscription.upsert({
     where: { ministryAdminId: metadata.ministryAdminId },
@@ -183,26 +201,22 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
       status: 'active',
       startsAt,
       expiresAt,
+      lastEmailDay: null,
     },
     update: {
       packageId: metadata.packageId,
       status: 'active',
       startsAt,
       expiresAt,
+      lastEmailDay: null,
     },
   });
 
   console.log(`[${traceId}] Subscription activated until: ${expiresAt}`);
 
-  // Send confirmation email
   const user = await prisma.user.findUnique({
     where: { id: pendingTx.userId! },
     select: { firstName: true, email: true },
-  });
-
-  const pkg = await prisma.package.findUnique({
-    where: { id: metadata.packageId },
-    include: { features: { include: { feature: true } } },
   });
 
   if (user?.email && pkg) {
@@ -222,11 +236,249 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
 
 async function processPaychanguTicket(pendingTx: any, metadata: any, payload: any, traceId: string): Promise<void> {
   console.log(`[${traceId}] Processing ticket for ref: ${pendingTx.reference}`);
-  // TODO: Implement ticket processing logic
+
+  const existing = await prisma.transaction.findFirst({ where: { reference: pendingTx.reference } });
+  if (existing) {
+    console.log(`[${traceId}] Already processed: ${existing.id}`);
+    return;
+  }
+
+  const transaction = await prisma.transaction.create({
+    data: {
+      userId: metadata.isGuest ? null : pendingTx.userId,
+      churchId: pendingTx.churchId,
+      eventId: metadata.eventId,
+      type: 'event_ticket',
+      amount: metadata.totalAmount,
+      baseAmount: metadata.baseAmount,
+      convenienceFee: metadata.convenienceFee,
+      systemFeeAmount: metadata.systemFeeAmount,
+      ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
+      totalAmount: metadata.totalAmount,
+      currency: pendingTx.currency,
+      status: 'completed',
+      gateway: metadata.gateway,
+      gatewayCountry: metadata.gatewayCountry,
+      reference: pendingTx.reference,
+      paymentMethod: 'mobile_money',
+      paidAt: new Date(),
+      isGuest: metadata.isGuest === true,
+      guestName: metadata.isGuest ? metadata.guestName : null,
+      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
+      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+    },
+  });
+  console.log(`[${traceId}] Transaction created: ${transaction.id}`);
+
+  const quantity = metadata.quantity || 1;
+  const event = await prisma.event.findUnique({ where: { id: metadata.eventId }, include: { church: true } });
+  const user = metadata.isGuest ? null : await prisma.user.findUnique({ where: { id: pendingTx.userId! } });
+  const isGuest = metadata.isGuest === true;
+
+  for (let i = 0; i < quantity; i++) {
+    const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
+    const ticketCount = await prisma.eventTicket.count({ where: { eventId: metadata.eventId } });
+    const eventPrefix = event!.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
+    const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
+
+    await prisma.eventTicket.create({
+      data: {
+        ticketNumber,
+        eventId: metadata.eventId,
+        userId: isGuest ? null : pendingTx.userId,
+        transactionId: transaction.id,
+        status: 'confirmed',
+        isGuest,
+        guestName: isGuest ? metadata.guestName : null,
+        guestEmail: isGuest ? metadata.guestEmail : null,
+        guestPhone: isGuest ? metadata.guestPhone : null,
+      },
+    });
+
+    const attendeeName = isGuest ? metadata.guestName : `${user!.firstName} ${user!.lastName}`;
+    const emailTo = isGuest ? metadata.guestEmail : user!.email;
+
+    if (event && emailTo) {
+      const ticketPDF = await generateTicketPDF({
+        ticketNumber,
+        eventTitle: event.title,
+        eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+        eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+        eventLocation: event.location,
+        attendeeName,
+        churchName: event.church.name,
+        amount: metadata.baseAmount,
+        currency: pendingTx.currency,
+      });
+      const receiptPDF = await generateReceiptPDF({
+        receiptNumber: pendingTx.reference,
+        type: 'event_ticket',
+        customerName: attendeeName,
+        customerEmail: emailTo,
+        amount: metadata.baseAmount,
+        currency: pendingTx.currency,
+        paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        paymentMethod: 'mobile_money',
+        description: `Event Ticket - ${event.title}`,
+        itemDetails: [
+          { label: 'Event', value: event.title },
+          { label: 'Church', value: event.church.name },
+          { label: 'Date', value: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+          { label: 'Location', value: event.location },
+          { label: 'Ticket Number', value: ticketNumber },
+        ],
+      });
+      await queueEmail(
+        emailTo,
+        `Ticket Confirmation - ${event.title}`,
+        ticketPurchaseTemplate({
+          firstName: isGuest ? metadata.guestName.split(' ')[0] : user!.firstName,
+          eventTitle: event.title,
+          ticketNumber,
+          amount: metadata.baseAmount,
+          currency: pendingTx.currency,
+          eventDate: new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+          eventEndDate: new Date(event.endDate || event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+          eventLocation: event.location,
+          churchName: event.church.name,
+          ...(isGuest && {
+            viewUrl: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/payment/callback?status=success&type=event_ticket&isGuest=true&reference=${pendingTx.reference}&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${pendingTx.currency}&eventId=${metadata.eventId}`,
+          }),
+        }),
+        [
+          { filename: `ticket-${ticketNumber}.pdf`, content: ticketPDF },
+          { filename: `receipt-${pendingTx.reference}.pdf`, content: receiptPDF },
+        ]
+      );
+    }
+  }
+
+  await prisma.event.update({ where: { id: metadata.eventId }, data: { ticketsSold: { increment: quantity } } });
+  console.log(`[${traceId}] ✅ Ticket processing complete`);
 }
 
 async function processPaychanguDonation(pendingTx: any, metadata: any, payload: any, traceId: string): Promise<void> {
   console.log(`[${traceId}] Processing donation for ref: ${pendingTx.reference}`);
-  // TODO: Implement donation processing logic
+
+  const existing = await prisma.transaction.findFirst({ where: { reference: pendingTx.reference } });
+  if (existing) {
+    console.log(`[${traceId}] Already processed: ${existing.id}`);
+    return;
+  }
+
+  const transaction = await prisma.transaction.create({
+    data: {
+      userId: metadata.isGuest ? null : pendingTx.userId,
+      churchId: pendingTx.churchId,
+      type: 'donation',
+      amount: metadata.totalAmount,
+      baseAmount: metadata.baseAmount,
+      convenienceFee: metadata.convenienceFee,
+      systemFeeAmount: metadata.systemFeeAmount,
+      ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
+      totalAmount: metadata.totalAmount,
+      currency: pendingTx.currency,
+      status: 'completed',
+      gateway: metadata.gateway,
+      gatewayCountry: metadata.gatewayCountry,
+      reference: pendingTx.reference,
+      paymentMethod: 'mobile_money',
+      paidAt: new Date(),
+      isGuest: metadata.isGuest === true,
+      guestName: metadata.isGuest ? metadata.guestName : null,
+      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
+      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+    },
+  });
+
+  const donationTx = await prisma.donationTransaction.create({
+    data: {
+      campaignId: metadata.campaignId,
+      userId: metadata.isGuest ? null : pendingTx.userId,
+      churchId: pendingTx.churchId,
+      amount: metadata.baseAmount,
+      currency: pendingTx.currency,
+      transactionId: transaction.id,
+      reference: pendingTx.reference,
+      status: 'completed',
+      isAnonymous: metadata.isAnonymous || false,
+      isGuest: metadata.isGuest === true,
+      guestName: metadata.isGuest ? metadata.guestName : null,
+      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
+      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+      donorName: metadata.donorName,
+      donorPhone: metadata.donorPhone,
+      notes: metadata.notes,
+      cellId: metadata.cellId || null,
+      pledgeId: metadata.pledgeId || null,
+    },
+  });
+
+  // Pledge auto-link
+  if (metadata.pledgeId) {
+    const { recalculatePledgeStatus } = await import('./pledgeController');
+    await recalculatePledgeStatus(metadata.pledgeId);
+  } else if (!metadata.isGuest && pendingTx.userId && metadata.campaignId) {
+    const activePledge = await prisma.pledge.findFirst({
+      where: { userId: pendingTx.userId, campaignId: metadata.campaignId, status: { in: ['pending', 'partial', 'overdue'] } },
+    });
+    if (activePledge) {
+      await prisma.donationTransaction.update({ where: { id: donationTx.id }, data: { pledgeId: activePledge.id } });
+      const { recalculatePledgeStatus } = await import('./pledgeController');
+      await recalculatePledgeStatus(activePledge.id);
+    }
+  }
+
+  // Credit church wallet
+  const { creditChurchWallet } = await import('../utils/walletOperations');
+  await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName || metadata.campaignId}`);
+
+  // Send receipt email
+  const isGuest = metadata.isGuest === true;
+  const donorEmail = isGuest ? metadata.guestEmail : (await prisma.user.findUnique({ where: { id: pendingTx.userId! }, select: { email: true } }))?.email;
+  const donorFirstName = isGuest ? (metadata.guestName?.split(' ')[0] || 'Donor') : (await prisma.user.findUnique({ where: { id: pendingTx.userId! }, select: { firstName: true } }))?.firstName || 'Donor';
+  const donorFullName = isGuest ? metadata.guestName : donorFirstName;
+
+  const campaign = await prisma.givingCampaign.findUnique({
+    where: { id: metadata.campaignId },
+    include: { church: { select: { name: true } } },
+  });
+
+  if (donorEmail && campaign) {
+    const receiptPDF = await generateReceiptPDF({
+      receiptNumber: pendingTx.reference,
+      type: 'donation',
+      customerName: donorFullName || '',
+      customerEmail: donorEmail,
+      amount: metadata.baseAmount,
+      currency: pendingTx.currency,
+      paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+      paymentMethod: 'mobile_money',
+      description: `Donation to ${campaign.name}`,
+      itemDetails: [
+        { label: 'Campaign', value: campaign.name },
+        { label: 'Church', value: campaign.church.name },
+        { label: 'Anonymous', value: metadata.isAnonymous ? 'Yes' : 'No' },
+      ],
+    });
+    const { donationReceiptTemplate } = await import('../lib/emailTemplates');
+    await queueEmail(
+      donorEmail,
+      `Donation Receipt - ${campaign.name}`,
+      donationReceiptTemplate({
+        firstName: donorFirstName,
+        amount: metadata.baseAmount,
+        currency: pendingTx.currency,
+        campaignName: campaign.name,
+        reference: pendingTx.reference,
+        isAnonymous: metadata.isAnonymous || false,
+        isGuest,
+        churchName: campaign.church.name,
+      }),
+      [{ filename: `donation-receipt-${pendingTx.reference}.pdf`, content: receiptPDF }]
+    );
+  }
+
+  console.log(`[${traceId}] ✅ Donation processing complete`);
 }
 
