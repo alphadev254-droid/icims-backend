@@ -63,8 +63,8 @@ notificationWorker.on('failed', (job, err) => {
   console.error(`[PushQueue] ❌ Job ${job?.id} failed (attempt ${job?.attemptsMade}): ${err.message}`);
 });
 
-notificationWorker.on('retrying', (job, err) => {
-  console.warn(`[PushQueue] 🔁 Job ${job?.id} retrying after error: ${err.message}`);
+notificationWorker.on('error', (err) => {
+  console.warn(`[PushQueue] 🔁 Worker error (will retry): ${err.message}`);
 });
 
 export async function queueChurchPush(
