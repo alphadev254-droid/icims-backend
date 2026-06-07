@@ -38,7 +38,7 @@ export async function sendPushNotification(
   body: string,
   data?: Record<string, string>
 ): Promise<void> {
-  if (!fcmReady || !messaging) return; // FCM not configured — skip silently
+  if (!fcmReady || !messaging) return;
 
   try {
     const deviceTokens = await prisma.deviceToken.findMany({
@@ -46,26 +46,26 @@ export async function sendPushNotification(
       select: { id: true, token: true },
     });
 
-    if (deviceTokens.length === 0) return;
+    if (deviceTokens.length === 0) {
+      console.log(`[FCM] No device tokens for user ${userId} — skipping`);
+      return;
+    }
 
     const tokens = deviceTokens.map(dt => dt.token);
+    console.log(`[FCM] Sending to user ${userId} — ${tokens.length} device(s) | title="${title}"`);
 
     const message: admin.messaging.MulticastMessage = {
       tokens,
       notification: { title, body },
       data: data || {},
       webpush: {
-        notification: {
-          title,
-          body,
-          icon: '/icims-logo.jpg',
-        },
+        notification: { title, body, icon: '/icims-logo.jpg' },
       },
     };
 
     const response = await messaging.sendEachForMulticast(message);
+    console.log(`[FCM] User ${userId} — success=${response.successCount} failed=${response.failureCount}`);
 
-    // Remove invalid tokens
     if (response.failureCount > 0) {
       const invalidTokens: string[] = [];
       response.responses.forEach((resp, idx) => {
@@ -80,6 +80,7 @@ export async function sendPushNotification(
       });
 
       if (invalidTokens.length > 0) {
+        console.log(`[FCM] Removing ${invalidTokens.length} invalid token(s) for user ${userId}`);
         await prisma.deviceToken.deleteMany({
           where: { token: { in: invalidTokens } },
         });
@@ -101,7 +102,9 @@ export async function sendPushToUsers(
   data?: Record<string, string>
 ): Promise<void> {
   const uniqueUserIds = [...new Set(userIds)];
+  console.log(`[FCM] Dispatching push to ${uniqueUserIds.length} user(s) | title="${title}"`);
   await Promise.all(
     uniqueUserIds.map(userId => sendPushNotification(userId, title, body, data))
   );
+  console.log(`[FCM] Batch complete for ${uniqueUserIds.length} user(s) | title="${title}"`);
 }
