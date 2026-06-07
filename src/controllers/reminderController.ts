@@ -107,6 +107,7 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
           location: true,
           contactEmail: true,
           contactPhone: true,
+          imageUrl: true,
         },
       },
     },
@@ -184,6 +185,7 @@ export async function getTodayReminders(req: Request, res: Response): Promise<vo
           lastName: true,
           email: true,
           phone: true,
+          avatar: true,
         },
       },
       church: {
