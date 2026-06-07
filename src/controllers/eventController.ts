@@ -6,6 +6,7 @@ import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { groupByDateRanges } from '../lib/dateGrouping';
+import { queueChurchPush } from '../lib/notificationQueue';
 
 const baseEventSchema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -261,7 +262,17 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
       createdById: req.user!.userId,
     },
   });
+
   res.status(201).json({ success: true, data: event });
+
+  // Fire-and-forget: worker resolves members and sends push off the request cycle
+  const church = await prisma.church.findUnique({ where: { id: parsed.data.churchId }, select: { name: true } });
+  queueChurchPush(
+    parsed.data.churchId,
+    `${church?.name || 'Your Church'} · New Event`,
+    `${event.title} on ${new Date(event.date).toLocaleDateString()}`,
+    { type: 'event_created', eventId: event.id, churchId: parsed.data.churchId }
+  ).catch(err => console.error('[Event] Failed to queue push:', err));
 }
 
 export async function updateEvent(req: Request, res: Response): Promise<void> {

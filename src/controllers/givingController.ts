@@ -4,6 +4,7 @@ import axios from 'axios';
 import prisma from '../lib/prisma';
 import { groupByDateRanges } from '../lib/dateGrouping';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { queueChurchPush } from '../lib/notificationQueue';
 
 const createCampaignSchema = z.object({
   churchId: z.string().min(1),
@@ -112,6 +113,15 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   });
 
   res.status(201).json({ success: true, data: campaign });
+
+  // Fire-and-forget: worker resolves members and sends push off the request cycle
+  const church = await prisma.church.findUnique({ where: { id: targetChurchId }, select: { name: true } });
+  queueChurchPush(
+    targetChurchId,
+    `${church?.name || 'Your Church'} · New Giving Campaign`,
+    `${campaign.name} — ${campaign.category.replace('_', ' ')}`,
+    { type: 'giving_campaign_created', campaignId: campaign.id, churchId: targetChurchId }
+  ).catch(err => console.error('[Giving] Failed to queue push:', err));
 }
 
 export async function getCampaigns(req: Request, res: Response): Promise<void> {
