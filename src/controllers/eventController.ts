@@ -7,6 +7,8 @@ import { getAccessibleChurchIds } from '../lib/churchScope';
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { groupByDateRanges } from '../lib/dateGrouping';
 import { queueChurchPush } from '../lib/notificationQueue';
+import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
+import { eventCreatedTemplate } from '../lib/emailTemplates';
 
 const baseEventSchema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -273,6 +275,22 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     `${event.title} on ${new Date(event.date).toLocaleDateString()}`,
     { type: 'event_created', eventId: event.id, churchId: parsed.data.churchId }
   ).catch(err => console.error('[Event] Failed to queue push:', err));
+
+  queueChurchMemberEmails({
+    churchId: parsed.data.churchId,
+    subject: `${church?.name || 'Your Church'} - New Event: ${event.title}`,
+    buildHtml: member => eventCreatedTemplate({
+      firstName: member.firstName,
+      eventTitle: event.title,
+      eventDate: new Date(event.date).toLocaleDateString(),
+      eventEndDate: new Date(event.endDate).toLocaleDateString(),
+      eventTime: event.time,
+      eventLocation: event.location,
+      description: event.description || undefined,
+      churchName: church?.name || 'Your Church',
+    }),
+    emailType: 'notification',
+  }).catch(err => console.error('[Event] Failed to queue member emails:', err));
 }
 
 export async function updateEvent(req: Request, res: Response): Promise<void> {

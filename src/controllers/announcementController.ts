@@ -5,6 +5,8 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { sendPushToUsers } from '../lib/fcm';
+import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
+import { announcementCreatedTemplate } from '../lib/emailTemplates';
 
 const schema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -146,6 +148,31 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     }
   } catch (pushError) {
     console.error('[Announcement] Failed to send push notifications:', pushError);
+  }
+
+  try {
+    const church = await prisma.church.findUnique({
+      where: { id: targetChurchId },
+      select: { name: true },
+    });
+    const typeLabel = item.type === 'newsletter' ? 'Newsletter' : item.type === 'prayer_request' ? 'Prayer Request' : 'Announcement';
+    const prefix = parsed.data.priority === 'urgent' ? 'URGENT - ' : '';
+
+    await queueChurchMemberEmails({
+      churchId: targetChurchId,
+      subject: `${church?.name || 'Your Church'} - ${prefix}${typeLabel}: ${item.title}`,
+      buildHtml: member => announcementCreatedTemplate({
+        firstName: member.firstName,
+        title: item.title,
+        content: item.content,
+        type: item.type,
+        priority: item.priority,
+        churchName: church?.name || 'Your Church',
+      }),
+      emailType: 'notification',
+    });
+  } catch (emailError) {
+    console.error('[Announcement] Failed to queue member emails:', emailError);
   }
 
   res.status(201).json({ success: true, data: item });

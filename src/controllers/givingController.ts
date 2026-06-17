@@ -5,6 +5,8 @@ import prisma from '../lib/prisma';
 import { groupByDateRanges } from '../lib/dateGrouping';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueChurchPush } from '../lib/notificationQueue';
+import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
+import { givingCampaignCreatedTemplate } from '../lib/emailTemplates';
 
 const createCampaignSchema = z.object({
   churchId: z.string().min(1),
@@ -122,6 +124,22 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
     `${campaign.name} — ${campaign.category.replace('_', ' ')}`,
     { type: 'giving_campaign_created', campaignId: campaign.id, churchId: targetChurchId }
   ).catch(err => console.error('[Giving] Failed to queue push:', err));
+
+  queueChurchMemberEmails({
+    churchId: targetChurchId,
+    subject: `${church?.name || 'Your Church'} - New Giving Campaign: ${campaign.name}`,
+    buildHtml: member => givingCampaignCreatedTemplate({
+      firstName: member.firstName,
+      campaignName: campaign.name,
+      category: campaign.category,
+      currency: campaign.currency,
+      targetAmount: campaign.targetAmount,
+      endDate: campaign.endDate ? new Date(campaign.endDate).toLocaleDateString() : null,
+      description: campaign.description,
+      churchName: church?.name || 'Your Church',
+    }),
+    emailType: 'notification',
+  }).catch(err => console.error('[Giving] Failed to queue member emails:', err));
 }
 
 export async function getCampaigns(req: Request, res: Response): Promise<void> {

@@ -221,6 +221,47 @@ export const ticketPurchaseTemplate = (data: {
 </html>
 `;
 
+export const eventCreatedTemplate = (data: {
+  firstName: string;
+  eventTitle: string;
+  eventDate: string;
+  eventEndDate: string;
+  eventTime: string;
+  eventLocation: string;
+  description?: string;
+  churchName?: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>New Event</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>A new event has been created${data.churchName ? ` for ${data.churchName}` : ''}.</p>
+
+      <div class="info-box">
+        <h3>${data.eventTitle}</h3>
+        <p><strong>Date:</strong> ${data.eventDate}${data.eventEndDate !== data.eventDate ? ` - ${data.eventEndDate}` : ''}</p>
+        <p><strong>Time:</strong> ${data.eventTime}</p>
+        <p><strong>Location:</strong> ${data.eventLocation}</p>
+        ${data.description ? `<p style="white-space: pre-wrap;">${data.description.substring(0, 240)}${data.description.length > 240 ? '...' : ''}</p>` : ''}
+      </div>
+
+      <a href="${FRONTEND_URL}/dashboard/events" class="button">View Event</a>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
 export const donationReceiptTemplate = (data: {
   firstName: string;
   amount: number;
@@ -262,6 +303,83 @@ export const donationReceiptTemplate = (data: {
     <div class="footer">
       <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
       <p>This is an official receipt for your records.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const givingCampaignCreatedTemplate = (data: {
+  firstName: string;
+  campaignName: string;
+  category: string;
+  currency: string;
+  targetAmount?: number | null;
+  endDate?: string | null;
+  description?: string | null;
+  churchName?: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>New Giving Campaign</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>A new giving campaign has been created${data.churchName ? ` for ${data.churchName}` : ''}.</p>
+
+      <div class="info-box">
+        <h3>${data.campaignName}</h3>
+        <p><strong>Category:</strong> ${data.category.replace('_', ' ')}</p>
+        ${data.targetAmount ? `<p><strong>Target:</strong> ${data.currency} ${data.targetAmount.toLocaleString()}</p>` : ''}
+        ${data.endDate ? `<p><strong>End Date:</strong> ${data.endDate}</p>` : ''}
+        ${data.description ? `<p style="white-space: pre-wrap;">${data.description.substring(0, 240)}${data.description.length > 240 ? '...' : ''}</p>` : ''}
+      </div>
+
+      <a href="${FRONTEND_URL}/dashboard/giving" class="button">View Giving Campaign</a>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const announcementCreatedTemplate = (data: {
+  firstName: string;
+  title: string;
+  content: string;
+  type: string;
+  priority: string;
+  churchName?: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>${data.priority === 'urgent' ? 'Urgent ' : ''}${data.type === 'newsletter' ? 'Newsletter' : data.type === 'prayer_request' ? 'Prayer Request' : 'Announcement'}</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>A new church post has been shared${data.churchName ? ` by ${data.churchName}` : ''}.</p>
+
+      <div class="info-box">
+        <h3>${data.title}</h3>
+        <p style="white-space: pre-wrap;">${data.content.substring(0, 300)}${data.content.length > 300 ? '...' : ''}</p>
+      </div>
+
+      <a href="${FRONTEND_URL}/dashboard/communication" class="button">View Post</a>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>
