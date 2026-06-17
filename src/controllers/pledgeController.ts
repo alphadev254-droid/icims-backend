@@ -28,6 +28,17 @@ function buildOrderBy(sortBy: string): object | object[] {
   }
 }
 
+function isBeforeToday(value: string): boolean {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return true;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
+
+  return date < today;
+}
+
 // ─── Recalculate pledge status ────────────────────────────────────────────────
 
 /** Recalculate and persist pledge status after a payment is linked */
@@ -100,6 +111,11 @@ export async function createPledge(req: Request, res: Response): Promise<void> {
   }
 
   const { campaignId, pledgedAmount, fulfillmentDeadline, notes, pledgerName, pledgerEmail, pledgerPhone, onBehalfOfUserId } = parsed.data;
+
+  if (fulfillmentDeadline && isBeforeToday(fulfillmentDeadline)) {
+    res.status(400).json({ success: false, message: 'Fulfillment deadline cannot be before today' });
+    return;
+  }
 
   const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
   if (!campaign) {
@@ -437,6 +453,11 @@ export async function updatePledge(req: Request, res: Response): Promise<void> {
       success: false,
       message: `Pledge amount cannot be less than the amount already paid (${existing.currency} ${existing.amountPaid.toLocaleString()})`,
     });
+    return;
+  }
+
+  if (parsed.data.fulfillmentDeadline && isBeforeToday(parsed.data.fulfillmentDeadline)) {
+    res.status(400).json({ success: false, message: 'Fulfillment deadline cannot be before today' });
     return;
   }
 
