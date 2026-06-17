@@ -27,6 +27,7 @@ router.get('/donations/:id/transaction', authenticate, authorizePermission('dona
 router.post('/pledges', authenticate, pledgeController.createPledge);
 router.get('/pledges/my', authenticate, pledgeController.getMyPledges);
 router.get('/pledges', authenticate, authorizePermission('donations:read'), pledgeController.getMinistryPledges);
+router.put('/pledges/:id', authenticate, pledgeController.updatePledge);
 router.get('/pledges/:id', authenticate, pledgeController.getPledge);
 
 export default router;

@@ -71,6 +71,12 @@ const createPledgeSchema = z.object({
   onBehalfOfUserId: z.string().optional(),
 });
 
+const updatePledgeSchema = z.object({
+  pledgedAmount: z.number().positive('Pledge amount must be greater than 0').optional(),
+  fulfillmentDeadline: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+});
+
 // ─── Create Pledge ────────────────────────────────────────────────────────────
 
 export async function createPledge(req: Request, res: Response): Promise<void> {
@@ -362,4 +368,107 @@ export async function getPledge(req: Request, res: Response): Promise<void> {
   }
 
   res.json({ success: true, data: pledge });
+}
+
+// ─── Update pledge ─────────────────────────────────────────────────────────────
+
+export async function updatePledge(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const roleName = req.user?.role;
+  const { id } = req.params;
+
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const parsed = updatePledgeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const existing = await prisma.pledge.findUnique({
+    where: { id: String(id) },
+    include: {
+      campaign: { select: { id: true, name: true, category: true, currency: true, status: true, allowPledging: true } },
+      church: { select: { name: true } },
+      user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+      payments: {
+        where: { status: 'completed' },
+        select: { id: true, amount: true, currency: true, createdAt: true, paymentMethod: true, reference: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+  });
+
+  if (!existing) {
+    res.status(404).json({ success: false, message: 'Pledge not found' });
+    return;
+  }
+
+  if (roleName === 'member') {
+    if (existing.userId !== userId) {
+      res.status(403).json({ success: false, message: 'Access denied' });
+      return;
+    }
+  } else {
+    const accessibleChurchIds = await getAccessibleChurchIds(
+      roleName!,
+      req.user?.churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId
+    );
+    if (!accessibleChurchIds.includes(existing.churchId)) {
+      res.status(403).json({ success: false, message: 'Access denied' });
+      return;
+    }
+  }
+
+  if (existing.status === 'fulfilled') {
+    res.status(400).json({ success: false, message: 'Fulfilled pledges cannot be edited' });
+    return;
+  }
+
+  if (parsed.data.pledgedAmount !== undefined && parsed.data.pledgedAmount < existing.amountPaid) {
+    res.status(400).json({
+      success: false,
+      message: `Pledge amount cannot be less than the amount already paid (${existing.currency} ${existing.amountPaid.toLocaleString()})`,
+    });
+    return;
+  }
+
+  await prisma.pledge.update({
+    where: { id: String(id) },
+    data: {
+      pledgedAmount: parsed.data.pledgedAmount,
+      fulfillmentDeadline:
+        parsed.data.fulfillmentDeadline === undefined
+          ? undefined
+          : parsed.data.fulfillmentDeadline
+            ? new Date(parsed.data.fulfillmentDeadline)
+            : null,
+      notes: parsed.data.notes === undefined ? undefined : (parsed.data.notes || null),
+    },
+  });
+
+  await recalculatePledgeStatus(String(id));
+
+  const updated = await prisma.pledge.findUnique({
+    where: { id: String(id) },
+    include: {
+      campaign: { select: { id: true, name: true, category: true, currency: true, status: true, allowPledging: true } },
+      church: { select: { name: true } },
+      user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+      payments: {
+        where: { status: 'completed' },
+        select: { id: true, amount: true, currency: true, createdAt: true, paymentMethod: true, reference: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+  });
+
+  res.json({ success: true, data: updated });
 }
