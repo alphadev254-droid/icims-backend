@@ -53,10 +53,19 @@ function childInclude() {
   };
 }
 
-async function ensureChildInScope(childId: string, churchIds: string[]): Promise<any | false | null> {
+function isMemberRequest(req: Request): boolean {
+  return req.user?.role === 'member';
+}
+
+function isLinkedToCurrentMember(child: any, userId?: string): boolean {
+  return !!userId && child.guardians?.some((link: any) => link.guardianId === userId);
+}
+
+async function ensureChildInScope(childId: string, churchIds: string[], req?: Request): Promise<any | false | null> {
   const child = await prisma.child.findUnique({ where: { id: childId }, include: childInclude() });
   if (!child) return null;
   if (!churchIds.includes(child.churchId)) return false;
+  if (req && isMemberRequest(req) && !isLinkedToCurrentMember(child, req.user?.userId)) return false;
   return child;
 }
 
@@ -105,6 +114,12 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
     ...(unlinked ? { guardians: { none: {} } } : {}),
   };
 
+  if (isMemberRequest(req)) {
+    where.guardians = { some: { guardianId: req.user?.userId } };
+    delete where.guardianId;
+    delete where.unlinked;
+  }
+
   const [children, total] = await Promise.all([
     prisma.child.findMany({
       where,
@@ -120,7 +135,7 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
 }
 
 export async function getChild(req: Request, res: Response): Promise<void> {
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req));
+  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
   res.json({ success: true, data: child });
@@ -131,19 +146,21 @@ export async function createChild(req: Request, res: Response): Promise<void> {
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const scope = await getScope(req);
-  if (!scope.includes(parsed.data.churchId)) {
+  const churchId = isMemberRequest(req) ? req.user?.churchId : parsed.data.churchId;
+  if (!churchId || !scope.includes(churchId)) {
     res.status(403).json({ success: false, message: 'Access denied to this church' });
     return;
   }
 
-  if (parsed.data.guardianId && !(await ensureGuardianInChurch(parsed.data.guardianId, parsed.data.churchId))) {
+  const guardianId = isMemberRequest(req) ? req.user?.userId : parsed.data.guardianId;
+  if (guardianId && !(await ensureGuardianInChurch(guardianId, churchId))) {
     res.status(400).json({ success: false, message: 'Guardian must belong to the same church as the child' });
     return;
   }
 
   const child = await prisma.child.create({
     data: {
-      churchId: parsed.data.churchId,
+      churchId,
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
       dateOfBirth: parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : null,
@@ -153,10 +170,10 @@ export async function createChild(req: Request, res: Response): Promise<void> {
       status: parsed.data.status ?? 'active',
       notes: parsed.data.notes || null,
       createdById: req.user?.userId,
-      ...(parsed.data.guardianId ? {
+      ...(guardianId ? {
         guardians: {
           create: {
-            guardianId: parsed.data.guardianId,
+            guardianId,
             relationship: parsed.data.relationship || 'guardian',
             isPrimary: parsed.data.isPrimary ?? true,
             canPickup: parsed.data.canPickup ?? true,
@@ -175,7 +192,7 @@ export async function updateChild(req: Request, res: Response): Promise<void> {
   const parsed = childUpdateSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req));
+  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
@@ -198,7 +215,7 @@ export async function updateChild(req: Request, res: Response): Promise<void> {
 }
 
 export async function deleteChild(req: Request, res: Response): Promise<void> {
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req));
+  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
@@ -210,9 +227,14 @@ export async function linkGuardian(req: Request, res: Response): Promise<void> {
   const parsed = guardianSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req));
+  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
+
+  if (isMemberRequest(req) && parsed.data.guardianId !== req.user?.userId) {
+    res.status(403).json({ success: false, message: 'Members can only link themselves as guardian' });
+    return;
+  }
 
   if (!(await ensureGuardianInChurch(parsed.data.guardianId, child.churchId))) {
     res.status(400).json({ success: false, message: 'Guardian must belong to the same church as the child' });
@@ -240,11 +262,16 @@ export async function updateGuardianLink(req: Request, res: Response): Promise<v
   const parsed = guardianSchema.omit({ guardianId: true }).partial().safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req));
+  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
   const guardianId = String(req.params.guardianId);
+  if (isMemberRequest(req) && guardianId !== req.user?.userId) {
+    res.status(403).json({ success: false, message: 'Members can only update their own guardian link' });
+    return;
+  }
+
   await setPrimaryIfNeeded(child.id, guardianId, parsed.data.isPrimary);
 
   const link = await prisma.childGuardian.update({
@@ -257,9 +284,14 @@ export async function updateGuardianLink(req: Request, res: Response): Promise<v
 }
 
 export async function unlinkGuardian(req: Request, res: Response): Promise<void> {
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req));
+  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
+
+  if (isMemberRequest(req) && String(req.params.guardianId) !== req.user?.userId) {
+    res.status(403).json({ success: false, message: 'Members can only unlink themselves as guardian' });
+    return;
+  }
 
   await prisma.childGuardian.delete({
     where: { childId_guardianId: { childId: child.id, guardianId: String(req.params.guardianId) } },

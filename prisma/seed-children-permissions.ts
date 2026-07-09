@@ -23,11 +23,11 @@ async function main() {
     });
   }
 
-  const ministryAdminRole = await prisma.role.findUnique({
+  const roles = await prisma.role.findMany({
     where: { name: 'ministry_admin' },
   });
 
-  if (!ministryAdminRole) {
+  if (roles.length === 0) {
     console.log('ministry_admin role not found. Permissions were created but not assigned.');
     return;
   }
@@ -36,22 +36,24 @@ async function main() {
     where: { name: { in: CHILDREN_PERMISSIONS.map(permission => permission.name) } },
   });
 
-  for (const permission of permissions) {
-    await prisma.rolePermission.upsert({
-      where: {
-        ministryAdminId_roleId_permissionId: {
+  for (const role of roles) {
+    for (const permission of permissions) {
+      await prisma.rolePermission.upsert({
+        where: {
+          ministryAdminId_roleId_permissionId: {
+            ministryAdminId: 'GLOBAL',
+            roleId: role.id,
+            permissionId: permission.id,
+          },
+        },
+        update: {},
+        create: {
           ministryAdminId: 'GLOBAL',
-          roleId: ministryAdminRole.id,
+          roleId: role.id,
           permissionId: permission.id,
         },
-      },
-      update: {},
-      create: {
-        ministryAdminId: 'GLOBAL',
-        roleId: ministryAdminRole.id,
-        permissionId: permission.id,
-      },
-    });
+      });
+    }
   }
 
   console.log('Children permissions seeded and assigned to ministry_admin.');

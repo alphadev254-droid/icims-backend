@@ -7,26 +7,26 @@ import { hasFeature } from '../lib/packageChecker';
 
 const profileSchema = z.object({
   // Branding
-  logoUrl:      z.string().optional().or(z.literal('')),
-  bannerUrl:    z.string().optional().or(z.literal('')),
-  primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  tagline:      z.string().max(200).optional(),
+  logoUrl:      z.string().nullable().optional().or(z.literal('')),
+  bannerUrl:    z.string().nullable().optional().or(z.literal('')),
+  primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+  tagline:      z.string().max(200).nullable().optional(),
   // About
-  aboutText:    z.string().max(5000).optional(),
-  pastorName:   z.string().max(100).optional(),
-  pastorPhoto:  z.string().optional().or(z.literal('')),
-  pastorBio:    z.string().max(2000).optional(),
-  visionText:   z.string().max(1000).optional(),
-  missionText:  z.string().max(1000).optional(),
+  aboutText:    z.string().max(5000).nullable().optional(),
+  pastorName:   z.string().max(100).nullable().optional(),
+  pastorPhoto:  z.string().nullable().optional().or(z.literal('')),
+  pastorBio:    z.string().max(2000).nullable().optional(),
+  visionText:   z.string().max(1000).nullable().optional(),
+  missionText:  z.string().max(1000).nullable().optional(),
   // Service times — JSON string validated as array
-  serviceTimes: z.string().optional(),
+  serviceTimes: z.string().nullable().optional(),
   // Contact
-  phone:          z.string().max(30).optional(),
-  email:          z.string().email().optional().or(z.literal('')),
-  address:        z.string().max(300).optional(),
-  facebookUrl:    z.string().optional().or(z.literal('')),
-  youtubeUrl:     z.string().optional().or(z.literal('')),
-  whatsappNumber: z.string().max(30).optional(),
+  phone:          z.string().max(30).nullable().optional(),
+  email:          z.string().email().nullable().optional().or(z.literal('')),
+  address:        z.string().max(300).nullable().optional(),
+  facebookUrl:    z.string().nullable().optional().or(z.literal('')),
+  youtubeUrl:     z.string().nullable().optional().or(z.literal('')),
+  whatsappNumber: z.string().max(30).nullable().optional(),
   // Publish
   isPublished: z.boolean().optional(),
 });
