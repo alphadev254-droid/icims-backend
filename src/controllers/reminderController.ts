@@ -417,16 +417,47 @@ export async function getScheduledReminderLogs(req: Request, res: Response): Pro
   }
 
   const churchIds = await getScopedChurchIds(req);
-  const logs = await prisma.scheduledReminderLog.findMany({
-    where: {
-      reminder: { churchId: { in: churchIds } },
-    },
-    include: {
-      reminder: true,
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
-  });
+  const page = Math.max(parseInt(String(req.query.page ?? '1'), 10) || 1, 1);
+  const limit = Math.min(parseInt(String(req.query.limit ?? '25'), 10) || 25, 100);
+  const skip = (page - 1) * limit;
+  const status = typeof req.query.status === 'string' && req.query.status !== 'all' ? req.query.status : undefined;
+  const channel = typeof req.query.channel === 'string' && req.query.channel !== 'all' ? req.query.channel : undefined;
+  const reminderId = typeof req.query.reminderId === 'string' && req.query.reminderId !== 'all' ? req.query.reminderId : undefined;
+  const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
+  const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
 
-  res.json({ success: true, data: logs.map(log => ({ ...log, reminder: serializeScheduledReminder(log.reminder) })) });
+  const scheduledFor: any = {};
+  if (startDate) scheduledFor.gte = new Date(startDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    scheduledFor.lte = end;
+  }
+
+  const where: any = {
+    reminder: { churchId: { in: churchIds } },
+    ...(status ? { status } : {}),
+    ...(channel ? { channel } : {}),
+    ...(reminderId ? { reminderId } : {}),
+    ...(Object.keys(scheduledFor).length ? { scheduledFor } : {}),
+  };
+
+  const [logs, total] = await Promise.all([
+    prisma.scheduledReminderLog.findMany({
+      where,
+      include: {
+        reminder: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.scheduledReminderLog.count({ where }),
+  ]);
+
+  res.json({
+    success: true,
+    data: logs.map(log => ({ ...log, reminder: serializeScheduledReminder(log.reminder) })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
 }
