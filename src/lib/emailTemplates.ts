@@ -773,3 +773,51 @@ export const memberWelcomeTemplate = (data: { firstName: string; lastName: strin
 </body>
 </html>
 `;
+
+export const visitRequestTemplate = (data: {
+  ministryName: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string | null;
+  serviceName?: string | null;
+  notes?: string | null;
+  submittedAt: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.ministryName)}
+    <div class="header">
+      <h1>New Visit Request</h1>
+    </div>
+    <div class="content">
+      <h2>${data.firstName} ${data.lastName} is planning a visit.</h2>
+      <p>A visitor submitted the Plan a Visit form on your public church website.</p>
+
+      <div class="info-box">
+        <h3>Visitor Details</h3>
+        <p><strong>Name:</strong> ${data.firstName} ${data.lastName}</p>
+        <p><strong>Email:</strong> ${data.email}</p>
+        ${data.phone ? `<p><strong>Phone:</strong> ${data.phone}</p>` : ''}
+        ${data.serviceName ? `<p><strong>Service:</strong> ${data.serviceName}</p>` : ''}
+        <p><strong>Submitted:</strong> ${data.submittedAt}</p>
+      </div>
+
+      ${data.notes ? `
+        <div class="info-box" style="background:#f9fafb;">
+          <h3>Notes</h3>
+          <p style="white-space:pre-line;">${data.notes}</p>
+        </div>
+      ` : ''}
+    </div>
+    <div class="footer">
+      <p>This message was sent from the public website contact form for ${data.ministryName}.</p>
+      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;

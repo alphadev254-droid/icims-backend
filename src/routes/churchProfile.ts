@@ -7,17 +7,35 @@ import {
   getMyProfile,
   updateMyProfile,
   getPublicProfile,
+  submitVisitRequest,
+  listWebsiteSermons,
+  createWebsiteSermon,
+  updateWebsiteSermon,
+  deleteWebsiteSermon,
+  listWebsiteMinistries,
+  createWebsiteMinistry,
+  updateWebsiteMinistry,
+  deleteWebsiteMinistry,
 } from '../controllers/churchProfileController';
 import prisma from '../lib/prisma';
 
 const router = Router();
 
 // ─── Public — no auth ─────────────────────────────────────────────────────────
+router.post('/p/:slug/visit', submitVisitRequest);
 router.get('/p/:slug', getPublicProfile);
 
 // ─── Protected — ministry_admin ───────────────────────────────────────────────
 router.get('/church-profile', authenticate, getMyProfile);
 router.put('/church-profile', authenticate, updateMyProfile);
+router.get('/church-profile/sermons', authenticate, listWebsiteSermons);
+router.post('/church-profile/sermons', authenticate, createWebsiteSermon);
+router.put('/church-profile/sermons/:id', authenticate, updateWebsiteSermon);
+router.delete('/church-profile/sermons/:id', authenticate, deleteWebsiteSermon);
+router.get('/church-profile/ministries', authenticate, listWebsiteMinistries);
+router.post('/church-profile/ministries', authenticate, createWebsiteMinistry);
+router.put('/church-profile/ministries/:id', authenticate, updateWebsiteMinistry);
+router.delete('/church-profile/ministries/:id', authenticate, deleteWebsiteMinistry);
 
 // Upload logo
 router.post(

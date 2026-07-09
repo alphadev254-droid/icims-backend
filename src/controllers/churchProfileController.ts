@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hasFeature } from '../lib/packageChecker';
+import { queueEmail } from '../lib/emailQueue';
+import { visitRequestTemplate } from '../lib/emailTemplates';
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,36 @@ const profileSchema = z.object({
   isPublished: z.boolean().optional(),
 });
 
+const sermonSchema = z.object({
+  title: z.string().trim().min(1, 'Title is required').max(150),
+  youtubeUrl: z.string().trim().url('Enter a valid YouTube URL'),
+  speaker: z.string().trim().max(100).nullable().optional().or(z.literal('')),
+  series: z.string().trim().max(100).nullable().optional().or(z.literal('')),
+  duration: z.string().trim().max(50).nullable().optional().or(z.literal('')),
+  sermonDate: z.string().nullable().optional().or(z.literal('')),
+  description: z.string().trim().max(2000).nullable().optional().or(z.literal('')),
+  isActive: z.boolean().optional(),
+  sortOrder: z.coerce.number().int().min(0).optional(),
+});
+
+const ministrySchema = z.object({
+  name: z.string().trim().min(1, 'Name is required').max(120),
+  description: z.string().trim().min(1, 'Description is required').max(2000),
+  imageUrl: z.string().trim().max(500).nullable().optional().or(z.literal('')),
+  icon: z.string().trim().max(50).nullable().optional().or(z.literal('')),
+  isActive: z.boolean().optional(),
+  sortOrder: z.coerce.number().int().min(0).optional(),
+});
+
+const visitRequestSchema = z.object({
+  firstName: z.string().trim().min(1, 'First name is required').max(80),
+  lastName: z.string().trim().min(1, 'Last name is required').max(80),
+  email: z.string().trim().email('Valid email is required').max(150),
+  phone: z.string().trim().max(40).nullable().optional().or(z.literal('')),
+  serviceName: z.string().trim().max(120).nullable().optional().or(z.literal('')),
+  notes: z.string().trim().max(1500).nullable().optional().or(z.literal('')),
+});
+
 // Fields that require the church_website package feature
 const GATED_FIELDS = [
   'logoUrl', 'bannerUrl', 'primaryColor', 'tagline',
@@ -38,6 +70,23 @@ const GATED_FIELDS = [
   'serviceTimes',
   'phone', 'email', 'address', 'facebookUrl', 'youtubeUrl', 'whatsappNumber',
 ];
+
+function getManagedMinistryAdminId(req: Request): string | null {
+  const authUser = req.user as any;
+  if (!authUser?.userId) return null;
+  return authUser.ministryAdminId || authUser.userId;
+}
+
+function normalizeOptionalString(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function parseOptionalDate(value?: string | null): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 // ─── GET /api/church-profile ──────────────────────────────────────────────────
 
@@ -105,6 +154,253 @@ export async function updateMyProfile(req: Request, res: Response): Promise<void
   res.json({ success: true, data: profile });
 }
 
+export async function listWebsiteSermons(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const sermons = await prisma.churchSermon.findMany({
+    where: { ministryAdminId },
+    orderBy: [{ sortOrder: 'asc' }, { sermonDate: 'desc' }, { createdAt: 'desc' }],
+  });
+
+  res.json({ success: true, data: sermons });
+}
+
+export async function createWebsiteSermon(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const parsed = sermonSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const data = parsed.data;
+  const sermon = await prisma.churchSermon.create({
+    data: {
+      ministryAdminId,
+      title: data.title,
+      youtubeUrl: data.youtubeUrl,
+      speaker: normalizeOptionalString(data.speaker),
+      series: normalizeOptionalString(data.series),
+      duration: normalizeOptionalString(data.duration),
+      sermonDate: parseOptionalDate(data.sermonDate),
+      description: normalizeOptionalString(data.description),
+      isActive: data.isActive ?? true,
+      sortOrder: data.sortOrder ?? 0,
+    },
+  });
+
+  res.status(201).json({ success: true, data: sermon });
+}
+
+export async function updateWebsiteSermon(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+  const sermonId = String(req.params.id);
+
+  const parsed = sermonSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const existing = await prisma.churchSermon.findFirst({
+    where: { id: sermonId, ministryAdminId },
+    select: { id: true },
+  });
+  if (!existing) { res.status(404).json({ success: false, message: 'Sermon not found' }); return; }
+
+  const data = parsed.data;
+  const sermon = await prisma.churchSermon.update({
+    where: { id: existing.id },
+    data: {
+      title: data.title,
+      youtubeUrl: data.youtubeUrl,
+      speaker: normalizeOptionalString(data.speaker),
+      series: normalizeOptionalString(data.series),
+      duration: normalizeOptionalString(data.duration),
+      sermonDate: parseOptionalDate(data.sermonDate),
+      description: normalizeOptionalString(data.description),
+      isActive: data.isActive ?? true,
+      sortOrder: data.sortOrder ?? 0,
+    },
+  });
+
+  res.json({ success: true, data: sermon });
+}
+
+export async function deleteWebsiteSermon(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+  const sermonId = String(req.params.id);
+
+  const existing = await prisma.churchSermon.findFirst({
+    where: { id: sermonId, ministryAdminId },
+    select: { id: true },
+  });
+  if (!existing) { res.status(404).json({ success: false, message: 'Sermon not found' }); return; }
+
+  await prisma.churchSermon.delete({ where: { id: existing.id } });
+  res.json({ success: true });
+}
+
+export async function listWebsiteMinistries(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const ministries = await prisma.churchMinistry.findMany({
+    where: { ministryAdminId },
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+  });
+
+  res.json({ success: true, data: ministries });
+}
+
+export async function createWebsiteMinistry(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const parsed = ministrySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const data = parsed.data;
+  const ministry = await prisma.churchMinistry.create({
+    data: {
+      ministryAdminId,
+      name: data.name,
+      description: data.description,
+      imageUrl: normalizeOptionalString(data.imageUrl),
+      icon: normalizeOptionalString(data.icon),
+      isActive: data.isActive ?? true,
+      sortOrder: data.sortOrder ?? 0,
+    },
+  });
+
+  res.status(201).json({ success: true, data: ministry });
+}
+
+export async function updateWebsiteMinistry(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+  const ministryId = String(req.params.id);
+
+  const parsed = ministrySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const existing = await prisma.churchMinistry.findFirst({
+    where: { id: ministryId, ministryAdminId },
+    select: { id: true },
+  });
+  if (!existing) { res.status(404).json({ success: false, message: 'Ministry not found' }); return; }
+
+  const data = parsed.data;
+  const ministry = await prisma.churchMinistry.update({
+    where: { id: existing.id },
+    data: {
+      name: data.name,
+      description: data.description,
+      imageUrl: normalizeOptionalString(data.imageUrl),
+      icon: normalizeOptionalString(data.icon),
+      isActive: data.isActive ?? true,
+      sortOrder: data.sortOrder ?? 0,
+    },
+  });
+
+  res.json({ success: true, data: ministry });
+}
+
+export async function deleteWebsiteMinistry(req: Request, res: Response): Promise<void> {
+  const ministryAdminId = getManagedMinistryAdminId(req);
+  if (!ministryAdminId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+  const ministryId = String(req.params.id);
+
+  const existing = await prisma.churchMinistry.findFirst({
+    where: { id: ministryId, ministryAdminId },
+    select: { id: true },
+  });
+  if (!existing) { res.status(404).json({ success: false, message: 'Ministry not found' }); return; }
+
+  await prisma.churchMinistry.delete({ where: { id: existing.id } });
+  res.json({ success: true });
+}
+
+export async function submitVisitRequest(req: Request, res: Response): Promise<void> {
+  const { slug } = req.params;
+  const parsed = visitRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const slugStr = String(slug || '');
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { subdomain: slugStr },
+        { subdomain: { startsWith: `${slugStr}.` } },
+      ],
+    },
+    select: { id: true, email: true, ministryName: true, firstName: true, lastName: true },
+  });
+
+  if (!user) {
+    res.status(404).json({ success: false, message: 'Church not found' });
+    return;
+  }
+
+  const profile = await prisma.churchProfile.findUnique({
+    where: { ministryAdminId: user.id },
+    select: { email: true, isPublished: true },
+  });
+
+  if (!profile?.isPublished) {
+    res.status(404).json({ success: false, message: 'This church page is not published yet' });
+    return;
+  }
+
+  const data = parsed.data;
+  const visitRequest = await prisma.visitRequest.create({
+    data: {
+      ministryAdminId: user.id,
+      firstName: data.firstName,
+      lastName: data.lastName,
+      email: data.email,
+      phone: normalizeOptionalString(data.phone),
+      serviceName: normalizeOptionalString(data.serviceName),
+      notes: normalizeOptionalString(data.notes),
+      sourceSlug: slugStr,
+    },
+  });
+
+  const ministryName = user.ministryName ?? `${user.firstName} ${user.lastName}`;
+  const recipient = profile.email || user.email;
+  await queueEmail(
+    recipient,
+    `New visit request - ${ministryName}`,
+    visitRequestTemplate({
+      ministryName,
+      firstName: visitRequest.firstName,
+      lastName: visitRequest.lastName,
+      email: visitRequest.email,
+      phone: visitRequest.phone,
+      serviceName: visitRequest.serviceName,
+      notes: visitRequest.notes,
+      submittedAt: visitRequest.createdAt.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }),
+    }),
+    'visit_request'
+  );
+
+  res.status(201).json({ success: true, message: 'Visit request received' });
+}
+
 // ─── GET /api/p/:slug — fully public, no auth ─────────────────────────────────
 
 export async function getPublicProfile(req: Request, res: Response): Promise<void> {
@@ -150,6 +446,19 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   }) as Array<{ id: string; name: string; address?: string | null; latitude?: number | null; longitude?: number | null }>;
   const churchIds = churches.map(c => c.id);
 
+  const [sermons, ministries] = await Promise.all([
+    prisma.churchSermon.findMany({
+      where: { ministryAdminId: user.id, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { sermonDate: 'desc' }, { createdAt: 'desc' }],
+      take: 6,
+    }),
+    prisma.churchMinistry.findMany({
+      where: { ministryAdminId: user.id, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+      take: 8,
+    }),
+  ]);
+
   // If no churches, return empty events/campaigns — don't risk a full-table scan
   if (churchIds.length === 0) {
     res.json({
@@ -160,6 +469,8 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
         events: [],
         campaigns: [],
         churches: [],
+        sermons,
+        ministries,
       },
     });
     return;
@@ -169,9 +480,12 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   const events = await prisma.event.findMany({
     where: {
       churchId: { in: churchIds },
-      allowPublicTicketing: true,
       status: 'upcoming',
       date: { gte: new Date() },
+      OR: [
+        { allowPublicTicketing: true },
+        { requiresTicket: false },
+      ],
     },
     select: {
       id: true, title: true, description: true, date: true, endDate: true,
@@ -207,6 +521,8 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
       churches,
       events,
       campaigns,
+      sermons,
+      ministries,
     },
   });
 }

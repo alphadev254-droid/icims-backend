@@ -1223,3 +1223,55 @@ model ChurchProfile {
 
   @@map("church_profiles")
 }
+
+model ChurchSermon {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  title           String
+  speaker         String?
+  youtubeUrl      String
+  series          String?
+  duration        String?
+  sermonDate      DateTime?
+  description     String?  @db.Text
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([ministryAdminId, isActive, sortOrder])
+  @@map("church_sermons")
+}
+
+model ChurchMinistry {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  name            String
+  description     String   @db.Text
+  imageUrl        String?
+  icon            String?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([ministryAdminId, isActive, sortOrder])
+  @@map("church_ministries")
+}
+
+model VisitRequest {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  firstName       String
+  lastName        String
+  email           String
+  phone           String?
+  serviceName     String?
+  notes           String?  @db.Text
+  sourceSlug      String?
+  status          String   @default("new")
+  createdAt       DateTime @default(now())
+
+  @@index([ministryAdminId, createdAt])
+  @@map("visit_requests")
+}
