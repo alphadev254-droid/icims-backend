@@ -1,5 +1,15 @@
 import prisma from './prisma';
 
+function parseList(value?: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Returns churchIds accessible to a user based on their role + location scope.
  *
@@ -33,12 +43,73 @@ export async function getAccessibleChurchIds(
 
   // Get ministryAdminId for non-ministry_admin roles
   let ministryAdminId: string | null = null;
+  let customRoleScope: any = null;
   if (userId) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { ministryAdminId: true },
+      select: {
+        ministryAdminId: true,
+        role: { include: { scope: true } },
+      },
     });
     ministryAdminId = user?.ministryAdminId || null;
+    if (user?.role?.ministryAdminId && user.role.scope) {
+      customRoleScope = user.role.scope;
+    }
+  }
+
+  if (customRoleScope && ministryAdminId) {
+    if (customRoleScope.scopeType === 'own_church') {
+      return churchId ? [churchId] : [];
+    }
+
+    if (customRoleScope.scopeType === 'all_ministry') {
+      const churches = await prisma.church.findMany({
+        where: { ministryAdminId },
+        select: { id: true },
+      });
+      return churches.map(c => c.id);
+    }
+
+    if (customRoleScope.scopeType === 'specific_churches') {
+      const ids = parseList(customRoleScope.churchIds);
+      if (ids.length === 0) return [];
+      const churches = await prisma.church.findMany({
+        where: { id: { in: ids }, ministryAdminId },
+        select: { id: true },
+      });
+      return churches.map(c => c.id);
+    }
+
+    if (customRoleScope.scopeType === 'regions') {
+      const values = parseList(customRoleScope.regions);
+      if (values.length === 0) return [];
+      const churches = await prisma.church.findMany({
+        where: { ministryAdminId, region: { in: values } },
+        select: { id: true },
+      });
+      return churches.map(c => c.id);
+    }
+
+    if (customRoleScope.scopeType === 'districts') {
+      const values = parseList(customRoleScope.districts);
+      if (values.length === 0) return [];
+      const churches = await prisma.church.findMany({
+        where: { ministryAdminId, district: { in: values } },
+        select: { id: true },
+      });
+      return churches.map(c => c.id);
+    }
+
+    if (customRoleScope.scopeType === 'traditional_authorities') {
+      const values = parseList(customRoleScope.traditionalAuthorities);
+      if (values.length === 0) return [];
+      const churches = await prisma.church.findMany({
+        where: { ministryAdminId, traditionalAuthority: { in: values } },
+        select: { id: true },
+      });
+      return churches.map(c => c.id);
+    }
   }
 
   if (roleName === 'regional_admin') {

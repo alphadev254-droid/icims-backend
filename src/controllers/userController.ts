@@ -9,6 +9,9 @@ const USER_INCLUDE = {
   church: true,
 } as const;
 
+const ASSIGNABLE_SYSTEM_ROLES = ['member', 'regional_admin', 'district_admin', 'branch_admin'];
+const SCOPED_SYSTEM_ROLES = ['regional_admin', 'district_admin', 'branch_admin'];
+
 function safeUser(user: any) {
   const { password: _pw, ...rest } = user;
   // Parse JSON scope fields for frontend
@@ -19,6 +22,57 @@ function safeUser(user: any) {
     traditionalAuthorities: rest.traditionalAuthorities ? JSON.parse(rest.traditionalAuthorities) : undefined,
     regions: rest.regions ? JSON.parse(rest.regions) : undefined,
   };
+}
+
+async function resolveCallerMinistryAdminId(userId: string, role: string): Promise<string | null> {
+  if (role === 'ministry_admin') return userId;
+
+  const caller = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { ministryAdminId: true },
+  });
+
+  return caller?.ministryAdminId ?? null;
+}
+
+async function resolveAssignableRole(roleName: string, userId: string, role: string) {
+  if (roleName === 'ministry_admin') {
+    return {
+      errorStatus: 403,
+      errorMessage: 'National admin role can only be assigned during initial signup. Please contact support.',
+    } as const;
+  }
+
+  if (role !== 'ministry_admin' && roleName !== 'member') {
+    return {
+      errorStatus: 403,
+      errorMessage: 'Only national administrators can assign administrative roles. You can only assign member role.',
+    } as const;
+  }
+
+  const ministryAdminId = await resolveCallerMinistryAdminId(userId, role);
+  const roleRecord = await prisma.role.findFirst({
+    where: {
+      name: roleName,
+      OR: [
+        { name: { in: ASSIGNABLE_SYSTEM_ROLES } },
+        ...(ministryAdminId ? [{ ministryAdminId, isSystemRole: false }] : []),
+      ],
+    },
+  });
+
+  if (!roleRecord) {
+    return {
+      errorStatus: 404,
+      errorMessage: `Role '${roleName}' not found or cannot be assigned`,
+    } as const;
+  }
+
+  return { roleRecord, ministryAdminId } as const;
+}
+
+function roleNeedsMinistryAdminId(roleRecord: { name: string; ministryAdminId?: string | null; isSystemRole?: boolean | null }) {
+  return SCOPED_SYSTEM_ROLES.includes(roleRecord.name) || (!!roleRecord.ministryAdminId && roleRecord.isSystemRole === false);
 }
 
 // ─── GET /api/users ────────────────────────────────────────────────────────────
@@ -257,38 +311,18 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
 
-  // Role restrictions: only ministry_admin can create users with roles other than 'member'
-  // Additionally, prevent creation of ministry_admin role (only available at signup)
-  if (roleName === 'ministry_admin') {
-    res.status(403).json({ 
-      success: false, 
-      message: 'National admin role can only be assigned during initial signup. Please contact support.' 
-    });
-    return;
-  }
-  
-  if (role !== 'ministry_admin' && roleName !== 'member') {
-    res.status(403).json({ 
-      success: false, 
-      message: 'Only national administrators can create users with administrative roles. You can only create members.' 
-    });
-    return;
-  }
-
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     res.status(409).json({ success: false, message: 'Email already in use' });
     return;
   }
 
-  // Find the global role
-  const roleRecord = await prisma.role.findUnique({
-    where: { name: roleName },
-  });
-  if (!roleRecord) {
-    res.status(404).json({ success: false, message: `Role '${roleName}' not found` });
+  const roleResolution = await resolveAssignableRole(roleName, userId, role);
+  if ('errorMessage' in roleResolution) {
+    res.status(roleResolution.errorStatus).json({ success: false, message: roleResolution.errorMessage });
     return;
   }
+  const { roleRecord, ministryAdminId } = roleResolution;
 
   // Determine churchId based on user's role and the new user's role
   let assignedChurchId: string | null = null;
@@ -384,22 +418,9 @@ export async function createUser(req: Request, res: Response): Promise<void> {
   // Determine ministryAdminId for the new user
   let ministryAdminIdForNewUser: string | undefined;
   if (roleName === 'member') {
-    // Members inherit ministryAdminId from creator
-    if (role === 'ministry_admin') {
-      ministryAdminIdForNewUser = userId;
-    } else {
-      // Creator is district_admin or branch_admin, use their ministryAdminId
-      const creator = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
-      ministryAdminIdForNewUser = creator?.ministryAdminId || undefined;
-    }
-  } else if (roleName === 'district_admin' || roleName === 'branch_admin' || roleName === 'regional_admin') {
-    // Always point to the top-level ministry admin
-    if (role === 'ministry_admin') {
-      ministryAdminIdForNewUser = userId;
-    } else {
-      const caller = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
-      ministryAdminIdForNewUser = caller?.ministryAdminId || undefined;
-    }
+    ministryAdminIdForNewUser = ministryAdminId ?? undefined;
+  } else if (roleNeedsMinistryAdminId(roleRecord)) {
+    ministryAdminIdForNewUser = ministryAdminId ?? undefined;
   }
   
   const user = await prisma.user.create({
@@ -501,24 +522,6 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
 
   const { firstName, lastName, phone, email, password, roleName, districts, traditionalAuthorities, regions, churchId, membershipType, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, serviceInterest, baptizedByImmersion, status } = parsed.data;
   
-  // Role restrictions: only ministry_admin can assign roles other than 'member'
-  // Additionally, prevent assignment of ministry_admin role (only available at signup)
-  if (roleName === 'ministry_admin') {
-    res.status(403).json({ 
-      success: false, 
-      message: 'National admin role can only be assigned during initial signup. Please contact support.' 
-    });
-    return;
-  }
-  
-  if (roleName && role !== 'ministry_admin' && roleName !== 'member') {
-    res.status(403).json({ 
-      success: false, 
-      message: 'Only national administrators can assign administrative roles. You can only assign member role.' 
-    });
-    return;
-  }
-
   const updateData: Record<string, unknown> = {};
   if (firstName) updateData.firstName = firstName;
   if (lastName) updateData.lastName = lastName;
@@ -540,35 +543,20 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   if (regions !== undefined) updateData.regions = JSON.stringify(regions);
 
   if (roleName) {
-    const roleRecord = await prisma.role.findUnique({ where: { name: roleName } });
-    if (!roleRecord) {
-      res.status(404).json({ success: false, message: `Role '${roleName}' not found` });
+    const roleResolution = await resolveAssignableRole(roleName, userId, role);
+    if ('errorMessage' in roleResolution) {
+      res.status(roleResolution.errorStatus).json({ success: false, message: roleResolution.errorMessage });
       return;
     }
+    const { roleRecord, ministryAdminId } = roleResolution;
     updateData.roleId = roleRecord.id;
 
-    // When assigning an admin role (district/branch/regional), set ministryAdminId
-    // so the user inherits the correct subscription and permissions.
-    const adminRoles = ['district_admin', 'branch_admin', 'regional_admin'];
-    if (adminRoles.includes(roleName)) {
-      // Resolve the ministry admin ID:
-      // - If the caller is ministry_admin → use their own ID
-      // - If the caller is a sub-admin → use their ministryAdminId
-      if (role === 'ministry_admin') {
-        updateData.ministryAdminId = userId;
-      } else {
-        const caller = await prisma.user.findUnique({
-          where: { id: userId },
-          select: { ministryAdminId: true },
-        });
-        updateData.ministryAdminId = caller?.ministryAdminId ?? null;
-      }
-      // Admin roles don't belong to a specific church
+    if (roleNeedsMinistryAdminId(roleRecord)) {
+      updateData.ministryAdminId = ministryAdminId;
       updateData.churchId = null;
       updateData.membershipType = null;
     } else if (roleName === 'member') {
-      // Members don't have a ministryAdminId directly
-      updateData.ministryAdminId = null;
+      updateData.ministryAdminId = ministryAdminId;
     }
 
     // Clear scope fields when role changes (let caller re-supply if needed)
@@ -673,25 +661,22 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
         continue;
       }
 
-      // Find role
-      const roleRecord = await prisma.role.findUnique({ where: { name: roleName } });
-      if (!roleRecord) {
+      const roleResolution = await resolveAssignableRole(roleName, userId, role);
+      if ('errorMessage' in roleResolution) {
         results.failed++;
-        results.errors.push({ email, error: `Role '${roleName}' not found` });
+        results.errors.push({ email, error: roleResolution.errorMessage });
         continue;
       }
+      const { roleRecord, ministryAdminId } = roleResolution;
 
       const hashed = await hashPassword(password);
       
       // Determine ministryAdminId
       let ministryAdminIdForNewUser: string | undefined;
       if (roleName === 'member') {
-        if (role === 'ministry_admin') {
-          ministryAdminIdForNewUser = userId;
-        } else {
-          const creator = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
-          ministryAdminIdForNewUser = creator?.ministryAdminId || undefined;
-        }
+        ministryAdminIdForNewUser = ministryAdminId ?? undefined;
+      } else if (roleNeedsMinistryAdminId(roleRecord)) {
+        ministryAdminIdForNewUser = ministryAdminId ?? undefined;
       }
 
       await prisma.user.create({

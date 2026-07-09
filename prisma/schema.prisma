@@ -26,12 +26,36 @@ model Role {
   id          String   @id @default(cuid())
   name        String   @unique    // 'national_admin' | 'regional_leader' etc.
   displayName String              // 'National Administrator'
+  description String?
+  ministryAdminId String?
+  isSystemRole Boolean @default(true)
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
 
   permissions RolePermission[]
+  scope       RoleScope?
   users       User[]
 
+  @@index([ministryAdminId])
   @@map("roles")
+}
+
+model RoleScope {
+  id                     String   @id @default(cuid())
+  roleId                 String   @unique
+  ministryAdminId        String
+  scopeType              String   @default("specific_churches")
+  churchIds              String?  @db.Text
+  regions                String?  @db.Text
+  districts              String?  @db.Text
+  traditionalAuthorities String?  @db.Text
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @default(now()) @updatedAt
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([ministryAdminId])
+  @@map("role_scopes")
 }
 
 // ─── Role ↔ Permission junction ────────────────────────────────────────────────
