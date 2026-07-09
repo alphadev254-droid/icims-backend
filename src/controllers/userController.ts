@@ -319,7 +319,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const roleResolution = await resolveAssignableRole(roleName, userId, role);
   if ('errorMessage' in roleResolution) {
-    res.status(roleResolution.errorStatus).json({ success: false, message: roleResolution.errorMessage });
+    res.status(roleResolution.errorStatus ?? 400).json({ success: false, message: roleResolution.errorMessage });
     return;
   }
   const { roleRecord, ministryAdminId } = roleResolution;
@@ -545,7 +545,7 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   if (roleName) {
     const roleResolution = await resolveAssignableRole(roleName, userId, role);
     if ('errorMessage' in roleResolution) {
-      res.status(roleResolution.errorStatus).json({ success: false, message: roleResolution.errorMessage });
+      res.status(roleResolution.errorStatus ?? 400).json({ success: false, message: roleResolution.errorMessage });
       return;
     }
     const { roleRecord, ministryAdminId } = roleResolution;
