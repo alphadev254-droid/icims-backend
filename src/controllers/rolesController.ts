@@ -113,6 +113,24 @@ async function ensureCustomRoleForMinistry(roleId: string, ministryAdminId: stri
   return prisma.role.findFirst({ where: { id: roleId, ministryAdminId, isSystemRole: false } });
 }
 
+async function countUsersForRoleInMinistry(roleId: string, ministryAdminId: string | null, roleName: string): Promise<number> {
+  if (!ministryAdminId) {
+    return prisma.user.count({ where: { roleId } });
+  }
+
+  return prisma.user.count({
+    where: {
+      roleId,
+      OR: [
+        { id: ministryAdminId },
+        { ministryAdminId },
+        { church: { ministryAdminId } },
+      ],
+      ...(roleName === 'ministry_admin' ? { id: ministryAdminId } : {}),
+    },
+  });
+}
+
 export async function getRoles(req: Request, res: Response): Promise<void> {
   const ministryAdminId = await resolveMinistryAdminId(req);
   const role = req.user?.role;
@@ -127,7 +145,7 @@ export async function getRoles(req: Request, res: Response): Promise<void> {
             ...(ministryAdminId ? [{ ministryAdminId }] : []),
           ],
         },
-    include: { _count: { select: { users: true } }, scope: true },
+    include: { scope: true },
     orderBy: [{ isSystemRole: 'desc' }, { displayName: 'asc' }],
   });
 
@@ -140,13 +158,14 @@ export async function getRoles(req: Request, res: Response): Promise<void> {
       where: { ministryAdminId: permissionScope, roleId: r.id },
       include: { permission: true },
     });
+    const userCount = await countUsersForRoleInMinistry(r.id, ministryAdminId, r.name);
 
     return {
       id: r.id,
       name: r.name,
       displayName: r.displayName,
       description: r.description,
-      userCount: r._count.users,
+      userCount,
       permissions: perms.map(rp => rp.permission),
       scope: formatScope((r as any).scope),
       createdAt: r.createdAt,
