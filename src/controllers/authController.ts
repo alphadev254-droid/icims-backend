@@ -154,10 +154,12 @@ function parseJson(val: string | null | undefined): string[] | undefined {
 function safeUser(user: any, permissions: string[]): any {
   const { password: _pw, rolePermissions: _rp, ...rest } = user;
   const roleName = user.role?.name || null;
+  const roleDisplayName = user.role?.displayName || roleName;
 
   const base = {
     ...rest,
     roleName,
+    roleDisplayName,
     permissions,
     districts: parseJson(user.districts),
     traditionalAuthorities: parseJson(user.traditionalAuthorities),
