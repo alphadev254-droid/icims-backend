@@ -118,6 +118,8 @@ model User {
   churchProfile         ChurchProfile?
   deviceTokens          DeviceToken[]
   sharedAccessLinks     SharedAccessLink[]
+  childGuardianLinks    ChildGuardian[]
+  createdChildren       Child[] @relation("ChildCreator")
 
   @@index([churchId, roleId, status, createdAt])
   @@index([dateOfBirth])
@@ -185,11 +187,57 @@ model Church {
   cells         Cell[]
   pledges       Pledge[]
   sharedAccessLinks SharedAccessLink[]
+  children      Child[]
 
   @@map("churches")
 }
 
 // ─── Subaccounts ───────────────────────────────────────────────────────────────
+
+model Child {
+  id          String   @id @default(cuid())
+  churchId    String
+  firstName   String
+  lastName    String
+  dateOfBirth DateTime?
+  age         Int?
+  gender      String?
+  phone       String?
+  status      String   @default("active")
+  notes       String?  @db.Text
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  church      Church          @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  createdBy   User?           @relation("ChildCreator", fields: [createdById], references: [id])
+  guardians   ChildGuardian[]
+
+  @@index([churchId])
+  @@index([status])
+  @@index([createdById])
+  @@map("children")
+}
+
+model ChildGuardian {
+  id               String   @id @default(cuid())
+  childId          String
+  guardianId       String
+  relationship     String   @default("guardian")
+  isPrimary        Boolean  @default(false)
+  canPickup        Boolean  @default(true)
+  emergencyContact Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  child            Child    @relation(fields: [childId], references: [id], onDelete: Cascade)
+  guardian         User     @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@unique([childId, guardianId])
+  @@index([guardianId])
+  @@index([childId])
+  @@map("child_guardians")
+}
 
 model Subaccount {
   id               String   @id @default(cuid())

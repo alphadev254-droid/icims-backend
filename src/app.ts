@@ -33,6 +33,7 @@ import cellRoutes from './routes/cells';
 import contactRoutes from './routes/contact';
 import churchProfileRoutes from './routes/churchProfile';
 import pushRoutes from './routes/pushRoutes';
+import childrenRoutes from './routes/children';
 import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/sharedAccessRoutes';
 import { errorHandler } from './middleware/errorHandler';
 
@@ -133,6 +134,7 @@ app.use('/api/cells', cellRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api', churchProfileRoutes);  // mounts /api/church-profile and /api/p/:slug
 app.use('/api/push', pushRoutes);
+app.use('/api/children', childrenRoutes);
 app.use('/api/shared-access', sharedAccessProtectedRoutes);
 app.use('/api/public/shared-access', sharedAccessPublicRoutes);
 
