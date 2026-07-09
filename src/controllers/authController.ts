@@ -48,9 +48,9 @@ async function getUserWithPackage(userId: string) {
     return { ...user, package: null };
   }
 
-  // For all sub-admin roles: get package from their ministry admin's subscription
-  const subAdminRoles = ['district_admin', 'branch_admin', 'regional_admin', 'local_admin'];
-  if (subAdminRoles.includes(roleName ?? '') && user.ministryAdminId) {
+  // Any non-member user with ministryAdminId, including custom roles, inherits
+  // the ministry admin's active package.
+  if (user.ministryAdminId) {
     const subscription = await prisma.subscription.findFirst({
       where: { ministryAdminId: user.ministryAdminId, status: 'active' },
       include: {
