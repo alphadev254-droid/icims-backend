@@ -1193,7 +1193,7 @@ model ChurchProfile {
   // Branding (requires church_website feature)
   logoUrl           String?
   bannerUrl         String?
-  primaryColor      String?  @default("#d4a574")
+  primaryColor      String?  @default("#d89b12")
   tagline           String?
 
   // About (requires church_website feature)

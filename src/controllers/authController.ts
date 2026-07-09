@@ -401,7 +401,7 @@ export async function register(req: Request, res: Response): Promise<void> {
       await tx.churchProfile.create({
         data: {
           ministryAdminId: user.id,
-          primaryColor: '#d4a574',
+          primaryColor: '#d89b12',
           tagline: 'A place of hope, community, and faith.',
           aboutText: `Welcome to ${ministryName} — a vibrant, Spirit-filled community committed to worship, discipleship, and service. We believe every person has a God-given purpose, and we exist to help you discover and live it out.\n\nWhether you are new to faith or have walked with God for years, there is a place for you here. Join us as we grow together in love and truth.`,
           visionText: 'To see every person transformed by the love of Christ and empowered to impact their community.',
