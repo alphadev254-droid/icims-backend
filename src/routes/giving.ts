@@ -13,6 +13,7 @@ router.post('/guest-donate', givingController.createGuestDonation);
 // Campaigns
 router.post('/campaigns', authenticate, authorizePermission('campaigns:create'), givingController.createCampaign);
 router.get('/campaigns', authenticate, authorizePermission('campaigns:read'), givingController.getCampaigns);
+router.get('/summary', authenticate, authorizePermission('donations:read'), givingController.getGivingSummary);
 router.get('/campaigns/:id', authenticate, authorizePermission('campaigns:read'), givingController.getCampaign);
 router.put('/campaigns/:id', authenticate, authorizePermission('campaigns:update'), givingController.updateCampaign);
 router.delete('/campaigns/:id', authenticate, authorizePermission('campaigns:delete'), givingController.deleteCampaign);

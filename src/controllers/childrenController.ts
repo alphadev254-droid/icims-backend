@@ -53,6 +53,26 @@ function childInclude() {
   };
 }
 
+function calculateAgeFromDate(value?: Date | string | null): number | null {
+  if (!value) return null;
+  const dob = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dob.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const hasBirthdayPassed =
+    today.getMonth() > dob.getMonth() ||
+    (today.getMonth() === dob.getMonth() && today.getDate() >= dob.getDate());
+  if (!hasBirthdayPassed) age -= 1;
+  return age >= 0 ? age : null;
+}
+
+function withComputedAge(child: any) {
+  return {
+    ...child,
+    age: child.dateOfBirth ? calculateAgeFromDate(child.dateOfBirth) : child.age,
+  };
+}
+
 function isMemberRequest(req: Request): boolean {
   return req.user?.role === 'member';
 }
@@ -131,14 +151,14 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
     prisma.child.count({ where }),
   ]);
 
-  res.json({ success: true, data: children, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  res.json({ success: true, data: children.map(withComputedAge), pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function getChild(req: Request, res: Response): Promise<void> {
   const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
-  res.json({ success: true, data: child });
+  res.json({ success: true, data: withComputedAge(child) });
 }
 
 export async function createChild(req: Request, res: Response): Promise<void> {
@@ -164,7 +184,7 @@ export async function createChild(req: Request, res: Response): Promise<void> {
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
       dateOfBirth: parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : null,
-      age: parsed.data.age ?? null,
+      age: parsed.data.dateOfBirth ? calculateAgeFromDate(parsed.data.dateOfBirth) : parsed.data.age ?? null,
       gender: parsed.data.gender ?? null,
       phone: parsed.data.phone || null,
       status: parsed.data.status ?? 'active',
@@ -185,7 +205,7 @@ export async function createChild(req: Request, res: Response): Promise<void> {
     include: childInclude(),
   });
 
-  res.status(201).json({ success: true, data: child });
+  res.status(201).json({ success: true, data: withComputedAge(child) });
 }
 
 export async function updateChild(req: Request, res: Response): Promise<void> {
@@ -202,7 +222,9 @@ export async function updateChild(req: Request, res: Response): Promise<void> {
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
       dateOfBirth: parsed.data.dateOfBirth === undefined ? undefined : (parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : null),
-      age: parsed.data.age === undefined ? undefined : parsed.data.age,
+      age: parsed.data.dateOfBirth === undefined
+        ? parsed.data.age === undefined ? undefined : parsed.data.age
+        : parsed.data.dateOfBirth ? calculateAgeFromDate(parsed.data.dateOfBirth) : null,
       gender: parsed.data.gender === undefined ? undefined : parsed.data.gender,
       phone: parsed.data.phone === undefined ? undefined : (parsed.data.phone || null),
       status: parsed.data.status,
@@ -211,7 +233,7 @@ export async function updateChild(req: Request, res: Response): Promise<void> {
     include: childInclude(),
   });
 
-  res.json({ success: true, data: updated });
+  res.json({ success: true, data: withComputedAge(updated) });
 }
 
 export async function deleteChild(req: Request, res: Response): Promise<void> {

@@ -24,6 +24,35 @@ function safeUser(user: any) {
   };
 }
 
+function parseScopeList(value?: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getRoleScopeLabel(scope: any): string | null {
+  if (!scope) return null;
+  if (scope.scopeType === 'all_ministry') return 'All ministry churches';
+  if (scope.scopeType === 'own_church') return 'Own church only';
+  if (scope.scopeType === 'regions') {
+    const values = parseScopeList(scope.regions);
+    return values.length ? `Regions: ${values.join(', ')}` : 'Regions';
+  }
+  if (scope.scopeType === 'districts') {
+    const values = parseScopeList(scope.districts);
+    return values.length ? `Districts: ${values.join(', ')}` : 'Districts';
+  }
+  if (scope.scopeType === 'traditional_authorities') {
+    const values = parseScopeList(scope.traditionalAuthorities);
+    return values.length ? `TAs: ${values.join(', ')}` : 'Traditional authorities';
+  }
+  return null;
+}
+
 async function resolveCallerMinistryAdminId(userId: string, role: string): Promise<string | null> {
   if (role === 'ministry_admin') return userId;
 
@@ -210,7 +239,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     prisma.user.findMany({
       where: whereClause,
       include: {
-        role: { select: { id: true, name: true, displayName: true, createdAt: true } },
+        role: { select: { id: true, name: true, displayName: true, createdAt: true, scope: true } },
         church: { select: { name: true } },
         teams: { include: { team: { select: { name: true } } } },
         cellMemberships: {
@@ -226,22 +255,52 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     prisma.user.count({ where: whereClause }),
   ]);
 
+  const roleScopeChurchIds = new Set<string>();
+  for (const user of users) {
+    const scope = (user as any).role?.scope;
+    if (scope?.scopeType === 'specific_churches') {
+      parseScopeList(scope.churchIds).forEach(id => roleScopeChurchIds.add(id));
+    }
+  }
+
+  const scopedChurches = roleScopeChurchIds.size > 0
+    ? await prisma.church.findMany({
+        where: { id: { in: Array.from(roleScopeChurchIds) } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const scopedChurchNameMap = new Map(scopedChurches.map(church => [church.id, church.name]));
+
   res.json({
     success: true,
-    data: users.map(u => ({
-      ...safeUser(u),
-      teams: u.teams.map(t => t.team.name),
-      cells: (u as any).cellMemberships?.map((cm: any) => cm.cell) ?? [],
-      gender:                    u.gender,
-      dateOfBirth:               u.dateOfBirth,
-      maritalStatus:             u.maritalStatus,
-      weddingDate:               u.weddingDate,
-      anniversary:               u.anniversary,
-      residentialNeighbourhood:  u.residentialNeighbourhood,
-      serviceInterest:           u.serviceInterest,
-      membershipType:            u.membershipType,
-      baptizedByImmersion:       u.baptizedByImmersion,
-    })),
+    data: users.map(u => {
+      const scope = (u as any).role?.scope;
+      const scopeChurches = scope?.scopeType === 'specific_churches'
+        ? parseScopeList(scope.churchIds)
+            .map(id => {
+              const name = scopedChurchNameMap.get(id);
+              return name ? { id, name } : null;
+            })
+            .filter((church): church is { id: string; name: string } => Boolean(church))
+        : [];
+
+      return {
+        ...safeUser(u),
+        teams: u.teams.map(t => t.team.name),
+        cells: (u as any).cellMemberships?.map((cm: any) => cm.cell) ?? [],
+        scopeChurches,
+        scopeLabel: getRoleScopeLabel(scope),
+        gender:                    u.gender,
+        dateOfBirth:               u.dateOfBirth,
+        maritalStatus:             u.maritalStatus,
+        weddingDate:               u.weddingDate,
+        anniversary:               u.anniversary,
+        residentialNeighbourhood:  u.residentialNeighbourhood,
+        serviceInterest:           u.serviceInterest,
+        membershipType:            u.membershipType,
+        baptizedByImmersion:       u.baptizedByImmersion,
+      };
+    }),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 }

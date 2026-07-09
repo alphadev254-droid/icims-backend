@@ -265,6 +265,110 @@ for (const d of guestDonorStats) {
   res.json({ success: true, data: grouped });
 }
 
+export async function getGivingSummary(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const roleName = req.user?.role;
+  const filterChurchId = req.query.churchId as string | undefined;
+  const category = req.query.category as string | undefined;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
+
+  if (accessibleChurchIds.length === 0) {
+    res.json({ success: true, data: { totalRaised: 0, donorCount: 0, topCampaigns: [] } });
+    return;
+  }
+
+  let scopedChurchIds = accessibleChurchIds;
+  if (filterChurchId) {
+    if (!accessibleChurchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: { totalRaised: 0, donorCount: 0, topCampaigns: [] } });
+      return;
+    }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  const dateFilter: any = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    dateFilter.lte = end;
+  }
+
+  const where: any = {
+    churchId: { in: scopedChurchIds },
+    status: 'completed',
+    ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+    ...(category && category !== 'all' && { campaign: { is: { category } } }),
+  };
+
+  const [total, grouped, memberDonors, guestDonors] = await Promise.all([
+    prisma.donationTransaction.aggregate({
+      where,
+      _sum: { amount: true },
+    }),
+    prisma.donationTransaction.groupBy({
+      by: ['campaignId', 'currency'],
+      where,
+      _sum: { amount: true },
+      _count: { id: true },
+      orderBy: { _sum: { amount: 'desc' } },
+      take: 3,
+    }),
+    prisma.donationTransaction.findMany({
+      where: { ...where, userId: { not: null } },
+      select: { userId: true },
+      distinct: ['userId'],
+    }),
+    prisma.donationTransaction.findMany({
+      where: { ...where, userId: null, guestEmail: { not: null } },
+      select: { guestEmail: true },
+      distinct: ['guestEmail'],
+    }),
+  ]);
+
+  const topRows = grouped.map(row => ({
+    campaignId: row.campaignId,
+    currency: row.currency,
+    totalRaised: row._sum.amount ?? 0,
+    donationCount: row._count.id,
+  }));
+
+  const campaigns = topRows.length
+    ? await prisma.givingCampaign.findMany({
+        where: { id: { in: topRows.map(row => row.campaignId) } },
+        select: {
+          id: true,
+          name: true,
+          category: true,
+          church: { select: { name: true } },
+        },
+      })
+    : [];
+  const campaignMap = new Map(campaigns.map(campaign => [campaign.id, campaign]));
+
+  res.json({
+    success: true,
+    data: {
+      totalRaised: total._sum.amount ?? 0,
+      donorCount: memberDonors.length + guestDonors.length,
+      topCampaigns: topRows.map(row => ({
+        ...row,
+        campaign: campaignMap.get(row.campaignId) ?? null,
+      })),
+    },
+  });
+}
+
 export async function getCampaign(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
 

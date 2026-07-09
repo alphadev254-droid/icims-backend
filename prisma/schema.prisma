@@ -1048,6 +1048,58 @@ model ReminderCache {
 
 // ─── Content Views ─────────────────────────────────────────────────────────────
 
+model ScheduledReminder {
+  id              String   @id @default(cuid())
+  ministryAdminId String?
+  churchId        String
+  campaignId      String?
+  type            String
+  audience        String
+  channelEmail    Boolean  @default(true)
+  channelPush     Boolean  @default(true)
+  title           String
+  message         String   @db.Text
+  scheduleKind    String
+  scheduleDays    String?  @db.Text
+  deadlineOffsets String?  @db.Text
+  isActive        Boolean  @default(true)
+  createdById     String?
+  lastRunAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  logs ScheduledReminderLog[]
+
+  @@index([churchId])
+  @@index([ministryAdminId])
+  @@index([campaignId])
+  @@index([type])
+  @@index([isActive])
+  @@map("scheduled_reminders")
+}
+
+model ScheduledReminderLog {
+  id             String   @id @default(cuid())
+  reminderId     String
+  userId         String?
+  recipientEmail String?
+  channel        String
+  status         String
+  scheduledFor   DateTime
+  sentAt         DateTime?
+  error          String?  @db.Text
+  dedupeKey      String   @unique
+  createdAt      DateTime @default(now())
+
+  reminder ScheduledReminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@index([reminderId])
+  @@index([userId])
+  @@index([scheduledFor])
+  @@index([status])
+  @@map("scheduled_reminder_logs")
+}
+
 model AnnouncementView {
   id             String       @id @default(cuid())
   announcementId String

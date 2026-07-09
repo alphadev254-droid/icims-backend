@@ -5,6 +5,7 @@ import { subdomainQueue, subdomainWorker } from './lib/subdomainQueue';
 import { paymentQueue, paymentWorker } from './lib/paymentQueue';
 import { notificationQueue, notificationWorker } from './lib/notificationQueue';
 import './workers/reminderCacheWorker';
+import './workers/scheduledReminderWorker';
 import { startSubscriptionCron, startKPICron, startPendingTransactionCleanup } from './workers/subscriptionCron';
 import { startEventStatusWorker } from './workers/eventStatusWorker';
 
