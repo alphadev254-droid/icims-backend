@@ -30,6 +30,19 @@ const USER_INCLUDE = {
   },
 } as const;
 
+async function getEffectiveMinistryAdminId(user: any): Promise<string | null> {
+  if (user?.role?.name === 'ministry_admin') return user.id;
+  if (user?.ministryAdminId) return user.ministryAdminId;
+  if (!user?.churchId) return null;
+
+  const church = await prisma.church.findUnique({
+    where: { id: user.churchId },
+    select: { ministryAdminId: true },
+  });
+
+  return church?.ministryAdminId ?? null;
+}
+
 async function getUserWithPackage(userId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -50,9 +63,10 @@ async function getUserWithPackage(userId: string) {
 
   // Any non-member user with ministryAdminId, including custom roles, inherits
   // the ministry admin's active package.
-  if (user.ministryAdminId) {
+  const effectiveMinistryAdminId = await getEffectiveMinistryAdminId(user);
+  if (effectiveMinistryAdminId) {
     const subscription = await prisma.subscription.findFirst({
-      where: { ministryAdminId: user.ministryAdminId, status: 'active' },
+      where: { ministryAdminId: effectiveMinistryAdminId, status: 'active' },
       include: {
         package: {
           include: { features: { include: { feature: true } } },
@@ -114,13 +128,14 @@ async function getUserPermissions(user: any): Promise<string[]> {
   // Tenant-specific roles: district_admin, branch_admin, regional_admin
   // Permissions are stored with ministryAdminId = <ministry_admin_id> (tenant-specific)
   // OR ministryAdminId = 'GLOBAL' (default permissions from seed)
-  if (user.ministryAdminId) {
+  const effectiveMinistryAdminId = await getEffectiveMinistryAdminId(user);
+  if (effectiveMinistryAdminId) {
     // Try tenant-specific permissions first, then fall back to GLOBAL for this role
     const permissions = await prisma.rolePermission.findMany({
       where: {
         roleId: user.roleId,
         OR: [
-          { ministryAdminId: user.ministryAdminId },
+          { ministryAdminId: effectiveMinistryAdminId },
           { ministryAdminId: 'GLOBAL' },
         ],
       },
@@ -237,6 +252,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     churchId: userWithPackage.churchId,
     permissions,
     accountCountry: userWithPackage.accountCountry ?? undefined,
+    regions: parseJson(userWithPackage.regions),
     districts: parseJson(userWithPackage.districts),
     traditionalAuthorities: parseJson(userWithPackage.traditionalAuthorities),
   });
@@ -454,6 +470,7 @@ export async function register(req: Request, res: Response): Promise<void> {
     churchId: user.churchId,
     permissions,
     accountCountry: user.accountCountry ?? undefined,
+    regions: parseJson(user.regions),
     districts: parseJson(user.districts),
     traditionalAuthorities: parseJson(user.traditionalAuthorities),
   });

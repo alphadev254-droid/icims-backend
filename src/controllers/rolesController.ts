@@ -53,6 +53,26 @@ function isSystemPermission(name: string): boolean {
   return SYSTEM_PERMISSION_NAMES.includes(name) || SYSTEM_PERMISSION_PREFIXES.some(prefix => name.startsWith(prefix));
 }
 
+async function expandWithReadPermissions(permNames: string[]): Promise<string[]> {
+  const selected = new Set(permNames.filter(name => !isSystemPermission(name)));
+  const readNames = Array.from(selected)
+    .map(name => {
+      const [resource, action] = name.split(':');
+      return resource && action && action !== 'read' ? `${resource}:read` : null;
+    })
+    .filter(Boolean) as string[];
+
+  if (readNames.length === 0) return Array.from(selected);
+
+  const existingReadPermissions = await prisma.permission.findMany({
+    where: { name: { in: readNames } },
+    select: { name: true },
+  });
+
+  for (const permission of existingReadPermissions) selected.add(permission.name);
+  return Array.from(selected);
+}
+
 async function resolveMinistryAdminId(req: Request): Promise<string | null> {
   const userId = req.user?.userId;
   if (req.user?.role === 'ministry_admin' && userId) return userId;
@@ -97,7 +117,7 @@ async function upsertRoleScope(roleId: string, ministryAdminId: string, scope: z
 }
 
 async function replaceRolePermissions(roleId: string, ministryAdminId: string, permNames: string[]) {
-  const allowedNames = permNames.filter(name => !isSystemPermission(name));
+  const allowedNames = await expandWithReadPermissions(permNames);
   const permRecords = await prisma.permission.findMany({ where: { name: { in: allowedNames } } });
 
   await prisma.rolePermission.deleteMany({ where: { ministryAdminId, roleId } });

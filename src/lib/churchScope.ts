@@ -49,10 +49,12 @@ export async function getAccessibleChurchIds(
       where: { id: userId },
       select: {
         ministryAdminId: true,
+        churchId: true,
         role: { include: { scope: true } },
+        church: { select: { ministryAdminId: true } },
       },
     });
-    ministryAdminId = user?.ministryAdminId || null;
+    ministryAdminId = user?.ministryAdminId || user?.church?.ministryAdminId || null;
     if (user?.role?.ministryAdminId && user.role.scope) {
       customRoleScope = user.role.scope;
     }
