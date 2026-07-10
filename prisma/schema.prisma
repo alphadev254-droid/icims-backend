@@ -483,9 +483,9 @@ model DonationTransaction {
   churchId      String
   amount        Float
   currency      String   @default("MWK")
-  transactionId String?  @unique
+  transactionId String?
   paymentMethod String?  // mpesa | card | bank_transfer | cash
-  reference     String?  @unique
+  reference     String?
   status        String   @default("pending") // pending | completed | failed
   isAnonymous   Boolean  @default(false)
   isGuest       Boolean  @default(false)
@@ -510,6 +510,8 @@ model DonationTransaction {
   @@index([campaignId])
   @@index([userId])
   @@index([churchId])
+  @@index([transactionId])
+  @@index([reference])
   @@index([status])
   @@index([churchId, status, createdAt])
   @@map("donation_transactions")

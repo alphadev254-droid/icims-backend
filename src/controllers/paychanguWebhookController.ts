@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import axios from 'axios';
+import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate, ticketPurchaseTemplate, withdrawalFinalStatusTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
@@ -391,6 +392,19 @@ async function processPaychanguDonation(pendingTx: any, metadata: any, payload: 
     },
   });
 
+  if (Array.isArray(metadata.items) && metadata.items.length > 0) {
+    await createDonationRecordsForTransaction({
+      pendingTx,
+      metadata,
+      transactionId: transaction.id,
+      reference: pendingTx.reference,
+      currency: pendingTx.currency,
+      paymentMethod: 'mobile_money',
+    });
+    console.log(`[${traceId}] âœ… Multi-line donation processing complete`);
+    return;
+  }
+
   const donationTx = await prisma.donationTransaction.create({
     data: {
       campaignId: metadata.campaignId,
@@ -481,4 +495,3 @@ async function processPaychanguDonation(pendingTx: any, metadata: any, payload: 
 
   console.log(`[${traceId}] ✅ Donation processing complete`);
 }
-

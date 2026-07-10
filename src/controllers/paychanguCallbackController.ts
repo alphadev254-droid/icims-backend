@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import axios from 'axios';
+import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
@@ -376,6 +377,32 @@ if (pendingTx.type === 'donation') {
       guestPhone: metadata.isGuest ? metadata.guestPhone : null,
     },
   });
+
+  if (Array.isArray(metadata.items) && metadata.items.length > 0) {
+    await createDonationRecordsForTransaction({
+      pendingTx,
+      metadata,
+      transactionId: transaction.id,
+      reference: String(tx_ref),
+      currency: pendingTx.currency,
+      paymentMethod: 'mobile_money',
+    });
+    console.log(`[${traceId}] Multi-line donation processed successfully`);
+    await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
+
+    const params = new URLSearchParams({
+      status: 'success', type: 'donation', reference: String(tx_ref),
+      ...(metadata.isGuest && {
+        isGuest: 'true',
+        guestEmail: metadata.guestEmail || '',
+        guestName: metadata.guestName || '',
+        amount: String(metadata.baseAmount || ''),
+        currency: pendingTx.currency || '',
+      }),
+    });
+    res.redirect(`${FRONTEND_URL}/payment/callback?${params.toString()}`);
+    return;
+  }
 
   const donationTx = await prisma.donationTransaction.create({
     data: {

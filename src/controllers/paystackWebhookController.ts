@@ -6,6 +6,7 @@ import { packageSubscriptionTemplate, ticketPurchaseTemplate, donationReceiptTem
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
+import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -402,71 +403,15 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
       });
       console.log(`[${traceId}] Transaction created: ${transaction.id}`);
 
-      await prisma.donationTransaction.create({
-        data: {
-          campaignId: pendingMetadata.campaignId,
-          userId: pendingMetadata.isGuest ? null : pendingTx.userId,
-          churchId: pendingTx.churchId,
-          amount: pendingMetadata.baseAmount,
-          currency: txData.currency,
-          transactionId: transaction.id,
-          reference: txData.reference,
-          status: 'completed',
-          isAnonymous: pendingMetadata.isAnonymous || false,
-          isGuest: pendingMetadata.isGuest === true,
-          guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
-          guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
-          guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
-          donorName: pendingMetadata.donorName,
-          donorPhone: pendingMetadata.donorPhone,
-          notes: pendingMetadata.notes,
-          cellId: pendingMetadata.cellId || null,
-        }
+      await createDonationRecordsForTransaction({
+        pendingTx,
+        metadata: pendingMetadata,
+        transactionId: transaction.id,
+        reference: txData.reference,
+        currency: txData.currency,
+        paymentMethod: txData.channel || 'card',
+        gatewayCustomerEmail: txData.customer?.email,
       });
-
-      const isGuestDonation = pendingMetadata.isGuest === true;
-      const donorEmail = isGuestDonation ? pendingMetadata.guestEmail : (await prisma.user.findUnique({ where: { id: pendingTx.userId! } }))?.email;
-      const donorFirstName = isGuestDonation ? pendingMetadata.guestName.split(' ')[0] : (await prisma.user.findUnique({ where: { id: pendingTx.userId! } }))?.firstName;
-      const donorFullName = isGuestDonation ? pendingMetadata.guestName : `${donorFirstName} ${(await prisma.user.findUnique({ where: { id: pendingTx.userId! } }))?.lastName || ''}`;
-
-      const campaign = await prisma.givingCampaign.findUnique({
-        where: { id: pendingMetadata.campaignId },
-        include: { church: { select: { name: true } } }
-      });
-
-      if (donorEmail && campaign) {
-        const receiptPDF = await generateReceiptPDF({
-          receiptNumber: txData.reference,
-          type: 'donation',
-          customerName: donorFullName || '',
-          customerEmail: donorEmail,
-          amount: pendingMetadata.baseAmount,
-          currency: txData.currency,
-          paidAt: new Date(txData.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-          paymentMethod: txData.channel || 'card',
-          description: `Donation to ${campaign.name}`,
-          itemDetails: [
-            { label: 'Campaign', value: campaign.name },
-            { label: 'Church', value: campaign.church.name },
-            { label: 'Anonymous', value: pendingMetadata.isAnonymous ? 'Yes' : 'No' }
-          ]
-        });
-        queueEmail(
-          donorEmail,
-          `Donation Receipt - ${campaign.name}`,
-          donationReceiptTemplate({
-            firstName: donorFirstName || 'Donor',
-            amount: pendingMetadata.baseAmount,
-            currency: txData.currency,
-            campaignName: campaign.name,
-            reference: txData.reference,
-            isAnonymous: pendingMetadata.isAnonymous || false,
-            isGuest: pendingMetadata.isGuest === true,
-            churchName: campaign.church.name
-          }),
-          [{ filename: `donation-receipt-${txData.reference}.pdf`, content: receiptPDF }]
-        );
-      }
 
       await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });
     }

@@ -9,6 +9,7 @@ const router = Router();
 router.get('/campaigns/:id/public', givingController.getPublicCampaign);
 router.get('/campaigns/:id/cells', givingController.getPublicCampaignCells);
 router.post('/guest-donate', givingController.createGuestDonation);
+router.post('/guest-donate-multiple', givingController.createGuestMultipleDonation);
 
 // Campaigns
 router.post('/campaigns', authenticate, authorizePermission('campaigns:create'), givingController.createCampaign);
@@ -31,6 +32,7 @@ router.delete('/campaigns/:id', authenticate, authorizePermission('campaigns:del
 
 // Donations
 router.post('/donate', authenticate, authorizePermission('donations:create'), givingController.createDonation);
+router.post('/donate-multiple', authenticate, authorizePermission('donations:create'), givingController.createMultipleDonation);
 router.post('/donations/cash', authenticate, authorizePermission('donations:create'), givingController.recordCashDonation);
 router.get('/donations', authenticate, authorizePermission('donations:read'), givingController.getDonations);
 router.get('/donations/:id/transaction', authenticate, authorizePermission('donations:read'), givingController.getDonationTransaction);

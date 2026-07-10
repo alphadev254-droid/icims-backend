@@ -711,6 +711,69 @@ const createDonationSchema = z.object({
   pledgeId: z.string().optional(), // optional: pay against a specific pledge
 });
 
+const donationItemSchema = z.object({
+  campaignId: z.string().min(1),
+  amount: z.number().positive(),
+  cellId: z.string().optional(),
+  pledgeId: z.string().optional(),
+});
+
+const createMultipleDonationSchema = z.object({
+  items: z.array(donationItemSchema).min(1).max(20),
+  isAnonymous: z.boolean().optional().default(false),
+  donorName: z.string().optional(),
+  donorEmail: z.string().email().optional(),
+  donorPhone: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+const createGuestMultipleDonationSchema = z.object({
+  items: z.array(donationItemSchema.omit({ pledgeId: true })).min(1).max(20),
+  guestName: z.string().min(1),
+  guestEmail: z.string().email(),
+  guestPhone: z.string().optional(),
+});
+
+async function resolveDonationCampaigns(items: Array<{ campaignId: string; amount: number; cellId?: string }>, requirePublic: boolean) {
+  const ids = [...new Set(items.map(item => item.campaignId))];
+  if (ids.length !== items.length) {
+    return { error: 'Select each campaign only once' };
+  }
+
+  const campaigns = await prisma.givingCampaign.findMany({
+    where: { id: { in: ids } },
+  });
+  if (campaigns.length !== ids.length) {
+    return { error: 'One or more campaigns were not found' };
+  }
+  if (campaigns.some(campaign => campaign.status !== 'active')) {
+    return { error: 'One or more campaigns are not active' };
+  }
+  if (requirePublic && campaigns.some(campaign => !campaign.allowPublicDonations)) {
+    return { error: 'One or more campaigns are not publicly available' };
+  }
+
+  const churchIds = [...new Set(campaigns.map(campaign => campaign.churchId))];
+  if (churchIds.length !== 1) {
+    return { error: 'Please give to campaigns from one church at a time' };
+  }
+
+  const currencies = [...new Set(campaigns.map(campaign => campaign.currency))];
+  if (currencies.length !== 1) {
+    return { error: 'Please give to campaigns using one currency at a time' };
+  }
+
+  const campaignMap = new Map(campaigns.map(campaign => [campaign.id, campaign]));
+  for (const item of items) {
+    const campaign = campaignMap.get(item.campaignId);
+    if (campaign?.category === 'fellowship_offering' && !item.cellId) {
+      return { error: `Please select a cell/fellowship for ${campaign.name}` };
+    }
+  }
+
+  return { campaigns, campaignMap, churchId: churchIds[0], currency: currencies[0] };
+}
+
 export async function createDonation(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const userEmail = req.user?.email;
@@ -795,6 +858,96 @@ export async function createDonation(req: Request, res: Response): Promise<void>
   } else {
     return await initiatePaystackDonation(pendingTx, userEmail!, donorEmail, campaign, fees, currency, traceId, res);
   }
+}
+
+export async function createMultipleDonation(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const userEmail = req.user?.email;
+  const traceId = `MDON-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  const parsed = createMultipleDonationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const { items, isAnonymous, donorName, donorEmail, donorPhone, notes } = parsed.data;
+  const resolved = await resolveDonationCampaigns(items, false);
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    req.user?.role!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+  if (!accessibleChurchIds.includes(resolved.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to one or more campaigns' });
+    return;
+  }
+
+  const { getPaymentGateway, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
+  const { calculatePaymentFees } = await import('../utils/feeCalculations');
+
+  const gateway = await getPaymentGateway(userId!);
+  const currency = getCurrency(gateway);
+  if (currency !== resolved.currency) {
+    res.status(400).json({ success: false, message: `Selected campaigns use ${resolved.currency}, but your payment gateway uses ${currency}` });
+    return;
+  }
+  const gatewayCountry = getGatewayCountry(gateway);
+  const baseAmount = items.reduce((sum, item) => sum + item.amount, 0);
+  const fees = calculatePaymentFees(baseAmount, gatewayCountry);
+
+  const expiresAt = new Date();
+  expiresAt.setMinutes(expiresAt.getMinutes() + 30);
+
+  const pendingTx = await prisma.pendingTransaction.create({
+    data: {
+      amount: fees.totalAmount,
+      currency,
+      userId: userId!,
+      churchId: resolved.churchId,
+      type: 'donation',
+      expiresAt,
+      metadata: JSON.stringify({
+        traceId,
+        campaignId: items[0].campaignId,
+        campaignName: resolved.campaignMap.get(items[0].campaignId)?.name,
+        items: items.map(item => ({
+          campaignId: item.campaignId,
+          campaignName: resolved.campaignMap.get(item.campaignId)?.name,
+          amount: item.amount,
+          cellId: item.cellId || null,
+          pledgeId: item.pledgeId || null,
+        })),
+        isGuest: false,
+        isAnonymous,
+        donorName,
+        donorEmail,
+        donorPhone,
+        notes,
+        baseAmount: fees.baseAmount,
+        convenienceFee: fees.convenienceFee,
+        systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
+        totalAmount: fees.totalAmount,
+        gateway,
+        gatewayCountry,
+      }),
+    },
+  });
+
+  const firstCampaign = resolved.campaignMap.get(items[0].campaignId);
+  if (gateway === 'paychangu') {
+    return await initiatePaychanguDonation(pendingTx, userEmail!, donorEmail, fees, traceId, res);
+  }
+  return await initiatePaystackDonation(pendingTx, userEmail!, donorEmail, firstCampaign, fees, currency, traceId, res);
 }
 
 async function initiatePaystackDonation(
@@ -1102,6 +1255,79 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
   } else {
     return await initiatePaystackDonation(pendingTx, guestEmail, guestEmail, campaign, fees, currency, traceId, res);
   }
+}
+
+export async function createGuestMultipleDonation(req: Request, res: Response): Promise<void> {
+  const traceId = `GMDON-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  const parsed = createGuestMultipleDonationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const { items, guestName, guestEmail, guestPhone } = parsed.data;
+  const resolved = await resolveDonationCampaigns(items, true);
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
+    return;
+  }
+
+  const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
+  const { calculatePaymentFees } = await import('../utils/feeCalculations');
+
+  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
+  const currency = getCurrency(gateway);
+  if (currency !== resolved.currency) {
+    res.status(400).json({ success: false, message: `Selected campaigns use ${resolved.currency}, but this church accepts ${currency}` });
+    return;
+  }
+  const gatewayCountry = getGatewayCountry(gateway);
+  const baseAmount = items.reduce((sum, item) => sum + item.amount, 0);
+  const fees = calculatePaymentFees(baseAmount, gatewayCountry);
+
+  const expiresAt = new Date();
+  expiresAt.setMinutes(expiresAt.getMinutes() + 30);
+
+  const pendingTx = await prisma.pendingTransaction.create({
+    data: {
+      amount: fees.totalAmount,
+      currency,
+      userId: null,
+      churchId: resolved.churchId,
+      type: 'donation',
+      expiresAt,
+      metadata: JSON.stringify({
+        traceId,
+        campaignId: items[0].campaignId,
+        campaignName: resolved.campaignMap.get(items[0].campaignId)?.name,
+        items: items.map(item => ({
+          campaignId: item.campaignId,
+          campaignName: resolved.campaignMap.get(item.campaignId)?.name,
+          amount: item.amount,
+          cellId: item.cellId || null,
+        })),
+        isGuest: true,
+        guestName,
+        guestEmail,
+        guestPhone: guestPhone || null,
+        isAnonymous: false,
+        baseAmount: fees.baseAmount,
+        convenienceFee: fees.convenienceFee,
+        systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
+        totalAmount: fees.totalAmount,
+        gateway,
+        gatewayCountry,
+      }),
+    },
+  });
+
+  const firstCampaign = resolved.campaignMap.get(items[0].campaignId);
+  if (gateway === 'paychangu') {
+    return await initiatePaychanguDonation(pendingTx, guestEmail, guestEmail, fees, traceId, res);
+  }
+  return await initiatePaystackDonation(pendingTx, guestEmail, guestEmail, firstCampaign, fees, currency, traceId, res);
 }
 
 export async function getDonationTransaction(req: Request, res: Response): Promise<void> {
