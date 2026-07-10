@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, authorizePermission } from '../middleware/auth';
+import { authenticate, authorizeAnyPermission, authorizePermission } from '../middleware/auth';
 import * as givingController from '../controllers/givingController';
 import * as pledgeController from '../controllers/pledgeController';
 
@@ -12,6 +12,17 @@ router.post('/guest-donate', givingController.createGuestDonation);
 
 // Campaigns
 router.post('/campaigns', authenticate, authorizePermission('campaigns:create'), givingController.createCampaign);
+router.get('/campaigns/select', authenticate, authorizeAnyPermission([
+  'campaigns:read',
+  'campaigns:create',
+  'campaigns:update',
+  'cells:read',
+  'cells:update',
+  'donations:read',
+  'donations:create',
+  'transactions:read',
+  'reports:read',
+]), givingController.getCampaignSelect);
 router.get('/campaigns', authenticate, authorizePermission('campaigns:read'), givingController.getCampaigns);
 router.get('/summary', authenticate, authorizePermission('donations:read'), givingController.getGivingSummary);
 router.get('/campaigns/:id', authenticate, authorizePermission('campaigns:read'), givingController.getCampaign);

@@ -3,6 +3,16 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
+type CellChurchMemberSearchRow = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  memberType: string | null;
+  loginEnabled: boolean;
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const p = prisma as any;
@@ -1374,49 +1384,155 @@ export async function getCellsSimple(req: Request, res: Response): Promise<void>
 
 export async function getCellChurchMembers(req: Request, res: Response): Promise<void> {
   const cellId = String(req.params.id);
-  const { search, page = '1', limit = '50' } = req.query as Record<string, string>;
+  const { search = '', page = '1', limit = '100' } = req.query as Record<string, string>;
+  const searchTerm = search.trim();
 
   const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
   if (!cell) { res.status(404).json({ success: false, message: 'Cell not found' }); return; }
 
-  // Exclude users already active members of this cell
-  const existingMemberIds = await prisma.cellMember.findMany({
-    where: { cellId, status: { not: 'inactive' } },
-    select: { userId: true },
-  });
-  const excludeIds = existingMemberIds.map(m => m.userId);
-
-  const pageNum = Math.max(1, parseInt(page));
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-  const skip = (pageNum - 1) * limitNum;
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 100));
+  const offset = (pageNum - 1) * limitNum;
+  if (searchTerm.length > 0 && searchTerm.length < 3) {
+    res.json({
+      success: true,
+      data: [],
+      pagination: { total: 0, page: 1, limit: limitNum, pages: 0 },
+      message: 'Type at least 3 characters to search members',
+    });
+    return;
+  }
 
   const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
 
-  const where: any = {
-    churchId: cell.churchId,
-    ...(memberRole && { roleId: memberRole.id }),
-    status: 'active',
-    ...(excludeIds.length > 0 && { id: { notIn: excludeIds } }),
-    ...(search && {
-      OR: [
-        { firstName: { contains: search } },
-        { lastName: { contains: search } },
-        { email: { contains: search } },
-        { phone: { contains: search } },
-      ],
-    }),
-  };
+  if (searchTerm.length === 0) {
+    const where: any = {
+      churchId: cell.churchId,
+      ...(memberRole && { roleId: memberRole.id }),
+      status: 'active',
+      cellMemberships: { none: { cellId, status: { not: 'inactive' } } },
+    };
+    const [total, users] = await Promise.all([
+      prisma.user.count({ where }),
+      prisma.user.findMany({
+        where,
+        select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true },
+        orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+        skip: offset,
+        take: limitNum,
+      }),
+    ]);
 
-  const [total, users] = await Promise.all([
-    prisma.user.count({ where }),
-    prisma.user.findMany({
-      where,
-      select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true },
-      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-      skip,
-      take: limitNum,
-    }),
-  ]);
+    res.json({
+      success: true,
+      data: users,
+      pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
+    });
+    return;
+  }
+
+  const booleanSearch = searchTerm
+    .split(/\s+/)
+    .map(term => term.replace(/[+\-<>()~*"@]+/g, '').trim())
+    .filter(term => term.length >= 3)
+    .map(term => `${term}*`)
+    .join(' ');
+
+  if (!booleanSearch) {
+    res.json({ success: true, data: [], pagination: { total: 0, page: 1, limit: limitNum, pages: 0 } });
+    return;
+  }
+
+  let users: CellChurchMemberSearchRow[] = [];
+  let total = 0;
+  try {
+    const countRows = await prisma.$queryRawUnsafe<Array<{ total: bigint | number }>>(
+      `
+        SELECT COUNT(*) AS total
+        FROM users u
+        WHERE u.churchId = ?
+          AND u.status = 'active'
+          AND (? IS NULL OR u.roleId = ?)
+          AND MATCH(u.firstName, u.lastName, u.email, u.phone) AGAINST (? IN BOOLEAN MODE)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM cell_members cm
+            WHERE cm.cellId = ?
+              AND cm.userId = u.id
+              AND cm.status <> 'inactive'
+          )
+      `,
+      cell.churchId,
+      memberRole?.id ?? null,
+      memberRole?.id ?? null,
+      booleanSearch,
+      cellId,
+    );
+    total = Number(countRows[0]?.total ?? 0);
+
+    users = await prisma.$queryRawUnsafe<CellChurchMemberSearchRow[]>(
+      `
+        SELECT
+          u.id,
+          u.firstName,
+          u.lastName,
+          u.email,
+          u.phone,
+          u.memberType,
+          u.loginEnabled,
+          MATCH(u.firstName, u.lastName, u.email, u.phone) AGAINST (? IN BOOLEAN MODE) AS relevance
+        FROM users u
+        WHERE u.churchId = ?
+          AND u.status = 'active'
+          AND (? IS NULL OR u.roleId = ?)
+          AND MATCH(u.firstName, u.lastName, u.email, u.phone) AGAINST (? IN BOOLEAN MODE)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM cell_members cm
+            WHERE cm.cellId = ?
+              AND cm.userId = u.id
+              AND cm.status <> 'inactive'
+          )
+        ORDER BY relevance DESC, u.firstName ASC, u.lastName ASC
+        LIMIT ?
+        OFFSET ?
+      `,
+      booleanSearch,
+      cell.churchId,
+      memberRole?.id ?? null,
+      memberRole?.id ?? null,
+      booleanSearch,
+      cellId,
+      limitNum,
+      offset,
+    );
+  } catch (error) {
+    console.warn('[Cells] Full-text member search failed, falling back to contains search:', error);
+    const where: any = {
+        churchId: cell.churchId,
+        ...(memberRole && { roleId: memberRole.id }),
+        status: 'active',
+        cellMemberships: { none: { cellId, status: { not: 'inactive' } } },
+        OR: [
+          { firstName: { contains: searchTerm } },
+          { lastName: { contains: searchTerm } },
+          { email: { contains: searchTerm } },
+          { phone: { contains: searchTerm } },
+        ],
+    };
+    const [fallbackTotal, fallbackUsers] = await Promise.all([
+      prisma.user.count({ where }),
+      prisma.user.findMany({
+        where,
+        select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true },
+        orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+        skip: offset,
+        take: limitNum,
+      }),
+    ]);
+    total = fallbackTotal;
+    users = fallbackUsers;
+  }
 
   res.json({
     success: true,

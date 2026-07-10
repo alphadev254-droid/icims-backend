@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { getEvents, getEvent, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, getPublicEvent } from '../controllers/eventController';
-import { authenticate, authorizePermission } from '../middleware/auth';
+import { getEvents, getEvent, getEventSelect, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, getPublicEvent } from '../controllers/eventController';
+import { authenticate, authorizeAnyPermission, authorizePermission } from '../middleware/auth';
 
 const router = Router();
 
@@ -14,6 +14,18 @@ router.get('/my-tickets', authorizePermission('tickets:read'), getMyTickets);
 router.post('/book-ticket', bookTicket); // No permission check for free tickets
 router.get('/tickets/:ticketId/transaction', authorizePermission('tickets:read'), getTicketTransaction);
 router.get('/tickets/:ticketId/download', authorizePermission('tickets:read'), downloadTicket);
+router.get('/select', authorizeAnyPermission([
+  'events:read',
+  'events:create',
+  'events:update',
+  'attendance:read',
+  'attendance:create',
+  'attendance:update',
+  'tickets:read',
+  'tickets:create',
+  'transactions:read',
+  'reports:read',
+]), getEventSelect);
 
 // General CRUD routes
 router.get('/',       authorizePermission('events:read'),   getEvents);

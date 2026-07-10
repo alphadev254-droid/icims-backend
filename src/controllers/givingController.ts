@@ -266,6 +266,60 @@ for (const d of guestDonorStats) {
   res.json({ success: true, data: grouped });
 }
 
+export async function getCampaignSelect(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const roleName = req.user?.role;
+  const filterChurchId = req.query.churchId as string | undefined;
+  const category = req.query.category as string | undefined;
+  const status = req.query.status as string | undefined;
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+
+  let scopedChurchIds = accessibleChurchIds;
+  if (filterChurchId) {
+    if (!accessibleChurchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: [] });
+      return;
+    }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  if (scopedChurchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const statusFilter = roleName === 'member' ? 'active' : status;
+
+  const campaigns = await prisma.givingCampaign.findMany({
+    where: {
+      churchId: { in: scopedChurchIds },
+      ...(category && { category }),
+      ...(statusFilter && { status: statusFilter }),
+    },
+    select: {
+      id: true,
+      name: true,
+      category: true,
+      status: true,
+      churchId: true,
+      currency: true,
+      church: { select: { name: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 500,
+  });
+
+  res.json({ success: true, data: campaigns });
+}
+
 export async function getGivingSummary(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;

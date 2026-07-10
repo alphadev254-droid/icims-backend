@@ -74,3 +74,25 @@ export function authorizePermission(permission: string) {
     next();
   };
 }
+
+// Guard by any permission in a workflow set. Useful for lightweight selector
+// endpoints that support several pages without granting full page access.
+export function authorizeAnyPermission(permissions: string[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({ success: false, message: 'Not authenticated' });
+      return;
+    }
+
+    const userPermissions = req.user.permissions ?? [];
+    if (!permissions.some(permission => userPermissions.includes(permission))) {
+      res.status(403).json({
+        success: false,
+        message: `Permission denied: one of '${permissions.join("', '")}' required`,
+      });
+      return;
+    }
+
+    next();
+  };
+}

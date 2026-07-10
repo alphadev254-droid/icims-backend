@@ -1061,6 +1061,7 @@ model ScheduledReminder {
   ministryAdminId String?
   churchId        String
   campaignId      String?
+  eventId         String?
   type            String
   audience        String
   channelEmail    Boolean  @default(true)
@@ -1081,6 +1082,7 @@ model ScheduledReminder {
   @@index([churchId])
   @@index([ministryAdminId])
   @@index([campaignId])
+  @@index([eventId])
   @@index([type])
   @@index([isActive])
   @@map("scheduled_reminders")

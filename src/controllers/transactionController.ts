@@ -23,6 +23,7 @@ export async function getTransactions(req: Request, res: Response): Promise<void
   const status = req.query.status as string | undefined;
   const paymentMethod = req.query.paymentMethod as string | undefined;
   const filterChurchId = req.query.churchId as string | undefined;
+  const campaignId = req.query.campaignId as string | undefined;
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
 
@@ -129,6 +130,15 @@ export async function getTransactions(req: Request, res: Response): Promise<void
   if (type) whereClause.type = type;
   if (status) whereClause.status = status;
   if (paymentMethod) whereClause.paymentMethod = paymentMethod;
+  if (campaignId) {
+    whereClause.type = 'donation';
+    const donationRows = await prisma.donationTransaction.findMany({
+      where: { campaignId, churchId: { in: churchIds } },
+      select: { transactionId: true },
+    });
+    const transactionIds = donationRows.map(row => row.transactionId).filter(Boolean) as string[];
+    whereClause.id = transactionIds.length ? { in: transactionIds } : { in: ['__no_matching_campaign_transactions__'] };
+  }
   if (search) {
     whereClause.OR = [
       { user: { firstName: { contains: search } } },

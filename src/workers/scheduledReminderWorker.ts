@@ -13,6 +13,8 @@ type ReminderRecipient = {
   lastName?: string | null;
   pledgeId?: string | null;
   campaignName?: string | null;
+  eventName?: string | null;
+  eventDate?: Date | null;
   pledgedAmount?: number | null;
   amountPaid?: number | null;
   deadline?: Date | null;
@@ -56,6 +58,8 @@ function renderText(template: string, recipient: ReminderRecipient) {
     .replace(/\{firstName\}/g, recipient.firstName || 'there')
     .replace(/\{lastName\}/g, recipient.lastName || '')
     .replace(/\{campaignName\}/g, recipient.campaignName || 'the campaign')
+    .replace(/\{eventName\}/g, recipient.eventName || 'the event')
+    .replace(/\{eventDate\}/g, recipient.eventDate ? recipient.eventDate.toLocaleDateString() : '')
     .replace(/\{pledgedAmount\}/g, String(recipient.pledgedAmount ?? ''))
     .replace(/\{amountPaid\}/g, String(recipient.amountPaid ?? ''))
     .replace(/\{balance\}/g, String(balance))
@@ -73,9 +77,26 @@ function reminderEmailHtml(title: string, message: string) {
 }
 
 async function resolveMonthlyRecipients(reminder: any, today: Date): Promise<ReminderRecipient[]> {
+  if (reminder.type === 'event') {
+    const event = reminder.eventId
+      ? await prisma.event.findFirst({ where: { id: reminder.eventId, churchId: reminder.churchId }, select: { title: true, date: true } })
+      : null;
+    return prisma.user.findMany({
+      where: { churchId: reminder.churchId, status: 'active', loginEnabled: true, role: { name: 'member' } },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    }).then(users => users.map(user => ({
+      userId: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      eventName: event?.title || null,
+      eventDate: event?.date || null,
+    })));
+  }
+
   if (reminder.audience === 'all_members') {
     return prisma.user.findMany({
-      where: { churchId: reminder.churchId, status: 'active', role: { name: 'member' } },
+      where: { churchId: reminder.churchId, status: 'active', loginEnabled: true, role: { name: 'member' } },
       select: { id: true, email: true, firstName: true, lastName: true },
     }).then(users => users.map(user => ({ userId: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName })));
   }
@@ -98,6 +119,7 @@ async function resolveMonthlyRecipients(reminder: any, today: Date): Promise<Rem
       where: {
         churchId: reminder.churchId,
         status: 'active',
+        loginEnabled: true,
         role: { name: 'member' },
         ...(donorIds.length ? { id: { notIn: donorIds } } : {}),
       },
@@ -123,13 +145,13 @@ async function resolveMonthlyRecipients(reminder: any, today: Date): Promise<Rem
   const pledges = await prisma.pledge.findMany({
     where: pledgeWhere,
     include: {
-      user: { select: { id: true, email: true, firstName: true, lastName: true } },
+      user: { select: { id: true, email: true, firstName: true, lastName: true, loginEnabled: true } },
       campaign: { select: { name: true } },
     },
   });
 
   return pledges
-    .filter(pledge => pledge.user)
+    .filter(pledge => pledge.user && pledge.user.loginEnabled !== false)
     .map(pledge => ({
       userId: pledge.user!.id,
       email: pledge.user!.email,
@@ -157,12 +179,12 @@ async function resolveDeadlineRecipients(reminder: any, today: Date): Promise<Re
         ...(reminder.campaignId ? { campaignId: reminder.campaignId } : {}),
       },
       include: {
-        user: { select: { id: true, email: true, firstName: true, lastName: true } },
+        user: { select: { id: true, email: true, firstName: true, lastName: true, loginEnabled: true } },
         campaign: { select: { name: true } },
       },
     });
 
-    recipients.push(...pledges.filter(pledge => pledge.user).map(pledge => ({
+    recipients.push(...pledges.filter(pledge => pledge.user && pledge.user.loginEnabled !== false).map(pledge => ({
       userId: pledge.user!.id,
       email: pledge.user!.email,
       firstName: pledge.user!.firstName,

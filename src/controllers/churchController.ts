@@ -5,31 +5,31 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
-export async function getChurches(req: Request, res: Response): Promise<void> {
+async function resolveAccessibleChurchIds(req: Request): Promise<string[]> {
   const role = req.user?.role ?? 'member';
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
 
-  let churchIds: string[] = [];
-
   if (role === 'ministry_admin' && userId) {
-    // National admin sees churches they own
     const churches = await prisma.church.findMany({
       where: { ministryAdminId: userId },
-      select: { id: true }
+      select: { id: true },
     });
-    churchIds = churches.map(c => c.id);
-  } else {
-    // Other roles use existing scope logic
-    churchIds = await getAccessibleChurchIds(
-      role,
-      churchId ?? '',
-      req.user?.districts,
-      req.user?.traditionalAuthorities,
-      req.user?.regions,
-      userId
-    );
+    return churches.map(c => c.id);
   }
+
+  return getAccessibleChurchIds(
+    role,
+    churchId ?? '',
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+}
+
+export async function getChurches(req: Request, res: Response): Promise<void> {
+  const churchIds = await resolveAccessibleChurchIds(req);
 
   const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
   
@@ -47,6 +47,33 @@ export async function getChurches(req: Request, res: Response): Promise<void> {
 
   res.json({ success: true, data: churchesWithCounts });
 }
+
+export async function getChurchSelect(req: Request, res: Response): Promise<void> {
+  const churchIds = await resolveAccessibleChurchIds(req);
+
+  if (churchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const churches = await prisma.church.findMany({
+    where: { id: { in: churchIds } },
+    select: {
+      id: true,
+      name: true,
+      location: true,
+      country: true,
+      region: true,
+      district: true,
+      traditionalAuthority: true,
+      village: true,
+    },
+    orderBy: { name: 'asc' },
+  });
+
+  res.json({ success: true, data: churches });
+}
+
 
 export async function getChurch(req: Request, res: Response): Promise<void> {
   const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });

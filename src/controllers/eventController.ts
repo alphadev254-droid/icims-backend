@@ -52,6 +52,50 @@ const bookTicketSchema = z.object({
   existingTransactionId: z.string().optional(),
 });
 
+export async function getEventSelect(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+  const filterChurchId = req.query.churchId as string | undefined;
+
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const churchIds = await getAccessibleChurchIds(
+    roleName,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+
+  let scopedChurchIds = churchIds;
+  if (filterChurchId) {
+    if (!churchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: [] });
+      return;
+    }
+    scopedChurchIds = [filterChurchId];
+  }
+
+  if (scopedChurchIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const events = await prisma.event.findMany({
+    where: { churchId: { in: scopedChurchIds } },
+    select: { id: true, title: true, date: true, time: true, churchId: true, requiresTicket: true },
+    orderBy: { date: 'desc' },
+    take: 500,
+  });
+
+  res.json({ success: true, data: events });
+}
+
 export async function getEvents(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;

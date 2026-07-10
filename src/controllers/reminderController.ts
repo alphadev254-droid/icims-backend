@@ -6,8 +6,9 @@ import { getAccessibleChurchIds } from '../lib/churchScope';
 const scheduledReminderSchema = z.object({
   churchId: z.string().min(1),
   campaignId: z.string().optional().nullable(),
-  type: z.enum(['giving', 'pledge']),
-  audience: z.enum(['all_members', 'active_pledges', 'overdue_pledges', 'not_given_this_month']),
+  eventId: z.string().optional().nullable(),
+  type: z.enum(['giving', 'pledge', 'event']),
+  audience: z.enum(['all_members', 'active_pledges', 'overdue_pledges', 'not_given_this_month', 'event_members']),
   channelEmail: z.boolean().default(true),
   channelPush: z.boolean().default(true),
   title: z.string().min(1),
@@ -321,12 +322,23 @@ export async function createScheduledReminder(req: Request, res: Response): Prom
       return;
     }
   }
+  if (parsed.data.eventId) {
+    const event = await prisma.event.findFirst({
+      where: { id: parsed.data.eventId, churchId: parsed.data.churchId },
+      select: { id: true },
+    });
+    if (!event) {
+      res.status(400).json({ success: false, message: 'Event must belong to the selected church' });
+      return;
+    }
+  }
 
   const reminder = await prisma.scheduledReminder.create({
     data: {
       ministryAdminId: access.ministryAdminId,
       churchId: parsed.data.churchId,
       campaignId: parsed.data.campaignId || null,
+      eventId: parsed.data.eventId || null,
       type: parsed.data.type,
       audience: parsed.data.audience,
       channelEmail: parsed.data.channelEmail,
@@ -338,7 +350,7 @@ export async function createScheduledReminder(req: Request, res: Response): Prom
       deadlineOffsets: parsed.data.deadlineOffsets ? JSON.stringify(parsed.data.deadlineOffsets) : null,
       isActive: parsed.data.isActive ?? true,
       createdById: req.user?.userId,
-    },
+    } as any,
     include: { _count: { select: { logs: true } } },
   });
 
@@ -372,6 +384,7 @@ export async function updateScheduledReminder(req: Request, res: Response): Prom
     where: { id: existing.id },
     data: {
       campaignId: parsed.data.campaignId === undefined ? undefined : parsed.data.campaignId || null,
+      eventId: parsed.data.eventId === undefined ? undefined : parsed.data.eventId || null,
       type: parsed.data.type,
       audience: parsed.data.audience,
       channelEmail: parsed.data.channelEmail,
@@ -382,7 +395,7 @@ export async function updateScheduledReminder(req: Request, res: Response): Prom
       scheduleDays: parsed.data.scheduleDays === undefined ? undefined : JSON.stringify(parsed.data.scheduleDays),
       deadlineOffsets: parsed.data.deadlineOffsets === undefined ? undefined : JSON.stringify(parsed.data.deadlineOffsets),
       isActive: parsed.data.isActive,
-    },
+    } as any,
     include: { _count: { select: { logs: true } } },
   });
 
