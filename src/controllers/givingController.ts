@@ -23,6 +23,7 @@ const createCampaignSchema = z.object({
 const updateCampaignSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
+  category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']).optional(),
   subcategory: z.string().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
   currency: z.enum(['MWK', 'KES']).optional(),
@@ -469,7 +470,7 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
     where: { id: String(id) },
     data: {
       ...data,
-      ...(endDate && { endDate: new Date(endDate) }),
+      ...(endDate !== undefined ? { endDate: endDate ? new Date(endDate) : null } : {}),
     },
   });
 
