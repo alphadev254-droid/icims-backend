@@ -117,6 +117,8 @@ model User {
   residentialNeighbourhood String?
   serviceInterest        String?  // Choir, Ushering, Greeters, Security/Protocol, Missions/Outreaches, Other
   membershipType         String?  // Visitor, Member
+  memberType             String   @default("adult") // adult | child
+  loginEnabled           Boolean  @default(true)
   baptizedByImmersion    Boolean?
   status                 String   @default("active")
   subdomain              String?  @unique  // e.g. grace-church (without domain)
@@ -144,8 +146,11 @@ model User {
   sharedAccessLinks     SharedAccessLink[]
   childGuardianLinks    ChildGuardian[]
   createdChildren       Child[] @relation("ChildCreator")
+  childProfile          Child? @relation("ChildUser")
 
   @@index([churchId, roleId, status, createdAt])
+  @@index([memberType])
+  @@index([loginEnabled])
   @@index([dateOfBirth])
   @@index([weddingDate])
   @@index([anniversary])
@@ -220,6 +225,7 @@ model Church {
 
 model Child {
   id          String   @id @default(cuid())
+  userId      String?  @unique
   churchId    String
   firstName   String
   lastName    String
@@ -234,10 +240,12 @@ model Child {
   updatedAt   DateTime @updatedAt
 
   church      Church          @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  user        User?           @relation("ChildUser", fields: [userId], references: [id], onDelete: SetNull)
   createdBy   User?           @relation("ChildCreator", fields: [createdById], references: [id])
   guardians   ChildGuardian[]
 
   @@index([churchId])
+  @@index([userId])
   @@index([status])
   @@index([createdById])
   @@map("children")

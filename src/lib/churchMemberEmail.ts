@@ -22,6 +22,7 @@ export async function queueChurchMemberEmails({
     where: {
       churchId,
       status: 'active',
+      loginEnabled: true,
       ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
     },
     select: { id: true, firstName: true, lastName: true, email: true },

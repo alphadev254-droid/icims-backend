@@ -12,6 +12,8 @@
     "db:seed-roles": "ts-node prisma/seed-roles.ts",
     "seed:packages": "ts-node prisma/seed-packages.ts",
     "seed:admin-profile": "ts-node scripts/seed-admin-profile.ts",
+    "backfill:child-ages": "ts-node scripts/backfill-child-ages.ts",
+    "backfill:child-users": "ts-node scripts/backfill-child-user-identities.ts",
     "db:studio": "prisma studio",
     "db:generate": "prisma generate"
   },

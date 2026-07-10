@@ -230,6 +230,10 @@ export async function login(req: Request, res: Response): Promise<void> {
     res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
     return;
   }
+  if (user.loginEnabled === false) {
+    res.status(403).json({ success: false, message: 'This account does not have login access.' });
+    return;
+  }
 
   // Get package from National Admin if needed
   const userWithPackage = await getUserWithPackage(user.id);
@@ -504,6 +508,10 @@ export async function getMe(req: Request, res: Response): Promise<void> {
 
   if (user.status === 'inactive') {
     res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
+    return;
+  }
+  if (user.loginEnabled === false) {
+    res.status(403).json({ success: false, message: 'This account does not have login access.' });
     return;
   }
 

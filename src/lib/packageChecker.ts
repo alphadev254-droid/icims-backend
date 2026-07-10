@@ -104,7 +104,7 @@ export async function checkChurchLimit(ministryAdminId: string): Promise<{ allow
 
 export async function checkMemberLimit(ministryAdminId: string, churchId?: string): Promise<{ allowed: boolean; message?: string }> {
   const where: any = churchId ? { churchId } : { ministryAdminId };
-  const currentCount = await prisma.user.count({ where: { ...where, role: { name: 'member' } } });
+  const currentCount = await prisma.user.count({ where: { ...where, role: { name: 'member' }, memberType: { not: 'child' } } });
   const result = await checkLimit(ministryAdminId, 'max_members', currentCount);
   return { allowed: result.allowed, message: result.message };
 }

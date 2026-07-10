@@ -34,7 +34,7 @@ export const notificationWorker = new Worker<PushJobData>(
     console.log(`[PushQueue] ▶ Processing job ${job.id} | type=${type} | church=${churchId} | title="${title}"`);
 
     const members = await prisma.user.findMany({
-      where: { churchId, status: 'active' },
+      where: { churchId, status: 'active', loginEnabled: true },
       select: { id: true },
     });
 

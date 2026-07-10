@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { hashPassword } from '../lib/password';
 
 const childSchema = z.object({
   churchId: z.string().min(1),
@@ -20,7 +21,7 @@ const childSchema = z.object({
   emergencyContact: z.boolean().optional(),
 });
 
-const childUpdateSchema = childSchema.omit({ churchId: true, guardianId: true }).partial();
+const childUpdateSchema = childSchema.omit({ guardianId: true }).partial();
 
 const guardianSchema = z.object({
   guardianId: z.string().min(1),
@@ -43,6 +44,7 @@ async function getScope(req: Request): Promise<string[]> {
 
 function childInclude() {
   return {
+    user: { select: { id: true, memberType: true, loginEnabled: true } },
     church: { select: { id: true, name: true } },
     guardians: {
       include: {
@@ -51,6 +53,68 @@ function childInclude() {
       orderBy: [{ isPrimary: 'desc' as const }, { createdAt: 'asc' as const }],
     },
   };
+}
+
+async function getMemberRoleId() {
+  const role = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
+  if (!role) throw new Error('Member role not found');
+  return role.id;
+}
+
+function childIdentityEmail(childId: string) {
+  return `child.${childId}@children.icims.local`;
+}
+
+async function createChildIdentityUser(child: {
+  id: string;
+  churchId: string;
+  firstName: string;
+  lastName: string;
+  phone?: string | null;
+  gender?: string | null;
+  dateOfBirth?: Date | null;
+  status?: string | null;
+}) {
+  const [roleId, password] = await Promise.all([
+    getMemberRoleId(),
+    hashPassword(`child-${child.id}-${Date.now()}-${Math.random()}`),
+  ]);
+  return prisma.user.create({
+    data: {
+      email: childIdentityEmail(child.id),
+      password,
+      firstName: child.firstName,
+      lastName: child.lastName,
+      phone: child.phone || null,
+      gender: child.gender || null,
+      dateOfBirth: child.dateOfBirth || null,
+      churchId: child.churchId,
+      roleId,
+      membershipType: 'member',
+      memberType: 'child',
+      loginEnabled: false,
+      status: child.status || 'active',
+    },
+    select: { id: true },
+  });
+}
+
+async function syncChildIdentityUser(child: any) {
+  if (!child.userId) return;
+  await prisma.user.update({
+    where: { id: child.userId },
+    data: {
+      firstName: child.firstName,
+      lastName: child.lastName,
+      phone: child.phone || null,
+      gender: child.gender || null,
+      dateOfBirth: child.dateOfBirth || null,
+      churchId: child.churchId,
+      status: child.status || 'active',
+      memberType: 'child',
+      loginEnabled: false,
+    },
+  });
 }
 
 function calculateAgeFromDate(value?: Date | string | null): number | null {
@@ -205,6 +269,16 @@ export async function createChild(req: Request, res: Response): Promise<void> {
     include: childInclude(),
   });
 
+  if (!child.userId) {
+    const identity = await createChildIdentityUser(child);
+    await prisma.child.update({
+      where: { id: child.id },
+      data: { userId: identity.id },
+    });
+    (child as any).userId = identity.id;
+    (child as any).user = { id: identity.id, memberType: 'child', loginEnabled: false };
+  }
+
   res.status(201).json({ success: true, data: withComputedAge(child) });
 }
 
@@ -212,13 +286,20 @@ export async function updateChild(req: Request, res: Response): Promise<void> {
   const parsed = childUpdateSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const child = await ensureChildInScope(String(req.params.id), await getScope(req), req);
+  const scope = await getScope(req);
+  const child = await ensureChildInScope(String(req.params.id), scope, req);
   if (!child) { res.status(404).json({ success: false, message: 'Child not found' }); return; }
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
+  const nextChurchId = isMemberRequest(req) ? undefined : parsed.data.churchId;
+  if (nextChurchId && !scope.includes(nextChurchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to this church' });
+    return;
+  }
 
   const updated = await prisma.child.update({
     where: { id: String(req.params.id) },
     data: {
+      churchId: nextChurchId,
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
       dateOfBirth: parsed.data.dateOfBirth === undefined ? undefined : (parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : null),
@@ -233,6 +314,19 @@ export async function updateChild(req: Request, res: Response): Promise<void> {
     include: childInclude(),
   });
 
+  if (!updated.userId) {
+    const identity = await createChildIdentityUser(updated);
+    const relinked = await prisma.child.update({
+      where: { id: updated.id },
+      data: { userId: identity.id },
+      include: childInclude(),
+    });
+    res.json({ success: true, data: withComputedAge(relinked) });
+    return;
+  }
+
+  await syncChildIdentityUser(updated);
+
   res.json({ success: true, data: withComputedAge(updated) });
 }
 
@@ -242,6 +336,12 @@ export async function deleteChild(req: Request, res: Response): Promise<void> {
   if (child === false) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
   await prisma.child.delete({ where: { id: String(req.params.id) } });
+  if (child.userId) {
+    await prisma.user.update({
+      where: { id: child.userId },
+      data: { status: 'inactive', loginEnabled: false },
+    }).catch(() => undefined);
+  }
   res.json({ success: true, message: 'Child deleted' });
 }
 

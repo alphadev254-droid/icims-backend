@@ -272,6 +272,8 @@ export const getTeamMembers = async (req: Request, res: Response) => {
           lastName: true,
           email: true,
           phone: true,
+          memberType: true,
+          loginEnabled: true,
           membershipType: true,
           maritalStatus: true,
           serviceInterest: true,
@@ -299,6 +301,8 @@ export const getTeamMembers = async (req: Request, res: Response) => {
       lastName: u.lastName,
       email: u.email,
       phone: u.phone,
+      memberType: u.memberType,
+      loginEnabled: u.loginEnabled,
       membershipType: u.membershipType,
       maritalStatus: u.maritalStatus,
       serviceInterest: u.serviceInterest,
@@ -354,7 +358,7 @@ export const addTeamMember = async (req: Request, res: Response) => {
     const member = await prisma.user.findUnique({ where: { id: String(userId) } });
     const adminUser = await prisma.user.findUnique({ where: { id: currentUser.userId } });
     
-    if (member && adminUser) {
+    if (member && adminUser && member.loginEnabled !== false) {
       queueEmail(
         member.email,
         `Added to ${team.name}`,

@@ -203,7 +203,7 @@ export async function getCell(req: Request, res: Response): Promise<void> {
       members: {
         select: {
           id: true, userId: true, isLeader: true, isAssistant: true, status: true, joinedAt: true, tags: true,
-          user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true } },
+          user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, memberType: true, loginEnabled: true } },
         },
         where: { status: { not: 'inactive' }, OR: [{ isLeader: true }, { isAssistant: true }] },
         orderBy: [{ isLeader: 'desc' }, { isAssistant: 'desc' }],
@@ -467,7 +467,7 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
         id: true, cellId: true, userId: true,
         joinedAt: true, status: true, tags: true,
         isLeader: true, isAssistant: true,
-        user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true } },
+        user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, memberType: true, loginEnabled: true } },
       },
       orderBy: [{ isLeader: 'desc' }, { isAssistant: 'desc' }, { joinedAt: 'asc' }],
       skip,
@@ -553,7 +553,7 @@ export async function getMeetingAttendance(req: Request, res: Response): Promise
   const meetingId = String(req.params.meetingId);
   const attendance = await prisma.cellAttendance.findMany({
     where: { meetingId },
-    include: { user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
+    include: { user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true } } },
     orderBy: { createdAt: 'asc' },
   });
   res.json({ success: true, data: attendance });
@@ -657,7 +657,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       where: { cellId, status: 'active' },
       select: {
         userId: true,
-        user: { select: { id: true, firstName: true, lastName: true, phone: true, dateOfBirth: true } },
+        user: { select: { id: true, firstName: true, lastName: true, phone: true, dateOfBirth: true, memberType: true, loginEnabled: true } },
       },
     }),
   ]);
@@ -1411,7 +1411,7 @@ export async function getCellChurchMembers(req: Request, res: Response): Promise
     prisma.user.count({ where }),
     prisma.user.findMany({
       where,
-      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true },
       orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       skip,
       take: limitNum,

@@ -242,6 +242,18 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
         role: { select: { id: true, name: true, displayName: true, createdAt: true, scope: true } },
         church: { select: { name: true } },
         teams: { include: { team: { select: { name: true } } } },
+        childProfile: {
+          include: {
+            user: { select: { id: true, memberType: true, loginEnabled: true } },
+            church: { select: { id: true, name: true } },
+            guardians: {
+              include: {
+                guardian: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, churchId: true } },
+              },
+              orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+            },
+          },
+        },
         cellMemberships: {
           where: { status: { not: 'inactive' } },
           select: { cell: { select: { id: true, name: true } } },
