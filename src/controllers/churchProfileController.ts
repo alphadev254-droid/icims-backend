@@ -494,7 +494,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
       church: { select: { name: true } },
     },
     orderBy: { date: 'asc' },
-    take: 6,
+    take: 100,
   });
 
   // Public campaigns — active, allowPublicDonations
@@ -510,7 +510,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
       church: { select: { name: true } },
     },
     orderBy: { createdAt: 'desc' },
-    take: 6,
+    take: 100,
   });
 
   res.json({
