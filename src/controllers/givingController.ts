@@ -22,14 +22,14 @@ const createCampaignSchema = z.object({
 
 const updateCampaignSchema = z.object({
   name: z.string().optional(),
-  description: z.string().optional(),
+  description: z.string().nullable().optional(),
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']).optional(),
-  subcategory: z.string().optional(),
+  subcategory: z.string().nullable().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
   currency: z.enum(['MWK', 'KES']).optional(),
   status: z.enum(['active', 'completed', 'cancelled']).optional(),
-  endDate: z.string().optional(),
-  imageUrl: z.string().optional(),
+  endDate: z.string().nullable().optional(),
+  imageUrl: z.string().nullable().optional(),
   allowPublicDonations: z.boolean().optional(),
   allowPledging: z.boolean().optional(),
 });
