@@ -598,6 +598,8 @@ model AttendanceParticipant {
   guestName      String?
   guestEmail     String?
   guestPhone     String?
+  guestGender    String?
+  guestAgeBracket String?
   guestFirstTime Boolean  @default(false)
   invitedBy      String?
   checkInMethod  String   @default("qr_guest")
@@ -613,6 +615,8 @@ model AttendanceParticipant {
   @@index([attendanceId])
   @@index([userId])
   @@index([guestPhone])
+  @@index([guestGender])
+  @@index([guestAgeBracket])
   @@map("attendance_participants")
 }
 

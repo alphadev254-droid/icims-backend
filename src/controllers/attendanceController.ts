@@ -54,6 +54,8 @@ const guestCheckInSchema = z.object({
   guestName: z.string().min(1, 'Name is required'),
   guestEmail: z.string().email().optional().or(z.literal('')),
   guestPhone: z.string().optional(),
+  guestGender: z.string().optional(),
+  guestAgeBracket: z.string().optional(),
   guestFirstTime: z.boolean().optional(),
   invitedBy: z.string().optional(),
 });
@@ -543,6 +545,8 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
             email: true,
             phone: true,
             memberType: true,
+            gender: true,
+            dateOfBirth: true,
           },
         },
       },
@@ -716,7 +720,7 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
   const participantDelegate = (prisma as any).attendanceParticipant;
   const existing = await participantDelegate.findUnique({
     where: { attendanceId_userId: { attendanceId: attendance.id, userId } },
-    include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true } } },
+    include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
   });
   if (existing) {
     res.json({ success: true, data: existing, alreadyCheckedIn: true });
@@ -730,7 +734,7 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
         userId,
         checkInMethod: 'qr_member',
       },
-      include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true } } },
+      include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
     });
     await (tx.attendance as any).update({
       where: { id: attendance.id },
@@ -781,6 +785,8 @@ export async function checkInGuestByQr(req: Request, res: Response): Promise<voi
         guestName: data.guestName.trim(),
         guestEmail: data.guestEmail?.trim() || null,
         guestPhone: data.guestPhone?.trim() || null,
+        guestGender: data.guestGender?.trim() || null,
+        guestAgeBracket: data.guestAgeBracket?.trim() || null,
         guestFirstTime: data.guestFirstTime ?? false,
         invitedBy: data.invitedBy?.trim() || null,
         checkInMethod: 'qr_guest',
