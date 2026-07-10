@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
@@ -31,6 +32,89 @@ const schema = z.object({
   churchId: z.string().min(1, 'Church ID required'),
   visitors: z.array(visitorSchema).optional(),
 });
+
+const qrSettingsSchema = z.object({
+  digitalCheckInEnabled: z.boolean().optional(),
+  qrStatus: z.enum(['draft', 'active', 'closed']).optional(),
+  qrActiveFrom: z.string().optional().nullable(),
+  qrActiveUntil: z.string().optional().nullable(),
+});
+
+const guestCheckInSchema = z.object({
+  guestName: z.string().min(1, 'Name is required'),
+  guestEmail: z.string().email().optional().or(z.literal('')),
+  guestPhone: z.string().optional(),
+  guestFirstTime: z.boolean().optional(),
+  invitedBy: z.string().optional(),
+});
+
+const attendanceListSelect: any = {
+  id: true,
+  churchId: true,
+  date: true,
+  totalAttendees: true,
+  maleCount: true,
+  femaleCount: true,
+  children: true,
+  youth: true,
+  youngAdults: true,
+  adults: true,
+  seniors: true,
+  newVisitors: true,
+  serviceType: true,
+  notes: true,
+  eventId: true,
+  createdAt: true,
+  digitalCheckInEnabled: true,
+  qrToken: true,
+  qrStatus: true,
+  qrActiveFrom: true,
+  qrActiveUntil: true,
+  qrRegeneratedAt: true,
+  church: { select: { id: true, name: true } },
+  _count: { select: { visitors: true, participants: true } },
+};
+
+function generateQrToken() {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+function parseOptionalDate(value: string | null | undefined) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isQrOpen(attendance: any) {
+  const now = new Date();
+  if (!attendance.digitalCheckInEnabled || attendance.qrStatus !== 'active') return false;
+  if (attendance.qrActiveFrom && new Date(attendance.qrActiveFrom) > now) return false;
+  if (attendance.qrActiveUntil && new Date(attendance.qrActiveUntil) < now) return false;
+  return true;
+}
+
+async function assertAttendanceAccess(req: Request, attendanceId: string) {
+  const record = await (prisma.attendance as any).findUnique({
+    where: { id: attendanceId },
+    include: { church: { select: { id: true, name: true } } },
+  });
+  if (!record) return { ok: false as const, status: 404, message: 'Record not found' };
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    req.user?.role!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    req.user?.userId
+  );
+
+  if (!accessibleChurchIds.includes(record.churchId)) {
+    return { ok: false as const, status: 403, message: 'Access denied' };
+  }
+
+  return { ok: true as const, record };
+}
 
 export async function getAttendance(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -95,26 +179,7 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
     const [records, total] = await Promise.all([
       prisma.attendance.findMany({
         where: whereClause,
-        select: {
-          id: true,
-          churchId: true,
-          date: true,
-          totalAttendees: true,
-          maleCount: true,
-          femaleCount: true,
-          children: true,
-          youth: true,
-          youngAdults: true,
-          adults: true,
-          seniors: true,
-          newVisitors: true,
-          serviceType: true,
-          notes: true,
-          eventId: true,
-          createdAt: true,
-          church: { select: { id: true, name: true } },
-          _count: { select: { visitors: true } },
-        },
+        select: attendanceListSelect,
         orderBy: { date: 'desc' },
         skip: exportSkip,
         take: exportLimit,
@@ -128,26 +193,7 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
   const [records, total] = await Promise.all([
     prisma.attendance.findMany({
       where: whereClause,
-      select: {
-        id: true,
-        churchId: true,
-        date: true,
-        totalAttendees: true,
-        maleCount: true,
-        femaleCount: true,
-        children: true,
-        youth: true,
-        youngAdults: true,
-        adults: true,
-        seniors: true,
-        newVisitors: true,
-        serviceType: true,
-        notes: true,
-        eventId: true,
-        createdAt: true,
-        church: { select: { id: true, name: true } },
-        _count: { select: { visitors: true } },
-      },
+      select: attendanceListSelect,
       orderBy: { date: 'desc' },
       skip,
       take: limit,
@@ -356,6 +402,287 @@ export async function deleteAttendanceVisitor(req: Request, res: Response): Prom
     data: { newVisitors: { decrement: 1 } },
   });
   res.json({ success: true });
+}
+
+export async function getAttendanceParticipants(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const skip = (page - 1) * limit;
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const [participants, total] = await Promise.all([
+    participantDelegate.findMany({
+      where: { attendanceId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            memberType: true,
+          },
+        },
+      },
+      orderBy: { checkedInAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    participantDelegate.count({ where: { attendanceId } }),
+  ]);
+
+  res.json({ success: true, data: participants, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+}
+
+export async function updateAttendanceQrSettings(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const parsed = qrSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const data: any = {};
+  if (parsed.data.digitalCheckInEnabled !== undefined) data.digitalCheckInEnabled = parsed.data.digitalCheckInEnabled;
+  if (parsed.data.qrStatus) data.qrStatus = parsed.data.qrStatus;
+  if (parsed.data.qrActiveFrom !== undefined) data.qrActiveFrom = parseOptionalDate(parsed.data.qrActiveFrom);
+  if (parsed.data.qrActiveUntil !== undefined) data.qrActiveUntil = parseOptionalDate(parsed.data.qrActiveUntil);
+  if (!access.record.qrToken) data.qrToken = generateQrToken();
+
+  const updated = await (prisma.attendance as any).update({
+    where: { id: attendanceId },
+    data,
+    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function activateAttendanceQr(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const updated = await (prisma.attendance as any).update({
+    where: { id: attendanceId },
+    data: {
+      digitalCheckInEnabled: true,
+      qrStatus: 'active',
+      qrToken: access.record.qrToken || generateQrToken(),
+      qrActiveFrom: access.record.qrActiveFrom || new Date(),
+    },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function closeAttendanceQr(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const updated = await (prisma.attendance as any).update({
+    where: { id: attendanceId },
+    data: { qrStatus: 'closed', digitalCheckInEnabled: false },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function regenerateAttendanceQr(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const updated = await (prisma.attendance as any).update({
+    where: { id: attendanceId },
+    data: { qrToken: generateQrToken(), qrRegeneratedAt: new Date() },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function getQrCheckInSession(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const attendance = await (prisma.attendance as any).findUnique({
+    where: { qrToken: token },
+    include: {
+      church: {
+        select: {
+          id: true,
+          name: true,
+          ministryAdmin: {
+            select: {
+              subdomain: true,
+              churchProfile: { select: { logoUrl: true, primaryColor: true, tagline: true } },
+            },
+          },
+        },
+      },
+      _count: { select: { participants: true } },
+    },
+  });
+
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Check-in link not found' });
+    return;
+  }
+
+  const event = attendance.eventId
+    ? await prisma.event.findUnique({ where: { id: attendance.eventId }, select: { id: true, title: true, date: true, time: true, location: true } })
+    : null;
+
+  res.json({
+    success: true,
+    data: {
+      id: attendance.id,
+      date: attendance.date,
+      serviceType: attendance.serviceType,
+      church: attendance.church,
+      event,
+      qrStatus: attendance.qrStatus,
+      qrActiveFrom: attendance.qrActiveFrom,
+      qrActiveUntil: attendance.qrActiveUntil,
+      isOpen: isQrOpen(attendance),
+      participantCount: attendance._count?.participants ?? 0,
+    },
+  });
+}
+
+export async function checkInMemberByQr(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Sign in to check in as a member' });
+    return;
+  }
+
+  const attendance = await (prisma.attendance as any).findUnique({ where: { qrToken: token } });
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Check-in link not found' });
+    return;
+  }
+  if (!isQrOpen(attendance)) {
+    res.status(400).json({ success: false, message: 'This check-in QR code is not active' });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true } });
+  if (!user || user.churchId !== attendance.churchId) {
+    res.status(403).json({ success: false, message: 'This check-in is only for members of this church' });
+    return;
+  }
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = await participantDelegate.findUnique({
+    where: { attendanceId_userId: { attendanceId: attendance.id, userId } },
+    include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true } } },
+  });
+  if (existing) {
+    res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
+      data: {
+        attendanceId: attendance.id,
+        userId,
+        checkInMethod: 'qr_member',
+      },
+      include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true } } },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendance.id },
+      data: { totalAttendees: { increment: 1 } },
+    });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
+}
+
+export async function checkInGuestByQr(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const parsed = guestCheckInSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const attendance = await (prisma.attendance as any).findUnique({ where: { qrToken: token } });
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Check-in link not found' });
+    return;
+  }
+  if (!isQrOpen(attendance)) {
+    res.status(400).json({ success: false, message: 'This check-in QR code is not active' });
+    return;
+  }
+
+  const data = parsed.data;
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const duplicateWhere: any[] = [];
+  if (data.guestPhone?.trim()) duplicateWhere.push({ guestPhone: data.guestPhone.trim() });
+  if (data.guestEmail?.trim()) duplicateWhere.push({ guestEmail: data.guestEmail.trim() });
+  const existing = duplicateWhere.length
+    ? await participantDelegate.findFirst({ where: { attendanceId: attendance.id, OR: duplicateWhere } })
+    : null;
+
+  if (existing) {
+    res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
+      data: {
+        attendanceId: attendance.id,
+        guestName: data.guestName.trim(),
+        guestEmail: data.guestEmail?.trim() || null,
+        guestPhone: data.guestPhone?.trim() || null,
+        guestFirstTime: data.guestFirstTime ?? false,
+        invitedBy: data.invitedBy?.trim() || null,
+        checkInMethod: 'qr_guest',
+      },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendance.id },
+      data: {
+        totalAttendees: { increment: 1 },
+        newVisitors: { increment: 1 },
+      },
+    });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
 }
 
 export async function getServiceVisitorsReport(req: Request, res: Response): Promise<void> {

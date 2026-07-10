@@ -144,6 +144,7 @@ model User {
   churchProfile         ChurchProfile?
   deviceTokens          DeviceToken[]
   sharedAccessLinks     SharedAccessLink[]
+  attendanceParticipants AttendanceParticipant[]
   childGuardianLinks    ChildGuardian[]
   createdChildren       Child[] @relation("ChildCreator")
   childProfile          Child? @relation("ChildUser")
@@ -571,14 +572,47 @@ model Attendance {
   sharedAccessLinkId String?
   notes              String?  @db.Text
   createdAt          DateTime @default(now())
+  digitalCheckInEnabled Boolean @default(false)
+  qrToken                String?  @unique
+  qrStatus               String   @default("draft")
+  qrActiveFrom           DateTime?
+  qrActiveUntil          DateTime?
+  qrRegeneratedAt        DateTime?
 
   church            Church              @relation(fields: [churchId], references: [id])
   sharedAccessLink  SharedAccessLink?   @relation(fields: [sharedAccessLinkId], references: [id], onDelete: SetNull)
   visitors          AttendanceVisitor[]
+  participants      AttendanceParticipant[]
 
   @@index([churchId, date])
   @@index([sharedAccessLinkId])
+  @@index([qrStatus])
   @@map("attendance")
+}
+
+model AttendanceParticipant {
+  id             String   @id @default(cuid())
+  attendanceId   String
+  userId         String?
+  guestName      String?
+  guestEmail     String?
+  guestPhone     String?
+  guestFirstTime Boolean  @default(false)
+  invitedBy      String?
+  checkInMethod  String   @default("qr_guest")
+  status         String   @default("present")
+  checkedInAt    DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([attendanceId, userId])
+  @@index([attendanceId])
+  @@index([userId])
+  @@index([guestPhone])
+  @@map("attendance_participants")
 }
 
 model AttendanceVisitor {
