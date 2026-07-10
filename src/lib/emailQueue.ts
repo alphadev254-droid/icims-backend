@@ -24,6 +24,7 @@ export type EmailType =
   | 'donation_receipt'
   | 'withdrawal_request_user'
   | 'withdrawal_request_admin'
+  | 'withdrawal_otp'
   | 'withdrawal_final_status'
   | 'package_subscription'
   | 'notification';

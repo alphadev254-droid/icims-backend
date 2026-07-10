@@ -520,6 +520,51 @@ export const withdrawalRequestAdminTemplate = (data: {
 </html>
 `;
 
+export const withdrawalOtpTemplate = (data: {
+  firstName: string;
+  otpCode: string;
+  amount: number;
+  currency: string;
+  method: string;
+  expiresInMinutes: number;
+  churchName?: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>Withdrawal Verification</h1>
+      <p>Security confirmation required</p>
+    </div>
+    <div class="content">
+      <h2>Hello ${data.firstName},</h2>
+      <p>Use the verification code below to confirm your withdrawal request.</p>
+
+      <div class="info-box" style="text-align:center;">
+        <h3>Your OTP Code</h3>
+        <p style="font-size:32px; letter-spacing:8px; font-weight:700; color:#111827; margin:16px 0;">${data.otpCode}</p>
+        <p>This code expires in ${data.expiresInMinutes} minutes.</p>
+      </div>
+
+      <div class="info-box">
+        <h3>Request Summary</h3>
+        <p><strong>Amount:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
+        <p><strong>Method:</strong> ${data.method === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}</p>
+      </div>
+
+      <p>If you did not request this withdrawal, do not share this code and contact your administrator immediately.</p>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
 
 export const withdrawalFinalStatusTemplate = (data: {
   firstName: string;

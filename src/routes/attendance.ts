@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import {
   getAttendance,
+  getAttendanceById,
   createAttendance,
+  startQrAttendance,
   updateAttendance,
   deleteAttendance,
   getAttendanceVisitors,
@@ -29,8 +31,10 @@ router.use(authenticate);
 
 router.get('/',       authorizePermission('attendance:read'),   getAttendance);
 router.post('/',      authorizePermission('attendance:create'), createAttendance);
+router.post('/start-qr', authorizePermission('attendance:create'), startQrAttendance);
 router.put('/:id',    authorizePermission('attendance:update'), updateAttendance);
 router.get('/visitors',                    authorizePermission('attendance:read'),   getServiceVisitorsReport);
+router.get('/:id',                         authorizePermission('attendance:read'),   getAttendanceById);
 router.get('/:id/visitors',                authorizePermission('attendance:read'),   getAttendanceVisitors);
 router.post('/:id/visitors',               authorizePermission('attendance:update'), addAttendanceVisitor);
 router.delete('/:id/visitors/:visitorId',  authorizePermission('attendance:update'), deleteAttendanceVisitor);

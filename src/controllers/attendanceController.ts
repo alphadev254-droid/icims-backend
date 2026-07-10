@@ -17,7 +17,7 @@ const visitorSchema = z.object({
 
 const schema = z.object({
   date: z.string().min(1, 'Date required'),
-  totalAttendees: z.number().int().positive(),
+  totalAttendees: z.number().int().min(0),
   maleCount: z.number().int().min(0).default(0),
   femaleCount: z.number().int().min(0).default(0),
   children: z.number().int().min(0).default(0),
@@ -36,6 +36,16 @@ const schema = z.object({
 const qrSettingsSchema = z.object({
   digitalCheckInEnabled: z.boolean().optional(),
   qrStatus: z.enum(['draft', 'active', 'closed']).optional(),
+  qrActiveFrom: z.string().optional().nullable(),
+  qrActiveUntil: z.string().optional().nullable(),
+});
+
+const startQrAttendanceSchema = z.object({
+  churchId: z.string().min(1, 'Church ID required'),
+  date: z.string().min(1, 'Date required'),
+  serviceType: z.string().default('Sunday Service'),
+  eventId: z.string().optional(),
+  notes: z.string().optional(),
   qrActiveFrom: z.string().optional().nullable(),
   qrActiveUntil: z.string().optional().nullable(),
 });
@@ -298,6 +308,110 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   });
 
   res.status(201).json({ success: true, data: record });
+}
+
+export async function startQrAttendance(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role;
+
+  const { hasFeature } = await import('../lib/packageChecker');
+  if (!(await hasFeature(userId!, 'attendance_tracking'))) {
+    res.status(403).json({ success: false, message: 'Your package does not include Attendance Tracking. Please upgrade to access this feature.' });
+    return;
+  }
+
+  const parsed = startQrAttendanceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
+
+  if (!accessibleChurchIds.includes(parsed.data.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to this church' });
+    return;
+  }
+
+  const attendanceDate = new Date(parsed.data.date);
+  const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
+  const existingWhere: any = {
+    churchId: parsed.data.churchId,
+    serviceType: parsed.data.serviceType,
+    date: {
+      gte: dateOnly,
+      lt: new Date(dateOnly.getTime() + 24 * 60 * 60 * 1000),
+    },
+  };
+  if (parsed.data.eventId) existingWhere.eventId = parsed.data.eventId;
+
+  const existing = await (prisma.attendance as any).findFirst({ where: existingWhere });
+  if (existing) {
+    const updated = await (prisma.attendance as any).update({
+      where: { id: existing.id },
+      data: {
+        digitalCheckInEnabled: true,
+        qrStatus: 'active',
+        qrToken: existing.qrToken || generateQrToken(),
+        qrActiveFrom: parseOptionalDate(parsed.data.qrActiveFrom) || existing.qrActiveFrom || new Date(),
+        qrActiveUntil: parseOptionalDate(parsed.data.qrActiveUntil),
+      },
+      include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+    });
+    res.json({ success: true, data: updated, updated: true });
+    return;
+  }
+
+  const record = await (prisma.attendance as any).create({
+    data: {
+      churchId: parsed.data.churchId,
+      eventId: parsed.data.eventId,
+      date: attendanceDate,
+      totalAttendees: 0,
+      maleCount: 0,
+      femaleCount: 0,
+      children: 0,
+      youth: 0,
+      youngAdults: 0,
+      adults: 0,
+      seniors: 0,
+      newVisitors: 0,
+      serviceType: parsed.data.serviceType,
+      notes: parsed.data.notes,
+      digitalCheckInEnabled: true,
+      qrStatus: 'active',
+      qrToken: generateQrToken(),
+      qrActiveFrom: parseOptionalDate(parsed.data.qrActiveFrom) || new Date(),
+      qrActiveUntil: parseOptionalDate(parsed.data.qrActiveUntil),
+    },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+  });
+
+  res.status(201).json({ success: true, data: record });
+}
+
+export async function getAttendanceById(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+  const access = await assertAttendanceAccess(req, id);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const record = await (prisma.attendance as any).findUnique({
+    where: { id },
+    select: attendanceListSelect,
+  });
+
+  res.json({ success: true, data: record });
 }
 
 export async function updateAttendance(req: Request, res: Response): Promise<void> {

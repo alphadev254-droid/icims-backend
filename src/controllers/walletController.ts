@@ -1,12 +1,14 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { calculateWithdrawalFee } from '../utils/feeCalculations';
 import { debitChurchWallet, refundWithdrawal } from '../utils/walletOperations';
 import axios from 'axios';
 import { queueEmail } from '../lib/emailQueue';
-import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate } from '../lib/emailTemplates';
+import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate, withdrawalOtpTemplate } from '../lib/emailTemplates';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 
@@ -154,7 +156,7 @@ export async function getWalletTransactions(req: Request, res: Response): Promis
   res.json({ success: true, data: transactions, total });
 }
 
-const withdrawalSchema = z.object({
+const withdrawalBaseSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(['mobile_money', 'bank_transfer']),
   mobileOperator: z.enum(['airtel', 'tnm']).optional(),
@@ -162,6 +164,23 @@ const withdrawalSchema = z.object({
   bankCode: z.string().optional(),
   accountName: z.string().optional(),
   accountNumber: z.string().optional(),
+});
+
+const withdrawalSchema = withdrawalBaseSchema.refine(
+  (data) => {
+    if (data.method === 'mobile_money') {
+      return !!data.mobileOperator && !!data.mobileNumber;
+    }
+    if (data.method === 'bank_transfer') {
+      return !!data.bankCode && !!data.accountName && !!data.accountNumber;
+    }
+    return true;
+  },
+  { message: 'Missing required fields for withdrawal method' }
+);
+
+const withdrawalConfirmSchema = withdrawalBaseSchema.extend({
+  otpCode: z.string().regex(/^\d{6}$/, 'Enter the 6-digit OTP code'),
 }).refine(
   (data) => {
     if (data.method === 'mobile_money') {
@@ -174,6 +193,160 @@ const withdrawalSchema = z.object({
   },
   { message: 'Missing required fields for withdrawal method' }
 );
+
+const WITHDRAWAL_OTP_EXPIRY_MINUTES = Number(process.env.WITHDRAWAL_OTP_EXPIRY_MINUTES || 5);
+const WITHDRAWAL_OTP_MAX_ATTEMPTS = Number(process.env.WITHDRAWAL_OTP_MAX_ATTEMPTS || 5);
+
+function getWithdrawalPayloadHash(payload: z.infer<typeof withdrawalBaseSchema>) {
+  const normalized = {
+    amount: Number(payload.amount),
+    method: payload.method,
+    mobileOperator: payload.mobileOperator || null,
+    mobileNumber: payload.mobileNumber || null,
+    bankCode: payload.bankCode || null,
+    accountName: payload.accountName || null,
+    accountNumber: payload.accountNumber || null,
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+
+async function getWithdrawalContext(req: Request) {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+
+  if (!userId) return { errorStatus: 401, errorMessage: 'Not authenticated' };
+  if (roleName === 'member') return { errorStatus: 403, errorMessage: 'Members do not have access to withdrawals' };
+
+  const userPermissions = req.user?.permissions || [];
+  if (!userPermissions.includes('withdrawals:create')) {
+    return { errorStatus: 403, errorMessage: 'You do not have permission to create withdrawals' };
+  }
+
+  let ministryAdminId: string;
+  if (roleName === 'ministry_admin') {
+    ministryAdminId = userId;
+  } else {
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { ministryAdminId: true }
+    });
+    ministryAdminId = currentUser?.ministryAdminId || '';
+  }
+
+  if (!ministryAdminId) return { errorStatus: 400, errorMessage: 'No national admin found' };
+
+  const ministryAdmin = await prisma.user.findUnique({
+    where: { id: ministryAdminId },
+    select: { accountCountry: true }
+  });
+
+  if (ministryAdmin?.accountCountry !== 'Malawi') {
+    return { errorStatus: 403, errorMessage: 'Withdrawals are only available for Malawi accounts' };
+  }
+
+  let churchIds: string[] = [];
+  if (roleName === 'ministry_admin') {
+    const churches = await prisma.church.findMany({
+      where: { ministryAdminId: userId },
+      select: { id: true }
+    });
+    churchIds = churches.map(c => c.id);
+  } else {
+    churchIds = await getAccessibleChurchIds(
+      roleName,
+      churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId
+    );
+  }
+
+  if (churchIds.length === 0) return { errorStatus: 400, errorMessage: 'No churches found' };
+
+  const wallets = await prisma.wallet.findMany({
+    where: { churchId: { in: churchIds } },
+    include: { church: { select: { name: true, ministryAdminId: true } } }
+  });
+
+  if (wallets.length === 0) {
+    return { errorStatus: 400, errorMessage: 'No wallet found. Please contact support.' };
+  }
+
+  return { userId, roleName, wallets };
+}
+
+export async function sendWithdrawalOtp(req: Request, res: Response): Promise<void> {
+  const parsed = withdrawalSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const context = await getWithdrawalContext(req);
+  if ('errorStatus' in context) {
+    res.status(context.errorStatus ?? 400).json({ success: false, message: context.errorMessage });
+    return;
+  }
+
+  const totalBalance = context.wallets.reduce((sum, w) => sum + w.balance, 0);
+  if (totalBalance < parsed.data.amount) {
+    res.status(400).json({ success: false, message: `Insufficient balance. Available: ${totalBalance}` });
+    return;
+  }
+
+  const selectedWallet = context.wallets.find(w => w.balance >= parsed.data.amount) || context.wallets.sort((a, b) => b.balance - a.balance)[0];
+  const user = await prisma.user.findUnique({
+    where: { id: context.userId },
+    select: { firstName: true, email: true },
+  });
+
+  if (!user?.email) {
+    res.status(400).json({ success: false, message: 'Your account does not have an email address for OTP verification' });
+    return;
+  }
+
+  const otpCode = String(crypto.randomInt(100000, 1000000));
+  const otpHash = await bcrypt.hash(otpCode, 10);
+  const payloadHash = getWithdrawalPayloadHash(parsed.data);
+  const expiresAt = new Date(Date.now() + WITHDRAWAL_OTP_EXPIRY_MINUTES * 60 * 1000);
+
+  await (prisma as any).withdrawalOtp.updateMany({
+    where: { userId: context.userId, usedAt: null },
+    data: { usedAt: new Date() },
+  });
+
+  await (prisma as any).withdrawalOtp.create({
+    data: {
+      userId: context.userId,
+      otpHash,
+      payloadHash,
+      expiresAt,
+    },
+  });
+
+  await queueEmail(
+    user.email,
+    'Withdrawal OTP Code',
+    withdrawalOtpTemplate({
+      firstName: user.firstName,
+      otpCode,
+      amount: parsed.data.amount,
+      currency: selectedWallet.currency,
+      method: parsed.data.method,
+      expiresInMinutes: WITHDRAWAL_OTP_EXPIRY_MINUTES,
+      churchName: selectedWallet.church.name,
+    }),
+    'withdrawal_otp',
+  );
+
+  res.json({
+    success: true,
+    message: `OTP sent to ${user.email}`,
+    expiresInSeconds: WITHDRAWAL_OTP_EXPIRY_MINUTES * 60,
+  });
+}
 
 export async function requestWithdrawal(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -203,13 +376,13 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const parsed = withdrawalSchema.safeParse(req.body);
+  const parsed = withdrawalConfirmSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
     return;
   }
 
-  const { amount, method, mobileOperator, mobileNumber, bankCode, accountName, accountNumber } = parsed.data;
+  const { amount, method, mobileOperator, mobileNumber, bankCode, accountName, accountNumber, otpCode } = parsed.data;
 
   // Get national admin to check account country
   let ministryAdminId: string;
@@ -289,6 +462,46 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
     res.status(400).json({ success: false, message: `Insufficient balance. Available: ${totalBalance}` });
     return;
   }
+
+  const payloadHash = getWithdrawalPayloadHash({ amount, method, mobileOperator, mobileNumber, bankCode, accountName, accountNumber });
+  const withdrawalOtp = await (prisma as any).withdrawalOtp.findFirst({
+    where: {
+      userId,
+      payloadHash,
+      usedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!withdrawalOtp) {
+    res.status(400).json({ success: false, message: 'OTP is missing or expired. Request a new OTP code.' });
+    return;
+  }
+
+  if (withdrawalOtp.attempts >= WITHDRAWAL_OTP_MAX_ATTEMPTS) {
+    await (prisma as any).withdrawalOtp.update({
+      where: { id: withdrawalOtp.id },
+      data: { usedAt: new Date() },
+    });
+    res.status(400).json({ success: false, message: 'Too many OTP attempts. Request a new OTP code.' });
+    return;
+  }
+
+  const otpValid = await bcrypt.compare(otpCode, withdrawalOtp.otpHash);
+  if (!otpValid) {
+    await (prisma as any).withdrawalOtp.update({
+      where: { id: withdrawalOtp.id },
+      data: { attempts: { increment: 1 } },
+    });
+    res.status(400).json({ success: false, message: 'Invalid OTP code' });
+    return;
+  }
+
+  await (prisma as any).withdrawalOtp.update({
+    where: { id: withdrawalOtp.id },
+    data: { usedAt: new Date() },
+  });
 
   // Use the first wallet with sufficient balance, or the one with highest balance
   let selectedWallet = wallets.find(w => w.balance >= amount) || wallets.sort((a, b) => b.balance - a.balance)[0];
