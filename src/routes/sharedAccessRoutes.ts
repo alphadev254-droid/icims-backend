@@ -17,6 +17,8 @@ import {
   verifyLinkCode,
   getScannerAttendanceByLink,
   scanMemberByScannerLink,
+  searchMembersByScannerLink,
+  addMembersByScannerLink,
 } from '../controllers/sharedAccessController';
 import { authenticate } from '../middleware/auth';
 
@@ -42,6 +44,8 @@ publicRouter.post('/submit/:token', submitAttendance);
 publicRouter.post('/:token/verify-code', verifyLinkCode);
 publicRouter.get('/:token/scanner-attendance', getScannerAttendanceByLink);
 publicRouter.post('/:token/scan-member', scanMemberByScannerLink);
+publicRouter.get('/:token/member-search', searchMembersByScannerLink);
+publicRouter.post('/:token/manual-members', addMembersByScannerLink);
 publicRouter.get('/:token/attendance', getAttendanceByLink);
 publicRouter.put('/:token/attendance/:id', updateAttendanceByLink);
 publicRouter.get('/:token/attendance/:id/visitors', getVisitorsByLink);

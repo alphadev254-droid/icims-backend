@@ -715,6 +715,22 @@ async function verifyCodeIfNeeded(link: any, code?: string) {
   return bcrypt.compare(String(code), link.accessCode);
 }
 
+
+const scannerMemberIdsSchema = z.object({
+  userIds: z.array(z.string().min(1)).min(1, 'Select at least one member'),
+  accessCode: z.string().optional(),
+});
+
+async function getScannerAttendanceContext(token: string, accessCode?: string) {
+  const { link, error } = await verifyLink(token);
+  if (error) return { error };
+  if (link.type !== 'attendance_scanner') return { error: { status: 400, message: 'This is not a scanner link' } };
+  const codeOk = await verifyCodeIfNeeded(link, accessCode);
+  if (!codeOk) return { error: { status: 401, message: 'Access code is required' } };
+  const attendance = await prisma.attendance.findFirst({ where: { sharedAccessLinkId: link.id } });
+  if (!attendance) return { error: { status: 404, message: 'Attendance record not found' } };
+  return { link, attendance };
+}
 export async function getScannerAttendanceByLink(req: Request, res: Response): Promise<void> {
   const token = String(req.params.token);
   const { link, error } = await verifyLink(token);
@@ -734,6 +750,130 @@ export async function getScannerAttendanceByLink(req: Request, res: Response): P
   res.json({ success: true, data: attendance });
 }
 
+export async function searchMembersByScannerLink(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const q = String(req.query.q || '').trim();
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 20, 1), 50);
+  const skip = (page - 1) * limit;
+  const accessCode = typeof req.query.accessCode === 'string' ? req.query.accessCode : undefined;
+
+  const context = await getScannerAttendanceContext(token, accessCode);
+  if (context.error) { res.status(context.error.status).json({ success: false, message: context.error.message }); return; }
+  const attendance = context.attendance;
+
+  if (q.length < 3) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
+
+  const terms = q.split(/\s+/).filter(Boolean);
+  const where: any = {
+    churchId: attendance.churchId,
+    status: 'active',
+    OR: [
+      { firstName: { contains: q } },
+      { lastName: { contains: q } },
+      { email: { contains: q } },
+      { phone: { contains: q } },
+      ...(terms.length > 1
+        ? [{
+            AND: terms.map(term => ({
+              OR: [
+                { firstName: { contains: term } },
+                { lastName: { contains: term } },
+                { email: { contains: term } },
+                { phone: { contains: term } },
+              ],
+            })),
+          }]
+        : []),
+    ],
+  };
+
+  const [members, total] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      skip,
+      take: limit,
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = members.length
+    ? await participantDelegate.findMany({
+        where: { attendanceId: attendance.id, userId: { in: members.map(member => member.id) } },
+        select: { userId: true },
+      })
+    : [];
+  const checkedInIds = new Set(existing.map((participant: any) => participant.userId));
+
+  res.json({
+    success: true,
+    data: members.map(member => ({ ...member, alreadyCheckedIn: checkedInIds.has(member.id) })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+}
+
+export async function addMembersByScannerLink(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const parsed = scannerMemberIdsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const context = await getScannerAttendanceContext(token, parsed.data.accessCode);
+  if (context.error) { res.status(context.error.status).json({ success: false, message: context.error.message }); return; }
+  const { link, attendance } = context;
+
+  const userIds = Array.from(new Set(parsed.data.userIds));
+  const members = await prisma.user.findMany({
+    where: { id: { in: userIds }, churchId: attendance.churchId, status: 'active' },
+    select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
+  });
+
+  if (!members.length) {
+    res.status(400).json({ success: false, message: 'No valid members found for this church' });
+    return;
+  }
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = await participantDelegate.findMany({
+    where: { attendanceId: attendance.id, userId: { in: members.map(member => member.id) } },
+    select: { userId: true },
+  });
+  const existingIds = new Set(existing.map((participant: any) => participant.userId));
+  const membersToAdd = members.filter(member => !existingIds.has(member.id));
+
+  const created = await prisma.$transaction(async (tx) => {
+    const rows = [];
+    let incrementData: any = {};
+
+    for (const member of membersToAdd) {
+      rows.push(await (tx as any).attendanceParticipant.create({
+        data: { attendanceId: attendance.id, userId: member.id, checkInMethod: 'shared_scanner_search' },
+        include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
+      }));
+      const memberIncrement = attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth)));
+      for (const key of Object.keys(memberIncrement)) {
+        incrementData[key] = { increment: (incrementData[key]?.increment || 0) + memberIncrement[key].increment };
+      }
+    }
+
+    if (rows.length) {
+      await (tx.attendance as any).update({ where: { id: attendance.id }, data: incrementData });
+      await tx.sharedAccessLink.update({ where: { id: link.id }, data: { useCount: { increment: rows.length }, lastUsedAt: new Date() } });
+    }
+
+    return rows;
+  });
+
+  res.status(201).json({ success: true, data: created, created: created.length, skipped: userIds.length - created.length });
+}
 export async function scanMemberByScannerLink(req: Request, res: Response): Promise<void> {
   const token = String(req.params.token);
   const rawToken = typeof req.body?.memberQr === 'string' ? req.body.memberQr : '';
