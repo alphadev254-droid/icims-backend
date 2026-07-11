@@ -127,6 +127,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const search        = (req.query.search   as string)?.trim() || '';
   const filterChurchId = req.query.churchId as string | undefined;
   const filterRole    = req.query.role      as string | undefined;
+  const filterRoleId  = req.query.roleId    as string | undefined;
   const filterCellId  = req.query.cellId    as string | undefined;
   const filterStatus  = req.query.status    as string | undefined;
   const filterTeamId  = req.query.teamId    as string | undefined;
@@ -191,7 +192,9 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   // ── Additional filters — applied with AND so they never widen scope ─────────
   const andConditions: any[] = [];
 
-  if (filterRole) {
+  if (filterRoleId) {
+    andConditions.push({ roleId: filterRoleId });
+  } else if (filterRole) {
     andConditions.push({ role: { name: filterRole } });
   }
 
