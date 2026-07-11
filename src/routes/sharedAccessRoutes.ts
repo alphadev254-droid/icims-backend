@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
   generateLink,
+  generateAttendanceScannerLink,
+  generateAttendanceEntryLink,
   getMyLinks,
   revokeLink,
   deleteLink,
@@ -13,6 +15,8 @@ import {
   addVisitorByLink,
   deleteVisitorByLink,
   verifyLinkCode,
+  getScannerAttendanceByLink,
+  scanMemberByScannerLink,
 } from '../controllers/sharedAccessController';
 import { authenticate } from '../middleware/auth';
 
@@ -22,6 +26,8 @@ const protectedRouter = Router();
 protectedRouter.use(authenticate);
 
 protectedRouter.post('/generate', generateLink);
+protectedRouter.post('/attendance/:attendanceId/scanner-link', generateAttendanceScannerLink);
+protectedRouter.post('/attendance/:attendanceId/entry-link', generateAttendanceEntryLink);
 protectedRouter.get('/my-links', getMyLinks);
 protectedRouter.delete('/:id/revoke', revokeLink);
 protectedRouter.delete('/:id/delete', deleteLink);
@@ -34,6 +40,8 @@ const publicRouter = Router();
 publicRouter.get('/validate/:token', validateLink);
 publicRouter.post('/submit/:token', submitAttendance);
 publicRouter.post('/:token/verify-code', verifyLinkCode);
+publicRouter.get('/:token/scanner-attendance', getScannerAttendanceByLink);
+publicRouter.post('/:token/scan-member', scanMemberByScannerLink);
 publicRouter.get('/:token/attendance', getAttendanceByLink);
 publicRouter.put('/:token/attendance/:id', updateAttendanceByLink);
 publicRouter.get('/:token/attendance/:id/visitors', getVisitorsByLink);

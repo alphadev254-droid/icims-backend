@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { getAccessibleChurchIds } from '../lib/churchScope';
 
 // ─── Protected: Generate a new shared access link ──────────────────────────
 
@@ -55,7 +56,6 @@ export async function generateLink(req: Request, res: Response): Promise<void> {
   }
 
   // Verify user has access to this church
-  const { getAccessibleChurchIds } = await import('../lib/churchScope');
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName,
     churchId,
@@ -108,6 +108,224 @@ export async function generateLink(req: Request, res: Response): Promise<void> {
       hasAccessCode: !!hashedCode,
       validFrom: link.validFrom,
       expiresAt: link.expiresAt,
+    },
+  });
+}
+
+
+
+export async function generateAttendanceEntryLink(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+  const attendanceId = String(req.params.attendanceId);
+
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const { validFrom, expiresAt, usageLimit, accessCode } = req.body;
+  if (!expiresAt) {
+    res.status(400).json({ success: false, message: 'expiresAt is required' });
+    return;
+  }
+  if (accessCode !== undefined && accessCode !== null && accessCode !== '') {
+    const codeStr = String(accessCode);
+    if (!/^\d{4}$/.test(codeStr)) {
+      res.status(400).json({ success: false, message: 'Access code must be exactly 4 digits' });
+      return;
+    }
+  }
+
+  const expiresDate = new Date(expiresAt);
+  const validFromDate = validFrom ? new Date(validFrom) : new Date();
+  if (isNaN(expiresDate.getTime()) || isNaN(validFromDate.getTime()) || validFromDate >= expiresDate) {
+    res.status(400).json({ success: false, message: 'Invalid link dates' });
+    return;
+  }
+
+  const attendance = await prisma.attendance.findUnique({
+    where: { id: attendanceId },
+    include: { sharedAccessLink: true, church: { select: { id: true, name: true } } },
+  });
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Attendance not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
+  if (!accessibleChurchIds.includes(attendance.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  const existing = attendance.sharedAccessLink?.type === 'attendance' ? attendance.sharedAccessLink : null;
+  const hashedCode = (accessCode && String(accessCode).trim()) ? await bcrypt.hash(String(accessCode), 10) : null;
+  const token = existing?.token || crypto.randomBytes(12).toString('hex');
+
+  const link = await prisma.$transaction(async (tx) => {
+    const saved = existing
+      ? await tx.sharedAccessLink.update({
+          where: { id: existing.id },
+          data: {
+            validFrom: validFromDate,
+            expiresAt: expiresDate,
+            usageLimit: usageLimit ?? null,
+            ...(accessCode !== undefined ? { accessCode: hashedCode } : {}),
+            isActive: true,
+          },
+        })
+      : await tx.sharedAccessLink.create({
+          data: {
+            token,
+            type: 'attendance',
+            churchId: attendance.churchId,
+            serviceType: attendance.serviceType,
+            validFrom: validFromDate,
+            expiresAt: expiresDate,
+            usageLimit: usageLimit ?? null,
+            accessCode: hashedCode,
+            createdBy: userId,
+          },
+        });
+
+    if (!existing) {
+      await tx.attendance.update({ where: { id: attendanceId }, data: { sharedAccessLinkId: saved.id } });
+    }
+    return saved;
+  });
+
+  const origin = req.get('origin') || req.get('host') || 'http://localhost:5173';
+  const protocol = origin.includes('localhost') || origin.includes('127.0.0.1') ? 'http' : 'https';
+  const baseUrl = origin.startsWith('http') ? origin : `${protocol}://${origin}`;
+
+  res.status(existing ? 200 : 201).json({
+    success: true,
+    data: {
+      id: link.id,
+      token: link.token,
+      url: `${baseUrl}/attendance/enter/${link.token}`,
+      accessCode: accessCode || null,
+      hasAccessCode: !!link.accessCode,
+      validFrom: link.validFrom,
+      expiresAt: link.expiresAt,
+      attendanceId,
+    },
+  });
+}
+
+export async function generateAttendanceScannerLink(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+  const attendanceId = String(req.params.attendanceId);
+
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const { validFrom, expiresAt, usageLimit, accessCode } = req.body;
+  if (!expiresAt) {
+    res.status(400).json({ success: false, message: 'expiresAt is required' });
+    return;
+  }
+  if (accessCode !== undefined && accessCode !== null && accessCode !== '') {
+    const codeStr = String(accessCode);
+    if (!/^\d{4}$/.test(codeStr)) {
+      res.status(400).json({ success: false, message: 'Access code must be exactly 4 digits' });
+      return;
+    }
+  }
+
+  const expiresDate = new Date(expiresAt);
+  const validFromDate = validFrom ? new Date(validFrom) : new Date();
+  if (isNaN(expiresDate.getTime()) || isNaN(validFromDate.getTime()) || validFromDate >= expiresDate) {
+    res.status(400).json({ success: false, message: 'Invalid link dates' });
+    return;
+  }
+
+  const attendance = await prisma.attendance.findUnique({
+    where: { id: attendanceId },
+    include: { sharedAccessLink: true, church: { select: { id: true, name: true } } },
+  });
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Attendance not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
+  if (!accessibleChurchIds.includes(attendance.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  const existing = attendance.sharedAccessLink?.type === 'attendance_scanner' ? attendance.sharedAccessLink : null;
+  const hashedCode = (accessCode && String(accessCode).trim()) ? await bcrypt.hash(String(accessCode), 10) : null;
+  const token = existing?.token || crypto.randomBytes(12).toString('hex');
+
+  const link = await prisma.$transaction(async (tx) => {
+    const saved = existing
+      ? await tx.sharedAccessLink.update({
+          where: { id: existing.id },
+          data: {
+            validFrom: validFromDate,
+            expiresAt: expiresDate,
+            usageLimit: usageLimit ?? null,
+            ...(accessCode !== undefined ? { accessCode: hashedCode } : {}),
+            isActive: true,
+          },
+        })
+      : await tx.sharedAccessLink.create({
+          data: {
+            token,
+            type: 'attendance_scanner',
+            churchId: attendance.churchId,
+            serviceType: attendance.serviceType,
+            validFrom: validFromDate,
+            expiresAt: expiresDate,
+            usageLimit: usageLimit ?? null,
+            accessCode: hashedCode,
+            createdBy: userId,
+          },
+        });
+
+    if (!existing) {
+      await tx.attendance.update({ where: { id: attendanceId }, data: { sharedAccessLinkId: saved.id } });
+    }
+    return saved;
+  });
+
+  const origin = req.get('origin') || req.get('host') || 'http://localhost:5173';
+  const protocol = origin.includes('localhost') || origin.includes('127.0.0.1') ? 'http' : 'https';
+  const baseUrl = origin.startsWith('http') ? origin : `${protocol}://${origin}`;
+
+  res.status(existing ? 200 : 201).json({
+    success: true,
+    data: {
+      id: link.id,
+      token: link.token,
+      url: `${baseUrl}/attendance/scan/${link.token}`,
+      accessCode: accessCode || null,
+      hasAccessCode: !!link.accessCode,
+      validFrom: link.validFrom,
+      expiresAt: link.expiresAt,
+      attendanceId,
     },
   });
 }
@@ -452,6 +670,134 @@ async function verifyLink(token: string): Promise<{ link: any; error?: { status:
   }
 
   return { link };
+}
+
+
+function getAge(dateOfBirth?: Date | string | null) {
+  if (!dateOfBirth) return null;
+  const dob = new Date(dateOfBirth);
+  if (Number.isNaN(dob.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const monthDelta = today.getMonth() - dob.getMonth();
+  if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age -= 1;
+  return age;
+}
+
+function ageBucketFromAge(age: number | null) {
+  if (age === null) return null;
+  if (age <= 12) return 'children';
+  if (age <= 17) return 'youth';
+  if (age <= 35) return 'youngAdults';
+  if (age <= 59) return 'adults';
+  return 'seniors';
+}
+
+function attendanceIncrementData(gender?: string | null, ageBucket?: string | null) {
+  const data: any = { totalAttendees: { increment: 1 } };
+  const normalizedGender = String(gender || '').toLowerCase();
+  if (normalizedGender === 'male') data.maleCount = { increment: 1 };
+  if (normalizedGender === 'female') data.femaleCount = { increment: 1 };
+  if (ageBucket && ['children', 'youth', 'youngAdults', 'adults', 'seniors'].includes(ageBucket)) data[ageBucket] = { increment: 1 };
+  return data;
+}
+
+function extractQrToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(/\/member-qr\/([^/?#]+)/i) || trimmed.match(/[?&]token=([^&#]+)/i);
+  return decodeURIComponent(match?.[1] || trimmed);
+}
+
+async function verifyCodeIfNeeded(link: any, code?: string) {
+  if (!link.accessCode) return true;
+  if (!code) return false;
+  return bcrypt.compare(String(code), link.accessCode);
+}
+
+export async function getScannerAttendanceByLink(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const { link, error } = await verifyLink(token);
+  if (error) { res.status(error.status).json({ success: false, message: error.message }); return; }
+  if (link.type !== 'attendance_scanner') {
+    res.status(400).json({ success: false, message: 'This is not a scanner link' });
+    return;
+  }
+  const attendance = await prisma.attendance.findFirst({
+    where: { sharedAccessLinkId: link.id },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
+  });
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Attendance record not found' });
+    return;
+  }
+  res.json({ success: true, data: attendance });
+}
+
+export async function scanMemberByScannerLink(req: Request, res: Response): Promise<void> {
+  const token = String(req.params.token);
+  const rawToken = typeof req.body?.memberQr === 'string' ? req.body.memberQr : '';
+  const memberToken = extractQrToken(rawToken);
+  if (!memberToken) {
+    res.status(400).json({ success: false, message: 'Member QR token is required' });
+    return;
+  }
+
+  const { link, error } = await verifyLink(token);
+  if (error) { res.status(error.status).json({ success: false, message: error.message }); return; }
+  if (link.type !== 'attendance_scanner') {
+    res.status(400).json({ success: false, message: 'This is not a scanner link' });
+    return;
+  }
+  const codeOk = await verifyCodeIfNeeded(link, req.body?.accessCode);
+  if (!codeOk) {
+    res.status(401).json({ success: false, message: 'Access code is required' });
+    return;
+  }
+
+  const attendance = await prisma.attendance.findFirst({ where: { sharedAccessLinkId: link.id } });
+  if (!attendance) {
+    res.status(404).json({ success: false, message: 'Attendance record not found' });
+    return;
+  }
+
+  const member = await prisma.user.findUnique({
+    where: { attendanceQrToken: memberToken } as any,
+    select: { id: true, churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true, status: true },
+  });
+  if (!member || member.status !== 'active') {
+    res.status(404).json({ success: false, message: 'Member QR not found or inactive' });
+    return;
+  }
+  if (member.churchId !== attendance.churchId) {
+    res.status(403).json({ success: false, message: 'This member belongs to a different church' });
+    return;
+  }
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = await participantDelegate.findUnique({
+    where: { attendanceId_userId: { attendanceId: attendance.id, userId: member.id } },
+    include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
+  });
+  if (existing) {
+    res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
+      data: { attendanceId: attendance.id, userId: member.id, checkInMethod: 'shared_scanner' },
+      include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendance.id },
+      data: attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth))),
+    });
+    await tx.sharedAccessLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date() } });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
 }
 
 // ─── Public: Update attendance record via a valid token ───────────────────
