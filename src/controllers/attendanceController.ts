@@ -493,7 +493,10 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
 
   const { churchId: targetChurchId, eventId, visitors, ...data } = parsed.data;
 
-  const record = await prisma.attendance.findUnique({ where: { id }, include: { church: true } });
+  const record = await prisma.attendance.findUnique({
+    where: { id },
+    include: { church: true, _count: { select: { participants: true } } },
+  });
   if (!record) {
     res.status(404).json({ success: false, message: 'Record not found' });
     return;
@@ -511,6 +514,27 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
 
   if (!accessibleChurchIds.includes(record.churchId)) {
     res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+  if (!accessibleChurchIds.includes(targetChurchId)) {
+    res.status(403).json({ success: false, message: 'Cannot move attendance to a church outside your scope' });
+    return;
+  }
+
+  const summaryLocked = !!record.qrToken || record.digitalCheckInEnabled || (record as any)._count?.participants > 0;
+
+  if (summaryLocked) {
+    const updated = await prisma.attendance.update({
+      where: { id },
+      data: {
+        churchId: targetChurchId,
+        date: new Date(data.date),
+        serviceType: data.serviceType,
+        eventId,
+      },
+      select: attendanceListSelect,
+    } as any);
+    res.json({ success: true, data: updated });
     return;
   }
 
