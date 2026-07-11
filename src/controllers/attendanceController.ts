@@ -60,6 +60,10 @@ const guestCheckInSchema = z.object({
   invitedBy: z.string().optional(),
 });
 
+const manualMembersSchema = z.object({
+  userIds: z.array(z.string().min(1)).min(1, 'Select at least one member'),
+});
+
 const attendanceListSelect: any = {
   id: true,
   churchId: true,
@@ -89,6 +93,65 @@ const attendanceListSelect: any = {
 
 function generateQrToken() {
   return crypto.randomBytes(24).toString('base64url');
+}
+
+function getAge(dateOfBirth?: Date | string | null) {
+  if (!dateOfBirth) return null;
+  const dob = new Date(dateOfBirth);
+  if (Number.isNaN(dob.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const monthDelta = today.getMonth() - dob.getMonth();
+  if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age -= 1;
+  return age;
+}
+
+function ageBucketFromAge(age: number | null) {
+  if (age === null) return null;
+  if (age <= 12) return 'children';
+  if (age <= 17) return 'youth';
+  if (age <= 35) return 'youngAdults';
+  if (age <= 59) return 'adults';
+  return 'seniors';
+}
+
+function ageBucketFromBracket(ageBracket?: string | null) {
+  if (!ageBracket) return null;
+  if (ageBracket === '0-12') return 'children';
+  if (ageBracket === '13-17') return 'youth';
+  if (ageBracket === '18-35') return 'youngAdults';
+  if (ageBracket === '36-59') return 'adults';
+  if (ageBracket === '60+') return 'seniors';
+  const numericAge = Number.parseInt(ageBracket, 10);
+  return Number.isFinite(numericAge) ? ageBucketFromAge(numericAge) : null;
+}
+
+function attendanceIncrementData(gender?: string | null, ageBucket?: string | null, isGuest = false) {
+  const data: any = { totalAttendees: { increment: 1 } };
+  const normalizedGender = String(gender || '').toLowerCase();
+  if (normalizedGender === 'male') data.maleCount = { increment: 1 };
+  if (normalizedGender === 'female') data.femaleCount = { increment: 1 };
+  if (ageBucket && ['children', 'youth', 'youngAdults', 'adults', 'seniors'].includes(ageBucket)) {
+    data[ageBucket] = { increment: 1 };
+  }
+  if (isGuest) data.newVisitors = { increment: 1 };
+  return data;
+}
+
+function mergeAttendanceIncrement(target: any, increment: any) {
+  for (const [key, value] of Object.entries(increment)) {
+    const amount = (value as any)?.increment ?? 0;
+    if (!amount) continue;
+    target[key] = { increment: (target[key]?.increment ?? 0) + amount };
+  }
+  return target;
+}
+
+function extractQrToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(/\/member-qr\/([^/?#]+)/i) || trimmed.match(/[?&]token=([^&#]+)/i);
+  return decodeURIComponent(match?.[1] || trimmed);
 }
 
 function parseOptionalDate(value: string | null | undefined) {
@@ -560,6 +623,212 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
   res.json({ success: true, data: participants, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
+export async function searchAttendanceMembers(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const q = String(req.query.q || '').trim();
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 70, 1), 100);
+  const skip = (page - 1) * limit;
+
+  if (q.length < 3) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
+
+  const terms = q.split(/\s+/).filter(Boolean);
+  const where: any = {
+    churchId: access.record.churchId,
+    status: 'active',
+    OR: [
+      { firstName: { contains: q } },
+      { lastName: { contains: q } },
+      { email: { contains: q } },
+      { phone: { contains: q } },
+      ...(terms.length > 1
+        ? [{
+            AND: terms.map(term => ({
+              OR: [
+                { firstName: { contains: term } },
+                { lastName: { contains: term } },
+                { email: { contains: term } },
+                { phone: { contains: term } },
+              ],
+            })),
+          }]
+        : []),
+    ],
+  };
+
+  const [members, total] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        memberType: true,
+        gender: true,
+        dateOfBirth: true,
+      },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      skip,
+      take: limit,
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = members.length
+    ? await participantDelegate.findMany({
+        where: { attendanceId, userId: { in: members.map(member => member.id) } },
+        select: { userId: true },
+      })
+    : [];
+  const checkedInIds = new Set(existing.map((participant: any) => participant.userId));
+
+  res.json({
+    success: true,
+    data: members.map(member => ({ ...member, alreadyCheckedIn: checkedInIds.has(member.id) })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+}
+
+export async function addManualAttendanceMembers(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const parsed = manualMembersSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const userIds = Array.from(new Set(parsed.data.userIds));
+  const members = await prisma.user.findMany({
+    where: { id: { in: userIds }, churchId: access.record.churchId, status: 'active' },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      memberType: true,
+      gender: true,
+      dateOfBirth: true,
+    },
+  });
+
+  if (!members.length) {
+    res.status(400).json({ success: false, message: 'No valid members found for this church' });
+    return;
+  }
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = await participantDelegate.findMany({
+    where: { attendanceId, userId: { in: members.map(member => member.id) } },
+    select: { userId: true },
+  });
+  const existingIds = new Set(existing.map((participant: any) => participant.userId));
+  const membersToAdd = members.filter(member => !existingIds.has(member.id));
+
+  const created = await prisma.$transaction(async (tx) => {
+    const rows = [];
+    let incrementData: any = {};
+
+    for (const member of membersToAdd) {
+      rows.push(await (tx as any).attendanceParticipant.create({
+        data: {
+          attendanceId,
+          userId: member.id,
+          checkInMethod: 'manual_member',
+        },
+        include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
+      }));
+      incrementData = mergeAttendanceIncrement(
+        incrementData,
+        attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth)))
+      );
+    }
+
+    if (rows.length) {
+      await (tx.attendance as any).update({ where: { id: attendanceId }, data: incrementData });
+    }
+
+    return rows;
+  });
+
+  res.status(201).json({
+    success: true,
+    data: created,
+    created: created.length,
+    skipped: userIds.length - created.length,
+  });
+}
+
+export async function addManualAttendanceVisitor(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const parsed = guestCheckInSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const data = parsed.data;
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const duplicateWhere: any[] = [];
+  if (data.guestPhone?.trim()) duplicateWhere.push({ guestPhone: data.guestPhone.trim() });
+  if (data.guestEmail?.trim()) duplicateWhere.push({ guestEmail: data.guestEmail.trim() });
+  const existing = duplicateWhere.length
+    ? await participantDelegate.findFirst({ where: { attendanceId, OR: duplicateWhere } })
+    : null;
+
+  if (existing) {
+    res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
+      data: {
+        attendanceId,
+        guestName: data.guestName.trim(),
+        guestEmail: data.guestEmail?.trim() || null,
+        guestPhone: data.guestPhone?.trim() || null,
+        guestGender: data.guestGender?.trim() || null,
+        guestAgeBracket: data.guestAgeBracket?.trim() || null,
+        guestFirstTime: data.guestFirstTime ?? false,
+        invitedBy: data.invitedBy?.trim() || null,
+        checkInMethod: 'manual_visitor',
+      },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendanceId },
+      data: attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+    });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
+}
+
 export async function updateAttendanceQrSettings(req: Request, res: Response): Promise<void> {
   const attendanceId = String(req.params.id);
   const parsed = qrSettingsSchema.safeParse(req.body);
@@ -711,7 +980,7 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true } });
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } });
   if (!user || user.churchId !== attendance.churchId) {
     res.status(403).json({ success: false, message: 'This check-in is only for members of this church' });
     return;
@@ -738,7 +1007,7 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
     });
     await (tx.attendance as any).update({
       where: { id: attendance.id },
-      data: { totalAttendees: { increment: 1 } },
+      data: attendanceIncrementData(user.gender, ageBucketFromAge(getAge(user.dateOfBirth))),
     });
     return created;
   });
@@ -794,10 +1063,140 @@ export async function checkInGuestByQr(req: Request, res: Response): Promise<voi
     });
     await (tx.attendance as any).update({
       where: { id: attendance.id },
+      data: attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+    });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
+}
+
+export async function scanMemberAttendanceQr(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const rawToken = typeof req.body?.token === 'string' ? req.body.token : '';
+  const token = extractQrToken(rawToken);
+  if (!token) {
+    res.status(400).json({ success: false, message: 'Member QR token is required' });
+    return;
+  }
+
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const attendance = access.record;
+  if (!isQrOpen(attendance)) {
+    res.status(400).json({ success: false, message: 'This attendance QR session is not active' });
+    return;
+  }
+
+  const member = await prisma.user.findUnique({
+    where: { attendanceQrToken: token } as any,
+    select: {
+      id: true,
+      churchId: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      memberType: true,
+      gender: true,
+      dateOfBirth: true,
+      status: true,
+    },
+  });
+
+  if (!member || member.status !== 'active') {
+    res.status(404).json({ success: false, message: 'Member QR not found or inactive' });
+    return;
+  }
+  if (member.churchId !== attendance.churchId) {
+    res.status(403).json({ success: false, message: 'This member belongs to a different church' });
+    return;
+  }
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existing = await participantDelegate.findUnique({
+    where: { attendanceId_userId: { attendanceId, userId: member.id } },
+    include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
+  });
+
+  if (existing) {
+    res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
       data: {
-        totalAttendees: { increment: 1 },
-        newVisitors: { increment: 1 },
+        attendanceId,
+        userId: member.id,
+        checkInMethod: 'admin_scan',
       },
+      include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendanceId },
+      data: attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth))),
+    });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
+}
+
+export async function scanVisitorAttendance(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const parsed = guestCheckInSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  if (!isQrOpen(access.record)) {
+    res.status(400).json({ success: false, message: 'This attendance session is not active' });
+    return;
+  }
+
+  const data = parsed.data;
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const duplicateWhere: any[] = [];
+  if (data.guestPhone?.trim()) duplicateWhere.push({ guestPhone: data.guestPhone.trim() });
+  if (data.guestEmail?.trim()) duplicateWhere.push({ guestEmail: data.guestEmail.trim() });
+  const existing = duplicateWhere.length
+    ? await participantDelegate.findFirst({ where: { attendanceId, OR: duplicateWhere } })
+    : null;
+
+  if (existing) {
+    res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
+      data: {
+        attendanceId,
+        guestName: data.guestName.trim(),
+        guestEmail: data.guestEmail?.trim() || null,
+        guestPhone: data.guestPhone?.trim() || null,
+        guestGender: data.guestGender?.trim() || null,
+        guestAgeBracket: data.guestAgeBracket?.trim() || null,
+        guestFirstTime: data.guestFirstTime ?? false,
+        invitedBy: data.invitedBy?.trim() || null,
+        checkInMethod: 'admin_visitor',
+      },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendanceId },
+      data: attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
     });
     return created;
   });

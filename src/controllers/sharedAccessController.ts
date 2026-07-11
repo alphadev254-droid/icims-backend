@@ -135,7 +135,24 @@ export async function getMyLinks(req: Request, res: Response): Promise<void> {
       usageLimit: true,
       lastUsedAt: true,
       createdAt: true,
-      church: { select: { id: true, name: true } },
+      church: {
+        select: {
+          id: true,
+          name: true,
+          logoUrl: true,
+          ministryAdmin: {
+            select: {
+              churchProfile: {
+                select: {
+                  logoUrl: true,
+                  primaryColor: true,
+                  tagline: true,
+                },
+              },
+            },
+          },
+        },
+      },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -246,13 +263,21 @@ export async function validateLink(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  const church = link.church as any;
+
   res.json({
     success: true,
     valid: true,
     data: {
       type: link.type,
       serviceType: link.serviceType,
-      church: link.church,
+      church: {
+        id: church.id,
+        name: church.name,
+        logoUrl: church.logoUrl || church.ministryAdmin?.churchProfile?.logoUrl || null,
+        primaryColor: church.ministryAdmin?.churchProfile?.primaryColor || '#d89b12',
+        tagline: church.ministryAdmin?.churchProfile?.tagline || null,
+      },
       hasAccessCode: !!link.accessCode,
     },
   });

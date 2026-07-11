@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { login, register, logout, getMe, updateProfile } from '../controllers/authController';
+import { login, register, logout, getMe, updateProfile, getAttendanceQr } from '../controllers/authController';
 import { authenticate } from '../middleware/auth';
 import { uploadImage } from '../middleware/upload';
 
@@ -14,6 +14,7 @@ router.post('/login', login);
 router.post('/register', register);
 router.post('/logout', logout);
 router.get('/me', authenticate, getMe);
+router.get('/attendance-qr', authenticate, getAttendanceQr);
 router.put('/profile', authenticate, setAvatarDir, uploadImage.single('avatar'), updateProfile);
 
 export default router;

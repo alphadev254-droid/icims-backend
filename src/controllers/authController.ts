@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
@@ -560,4 +561,31 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
   if (!updated) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
   res.json({ success: true, user: safeUser(updated, await getUserPermissions(updated)) });
+}
+
+export async function getAttendanceQr(req: Request, res: Response): Promise<void> {
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const existing = await (prisma.user as any).findUnique({
+    where: { id: req.user.userId },
+    select: { id: true, attendanceQrToken: true },
+  });
+
+  if (!existing) {
+    res.status(404).json({ success: false, message: 'User not found' });
+    return;
+  }
+
+  const token = existing.attendanceQrToken || crypto.randomBytes(24).toString('base64url');
+  if (!existing.attendanceQrToken) {
+    await (prisma.user as any).update({
+      where: { id: existing.id },
+      data: { attendanceQrToken: token },
+    });
+  }
+
+  res.json({ success: true, data: { token } });
 }

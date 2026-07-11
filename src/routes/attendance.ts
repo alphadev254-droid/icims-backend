@@ -11,6 +11,9 @@ import {
   deleteAttendanceVisitor,
   getServiceVisitorsReport,
   getAttendanceParticipants,
+  searchAttendanceMembers,
+  addManualAttendanceMembers,
+  addManualAttendanceVisitor,
   updateAttendanceQrSettings,
   activateAttendanceQr,
   closeAttendanceQr,
@@ -18,6 +21,8 @@ import {
   getQrCheckInSession,
   checkInMemberByQr,
   checkInGuestByQr,
+  scanMemberAttendanceQr,
+  scanVisitorAttendance,
 } from '../controllers/attendanceController';
 import { authenticate, authenticateOptional, authorizePermission } from '../middleware/auth';
 
@@ -37,10 +42,15 @@ router.get('/:id/visitors',                authorizePermission('attendance:read'
 router.post('/:id/visitors',               authorizePermission('attendance:update'), addAttendanceVisitor);
 router.delete('/:id/visitors/:visitorId',  authorizePermission('attendance:update'), deleteAttendanceVisitor);
 router.get('/:id/participants',            authorizePermission('attendance:read'),   getAttendanceParticipants);
+router.get('/:id/member-search',           authorizePermission('attendance:update'), searchAttendanceMembers);
+router.post('/:id/manual-members',         authorizePermission('attendance:update'), addManualAttendanceMembers);
+router.post('/:id/manual-visitor',         authorizePermission('attendance:update'), addManualAttendanceVisitor);
 router.put('/:id/qr',                      authorizePermission('attendance:update'), updateAttendanceQrSettings);
 router.post('/:id/qr/activate',            authorizePermission('attendance:update'), activateAttendanceQr);
 router.post('/:id/qr/close',               authorizePermission('attendance:update'), closeAttendanceQr);
 router.post('/:id/qr/regenerate',          authorizePermission('attendance:update'), regenerateAttendanceQr);
+router.post('/:id/scan-member',            authorizePermission('attendance:update'), scanMemberAttendanceQr);
+router.post('/:id/scan-visitor',           authorizePermission('attendance:update'), scanVisitorAttendance);
 router.get('/:id',                         authorizePermission('attendance:read'),   getAttendanceById);
 router.put('/:id',                         authorizePermission('attendance:update'), updateAttendance);
 router.delete('/:id',                      authorizePermission('attendance:update'), deleteAttendance);
