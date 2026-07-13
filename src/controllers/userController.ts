@@ -350,12 +350,11 @@ const createUserSchema = z.object({
     if (!data.churchId) return false;
     if (!data.phone) return false;
     if (!data.dateOfBirth) return false;
-    if (!data.residentialNeighbourhood) return false;
     if (!data.maritalStatus) return false;
   }
   return true;
 }, {
-  message: 'Church, Phone, Date of Birth, Neighbourhood, and Marital Status are required for members',
+  message: 'Church, Phone, Date of Birth, and Marital Status are required for members',
   path: ['churchId'],
 });
 

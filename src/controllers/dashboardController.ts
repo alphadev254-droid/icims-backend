@@ -74,7 +74,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
           totalDonations: 0, upcomingEvents: 0, averageAttendance: 0,
           memberGrowth: 0, donationGrowth: 0, totalNewVisitors: 0,
           retentionRate: 0, attendanceRate: 0, newMembersThisMonth: 0,
-          weeklyAttendance: [], monthlyGiving: [],
+          weeklyAttendance: [], monthlyGiving: [], totalChildren: 0, totalCells: 0, totalTeams: 0,
         },
       });
       return;
@@ -97,6 +97,9 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     prevMonthDonations,
     attendance,
     visitorsAggregate,
+    totalChildren,
+    totalCells,
+    totalTeams,
   ] = await Promise.all([
     // Member counts — aggregates instead of fetching all rows
     prisma.user.count({ where: { churchId: { in: churchIds } } }),
@@ -135,6 +138,9 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       where: { churchId: { in: churchIds } },
       _sum: { newVisitors: true },
     }),
+    prisma.child.count({ where: { churchId: { in: churchIds }, status: 'active' } }),
+    prisma.cell.count({ where: { churchId: { in: churchIds } } }),
+    prisma.team.count({ where: { churchId: { in: churchIds } } }),
   ]);
 
   const totalChurches = churchIds.length;
@@ -200,6 +206,9 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       totalMembers,
       activeMembers,
       totalChurches,
+      totalChildren,
+      totalCells,
+      totalTeams,
       totalDonations,
       upcomingEvents: events.filter(e => e.status === 'upcoming').length,
       averageAttendance: avgAttendance,

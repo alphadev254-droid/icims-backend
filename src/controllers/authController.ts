@@ -292,9 +292,29 @@ const registerSchema = z.object({
   serviceInterest: z.string().optional(),
   baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().optional(),
+  registrationType: z.enum(['ministry_admin', 'member']).optional(),
 }).superRefine((data, ctx) => {
+  const hasMemberOnlyFields = Boolean(
+    data.registrationType === 'member' ||
+    data.dateOfBirth ||
+    data.maritalStatus ||
+    data.weddingDate ||
+    data.residentialNeighbourhood ||
+    data.membershipType ||
+    data.serviceInterest ||
+    data.baptizedByImmersion !== undefined
+  );
+
+  if (hasMemberOnlyFields && !data.inviteToken) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'A valid church invite link is required for member registration',
+      path: ['inviteToken'],
+    });
+  }
+
   // Ministry admin registration (no invite token) requires ministryName and accountCountry
-  if (!data.inviteToken) {
+  if (!data.inviteToken && data.registrationType !== 'member') {
     if (!data.ministryName || data.ministryName.trim().length < 2) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -312,6 +332,22 @@ const registerSchema = z.object({
   }
 });
 
+const memberRegisterSchema = z.object({
+  firstName: z.string().min(2, 'First name must be at least 2 characters'),
+  lastName: z.string().min(2, 'Last name must be at least 2 characters'),
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  phone: z.string().min(1, 'Phone number is required'),
+  gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
+  dateOfBirth: z.string().min(1, 'Date of birth is required'),
+  maritalStatus: z.enum(['single', 'married', 'widowed', 'divorced'], { required_error: 'Marital status is required' }),
+  weddingDate: z.string().optional(),
+  residentialNeighbourhood: z.string().optional(),
+  membershipType: z.enum(['member', 'pastor', 'deacon', 'other'], { required_error: 'Membership type is required' }),
+  serviceInterest: z.string().optional(),
+  baptizedByImmersion: z.boolean().optional(),
+  inviteToken: z.string().min(1, 'A valid church invite link is required'),
+});
 export async function register(req: Request, res: Response): Promise<void> {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -378,20 +414,20 @@ export async function register(req: Request, res: Response): Promise<void> {
         lastName: data.lastName,
         title: data.title,
         titleOther: data.titleOther,
-        ministryName: data.ministryName,
-        currentMembership: data.currentMembership,
-        numberOfBranches: data.numberOfBranches ?? 0,
+        ministryName: data.inviteToken ? null : data.ministryName,
+        currentMembership: data.inviteToken ? null : data.currentMembership,
+        numberOfBranches: data.inviteToken ? 0 : (data.numberOfBranches ?? 0),
         roleId,
         churchId,
         ministryAdminId,
-        accountCountry: data.accountCountry,
+        accountCountry: data.inviteToken ? undefined : data.accountCountry,
         phone: data.phone,
         gender: data.gender,
-        anniversary: data.anniversary ? new Date(data.anniversary) : undefined,
+        anniversary: !data.inviteToken && data.anniversary ? new Date(data.anniversary) : undefined,
         dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
         maritalStatus: data.maritalStatus,
         weddingDate: data.weddingDate ? new Date(data.weddingDate) : undefined,
-        residentialNeighbourhood: data.residentialNeighbourhood,
+        residentialNeighbourhood: data.residentialNeighbourhood?.trim() || null,
         membershipType: data.membershipType,
         serviceInterest: data.serviceInterest,
         baptizedByImmersion: data.baptizedByImmersion,
@@ -484,6 +520,96 @@ export async function register(req: Request, res: Response): Promise<void> {
   res.status(201).json({ success: true, user: { ...safeUser(user, permissions), subdomain: subdomainValue } });
 }
 
+export async function registerMember(req: Request, res: Response): Promise<void> {
+  const parsed = memberRegisterSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const data = parsed.data;
+
+  if (data.inviteToken) {
+    res.status(400).json({ success: false, message: 'Member invite registration must use the member registration endpoint' });
+    return;
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email: data.email } });
+  if (existing) {
+    res.status(409).json({ success: false, message: 'An account with this email already exists' });
+    return;
+  }
+
+  const [church, memberRole] = await Promise.all([
+    prisma.church.findUnique({ where: { inviteToken: data.inviteToken }, select: { id: true, name: true } }),
+    prisma.role.findFirst({ where: { name: 'member' } }),
+  ]);
+
+  if (!church) {
+    res.status(400).json({ success: false, message: 'Invalid or expired invite link' });
+    return;
+  }
+
+  if (!memberRole) {
+    res.status(500).json({ success: false, message: 'System not properly configured' });
+    return;
+  }
+
+  const hashed = await hashPassword(data.password);
+
+  const user = await prisma.user.create({
+    data: {
+      email: data.email,
+      password: hashed,
+      firstName: data.firstName,
+      lastName: data.lastName,
+      roleId: memberRole.id,
+      churchId: church.id,
+      ministryAdminId: null,
+      phone: data.phone,
+      gender: data.gender,
+      dateOfBirth: new Date(data.dateOfBirth),
+      maritalStatus: data.maritalStatus,
+      weddingDate: data.weddingDate ? new Date(data.weddingDate) : undefined,
+      residentialNeighbourhood: data.residentialNeighbourhood?.trim() || null,
+      membershipType: data.membershipType,
+      serviceInterest: data.serviceInterest,
+      baptizedByImmersion: data.baptizedByImmersion,
+    },
+    include: USER_INCLUDE,
+  });
+
+  const permissions = await getUserPermissions(user);
+
+  const { queueEmail } = await import('../lib/emailQueue');
+  const { memberWelcomeTemplate } = await import('../lib/emailTemplates');
+  queueEmail(
+    user.email,
+    `Welcome to ${church.name}`,
+    memberWelcomeTemplate({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      churchName: church.name,
+    }),
+    'registration'
+  ).catch(err => console.error('Failed to queue member welcome email:', err));
+
+  const token = signToken({
+    userId: user.id,
+    email: user.email,
+    role: 'member',
+    churchId: user.churchId,
+    permissions,
+    accountCountry: user.accountCountry ?? undefined,
+    regions: parseJson(user.regions),
+    districts: parseJson(user.districts),
+    traditionalAuthorities: parseJson(user.traditionalAuthorities),
+  });
+
+  res.cookie('icims_token', token, COOKIE_OPTIONS);
+  res.status(201).json({ success: true, user: safeUser(user, permissions) });
+}
 export function logout(_req: Request, res: Response): void {
   res.clearCookie('icims_token');
   res.json({ success: true, message: 'Signed out successfully' });
