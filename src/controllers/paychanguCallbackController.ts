@@ -106,6 +106,11 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
           paidAt: new Date(),
           systemGatewayFeeRate: metadata.gatewayFeeRate || 0,
           systemFeeRate: metadata.systemFeeRate || 0,
+          gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
+          gatewayResponse: JSON.stringify({
+            callbackQuery: req.query,
+            verifyResponse: verifyResponse.data,
+          }),
           createdById: pendingTx.userId ?? metadata.ministryAdminId,
           expiresAt,
         },

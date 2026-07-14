@@ -194,6 +194,16 @@ async function initiatePaystackPayment(
       },
       ...(SYSTEM_SUBACCOUNT_CODE && { subaccount: SYSTEM_SUBACCOUNT_CODE }),
     };
+
+    await prisma.pendingTransaction.update({
+      where: { id: pendingTx.id },
+      data: {
+        metadata: JSON.stringify({
+          ...metadata,
+          gatewayPayload: paystackPayload,
+        }),
+      },
+    });
     
     console.log(`[${traceId}] Paystack request:`, JSON.stringify(paystackPayload, null, 2));
     console.log(`[${traceId}] Calling Paystack API: ${PAYSTACK_BASE_URL}/transaction/initialize`);
@@ -283,6 +293,17 @@ async function initiatePaychanguPayment(
         description: 'ICIMS Package Subscription'
       }
     };
+
+    const existingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+    await prisma.pendingTransaction.update({
+      where: { id: pendingTx.id },
+      data: {
+        metadata: JSON.stringify({
+          ...existingMetadata,
+          gatewayPayload: paychanguPayload,
+        }),
+      },
+    });
     
     console.log(`[${traceId}] Paychangu request:`, JSON.stringify(paychanguPayload, null, 2));
     console.log(`[${traceId}] Calling Paychangu API: https://api.paychangu.com/payment`);
@@ -459,6 +480,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             gatewayCharge: data.fees ? data.fees / 100 : 0,
             systemGatewayFeeRate,
             systemFeeRate,
+            gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
             gatewayResponse: JSON.stringify(data),
             expiresAt,
           },

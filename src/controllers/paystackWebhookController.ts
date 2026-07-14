@@ -155,6 +155,7 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
           gatewayCharge: txData.fees ? txData.fees / 100 : 0,
           systemGatewayFeeRate,
           systemFeeRate,
+          gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
           gatewayResponse: JSON.stringify(txData),
           expiresAt,
         },

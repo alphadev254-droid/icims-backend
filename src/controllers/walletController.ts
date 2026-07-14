@@ -516,7 +516,13 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
       ministryAdminId: userId,
       amount: fees.amount,
       fee: fees.fee,
+      gatewayFeeAmount: fees.gatewayFeeAmount,
+      gatewayFeeRate: fees.gatewayFeeRate,
+      bankFixedFeeAmount: fees.bankFixedFeeAmount,
+      systemFeeAmount: fees.systemFeeAmount,
+      systemFeeRate: fees.systemFeeRate,
       netAmount: fees.netAmount,
+      payoutAmount: fees.payoutAmount,
       method,
       mobileOperator,
       mobileNumber,
@@ -525,7 +531,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
       accountNumber,
       status: 'pending',
       initiatedBy: userId,
-    }
+    } as any
   });
 
   console.log('Withdrawal created:', withdrawal.id);
@@ -615,7 +621,13 @@ if (user?.email) {
         id: updatedWithdrawal!.id,
         amount: updatedWithdrawal!.amount,
         fee: updatedWithdrawal!.fee,
+        gatewayFeeAmount: (updatedWithdrawal as any)!.gatewayFeeAmount,
+        gatewayFeeRate: (updatedWithdrawal as any)!.gatewayFeeRate,
+        bankFixedFeeAmount: (updatedWithdrawal as any)!.bankFixedFeeAmount,
+        systemFeeAmount: (updatedWithdrawal as any)!.systemFeeAmount,
+        systemFeeRate: (updatedWithdrawal as any)!.systemFeeRate,
         netAmount: updatedWithdrawal!.netAmount,
+        payoutAmount: (updatedWithdrawal as any)!.payoutAmount,
         status: updatedWithdrawal!.status
       }
     });
@@ -730,7 +742,7 @@ async function processPaychanguPayout(withdrawal: any) {
     console.log('=== PAYCHANGU PAYOUT ===');
     console.log('Withdrawal ID:', withdrawal.id);
     console.log('Method:', withdrawal.method);
-    console.log('Net Amount:', withdrawal.netAmount);
+    console.log('Payout Amount:', withdrawal.payoutAmount ?? withdrawal.netAmount);
 
     // Map withdrawal details to Paychangu direct-charge payout payload
     let bankUuid: string;
@@ -780,13 +792,17 @@ async function processPaychanguPayout(withdrawal: any) {
     const payoutPayload = {
       payout_method: 'bank_transfer',
       bank_uuid: bankUuid,
-      amount: String(Math.round(withdrawal.netAmount)),
+      amount: String(Math.round(withdrawal.payoutAmount ?? withdrawal.netAmount)),
       charge_id: `PAYOUT-${withdrawal.id}`,
       bank_account_name: accountName,
       bank_account_number: accountNumber,
     };
 
     console.log('Paychangu Payout Payload:', payoutPayload);
+    await prisma.withdrawal.update({
+      where: { id: withdrawal.id },
+      data: { gatewayPayload: JSON.stringify({ provider: 'paychangu', action: 'payouts.initialize', payload: payoutPayload }) } as any,
+    });
 
     const response = await axios.post(
       'https://api.paychangu.com/direct-charge/payouts/initialize',
@@ -818,8 +834,8 @@ async function processPaychanguPayout(withdrawal: any) {
       data: {
         status: 'processing',
         chargeId: `PAYOUT-${withdrawal.id}`,
-        gatewayResponse: JSON.stringify(response.data),
-      },
+        gatewayResponse: JSON.stringify({ initializeResponse: response.data }),
+      } as any,
     });
 
     console.log('✅ Withdrawal status updated to processing');
@@ -846,8 +862,11 @@ async function processPaychanguPayout(withdrawal: any) {
       data: {
         status: 'failed',
         failureReason,
-        gatewayResponse: fullReason.length > 2000 ? fullReason : undefined,
-      }
+        gatewayResponse: JSON.stringify({
+          error: error.response?.data ?? { message: error.message },
+          status: error.response?.status ?? null,
+        }),
+      } as any
     });
 
     console.log('✅ Withdrawal status updated to failed');

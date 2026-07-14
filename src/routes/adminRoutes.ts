@@ -4,6 +4,7 @@ import {
   getAdminStats,
   getAdminUsers,
   getAdminUser,
+  getAdminUserRoleOptions,
   updateAdminUser,
   deleteAdminUser,
   resetAdminUserPassword,
@@ -13,6 +14,7 @@ import {
   getAdminTransactions,
   getAdminSystemTransactions,
   getAdminSystemTransaction,
+  getAdminWithdrawals,
   getAdminChurch,
   updateAdminChurch,
   deleteAdminChurch,
@@ -38,6 +40,7 @@ router.get('/ministries', getAdminMinistries);
 
 router.get('/users', getAdminUsers);
 router.get('/users/:id', getAdminUser);
+router.get('/users/:id/role-options', getAdminUserRoleOptions);
 router.put('/users/:id', updateAdminUser);
 router.delete('/users/:id', deleteAdminUser);
 router.post('/users/:id/reset-password', resetAdminUserPassword);
@@ -48,6 +51,7 @@ router.put('/users/:id/subscription/:subId', updateAdminSubscription);
 router.get('/transactions', getAdminTransactions);
 router.get('/system-transactions', getAdminSystemTransactions);
 router.get('/system-transactions/:id', getAdminSystemTransaction);
+router.get('/withdrawals', getAdminWithdrawals);
 
 router.get('/churches/:id', getAdminChurch);
 router.put('/churches/:id', updateAdminChurch);
@@ -71,13 +75,30 @@ router.get('/pending-transactions', getAdminPendingTransactions);
 // All churches list (for filter dropdowns)
 router.get('/all-churches', async (req, res) => {
   const ministry = req.query.ministry as string | undefined;
+  const q = String(req.query.q || '').trim();
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
+  const skip = (page - 1) * limit;
+  const where: any = {
+    ...(ministry ? { ministryAdminId: ministry } : {}),
+    ...(q ? {
+      OR: [
+        { name: { contains: q } },
+        { location: { contains: q } },
+        { region: { contains: q } },
+        { district: { contains: q } },
+      ],
+    } : {}),
+  };
   const churches = await (await import('../lib/prisma')).default.church.findMany({
-    where: ministry ? { ministryAdminId: ministry } : {},
-    select: { id: true, name: true, ministryAdminId: true },
+    where,
+    select: { id: true, name: true, ministryAdminId: true, location: true, region: true, district: true },
     orderBy: { name: 'asc' },
-    take: 500,
+    skip,
+    take: limit,
   });
-  res.json({ success: true, data: churches });
+  const total = await (await import('../lib/prisma')).default.church.count({ where });
+  res.json({ success: true, data: churches, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 });
 
 export default router;

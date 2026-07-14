@@ -1,0 +1,3 @@
+ALTER TABLE `withdrawals`
+  ADD COLUMN IF NOT EXISTS `gatewayPayload` LONGTEXT NULL,
+  MODIFY COLUMN `gatewayResponse` LONGTEXT NULL;

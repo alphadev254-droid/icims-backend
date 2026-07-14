@@ -10,6 +10,14 @@ import { generateReceiptPDF } from '../lib/receiptPDF';
 import { refundWithdrawal } from '../utils/walletOperations';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 
+function safeJsonParse(value: string): any {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 export async function paychanguWebhook(req: Request, res: Response): Promise<void> {
   const traceId = `PAYCHANGU-${Date.now()}`;
 
@@ -60,7 +68,14 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
       if (status === 'success' && withdrawal.status !== 'completed') {
         await prisma.withdrawal.update({
           where: { id: withdrawalId },
-          data: { status: 'completed', processedAt: new Date(), gatewayResponse: JSON.stringify(payload) },
+          data: {
+            status: 'completed',
+            processedAt: new Date(),
+            gatewayResponse: JSON.stringify({
+              previous: withdrawal.gatewayResponse ? safeJsonParse(withdrawal.gatewayResponse) : null,
+              webhookPayload: payload,
+            }),
+          },
         });
 
         if (withdrawal.initiatedBy) {
@@ -92,7 +107,10 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
           data: {
             status: 'failed',
             failureReason: String(payload.message || payload.status || 'Payout failed').substring(0, 500),
-            gatewayResponse: JSON.stringify(payload),
+            gatewayResponse: JSON.stringify({
+              previous: withdrawal.gatewayResponse ? safeJsonParse(withdrawal.gatewayResponse) : null,
+              webhookPayload: payload,
+            }),
           },
         });
       }
@@ -126,18 +144,16 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 
     // Process based on type
     if (pendingTx.type === 'package_subscription') {
-      await processPaychanguSubscription(pendingTx, metadata, payload, traceId);
+      await processPaychanguSubscription(pendingTx, metadata, payload, traceId, verifyResponse.data);
     } else if (pendingTx.type === 'event_ticket') {
       await processPaychanguTicket(pendingTx, metadata, payload, traceId);
     } else if (pendingTx.type === 'donation') {
       await processPaychanguDonation(pendingTx, metadata, payload, traceId);
     }
 
-    // Update pending transaction
-    await prisma.pendingTransaction.update({
-      where: { id: pendingTx.id },
-      data: { status: 'completed' },
-    });
+    // Successful payments now live in payments/transactions with full payloads.
+    // Remove the pending attempt so this table only shows pending, expired, or failed/stuck attempts.
+    await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
 
     console.log(`[${traceId}] ✅ Payment processed successfully`);
 
@@ -148,7 +164,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 }
 
 // Helper functions for processing different payment types
-async function processPaychanguSubscription(pendingTx: any, metadata: any, payload: any, traceId: string): Promise<void> {
+async function processPaychanguSubscription(pendingTx: any, metadata: any, payload: any, traceId: string, verifyPayload?: any): Promise<void> {
   const existing = await prisma.payment.findFirst({ where: { reference: pendingTx.reference } });
   if (existing) {
     console.log(`[${traceId}] Already processed: ${existing.id}`);
@@ -189,6 +205,8 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
       paidAt: new Date(),
       systemGatewayFeeRate: metadata.gatewayFeeRate || 0,
       systemFeeRate: metadata.systemFeeRate || 0,
+      gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
+      gatewayResponse: JSON.stringify({ webhookPayload: payload, verifyResponse: verifyPayload ?? null }),
       createdById: pendingTx.userId || metadata.ministryAdminId,
       expiresAt,
     },
