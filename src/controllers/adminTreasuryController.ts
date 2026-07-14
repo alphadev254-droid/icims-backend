@@ -156,7 +156,7 @@ async function fetchPaychanguBalance(currency = 'MWK') {
         headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, Accept: 'application/json' },
       });
       const payload = response.data;
-      const raw =
+      const mainBalance =
         payload?.data?.main_balance ??
         payload?.main_balance ??
         payload?.data?.available_balance ??
@@ -164,7 +164,14 @@ async function fetchPaychanguBalance(currency = 'MWK') {
         payload?.data?.balance ??
         payload?.balance ??
         0;
-      return { balance: Number(raw) || 0, currency, raw: payload };
+      const collectionBalance = payload?.data?.collection_balance ?? payload?.collection_balance ?? 0;
+      return {
+        balance: Number(mainBalance) || 0,
+        collectionBalance: Number(collectionBalance) || 0,
+        totalBalance: (Number(mainBalance) || 0) + (Number(collectionBalance) || 0),
+        currency,
+        raw: payload,
+      };
     } catch (error: any) {
       lastError = error;
     }
@@ -342,6 +349,8 @@ async function getTreasurySummaryData() {
   return {
     currency: 'MWK',
     paychanguBalance: paychangu.balance,
+    paychanguCollectionBalance: paychangu.collectionBalance,
+    paychanguTotalBalance: paychangu.totalBalance,
     paychanguRaw: paychangu.raw,
     ministryWalletBalance,
     ministryWalletCount: walletAgg._count._all,
