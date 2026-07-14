@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import prisma from '../lib/prisma';
 import { queueEmail } from '../lib/emailQueue';
 import { withdrawalOtpTemplate } from '../lib/emailTemplates';
+import { refundWithdrawal } from '../utils/walletOperations';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 const OTP_EXPIRY_MINUTES = Number(process.env.WITHDRAWAL_OTP_EXPIRY_MINUTES || 5);
@@ -127,7 +128,14 @@ async function fetchPaychanguBalance(currency = 'MWK') {
         headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, Accept: 'application/json' },
       });
       const payload = response.data;
-      const raw = payload?.data?.balance ?? payload?.balance ?? payload?.data?.available_balance ?? payload?.available_balance ?? 0;
+      const raw =
+        payload?.data?.main_balance ??
+        payload?.main_balance ??
+        payload?.data?.available_balance ??
+        payload?.available_balance ??
+        payload?.data?.balance ??
+        payload?.balance ??
+        0;
       return { balance: Number(raw) || 0, currency, raw: payload };
     } catch (error: any) {
       lastError = error;
@@ -143,17 +151,61 @@ async function fetchPaychanguBanks() {
   return Array.isArray(response.data?.data) ? response.data.data : response.data;
 }
 
+async function fetchPayoutStatus(chargeId: string) {
+  const endpoints = [
+    `https://api.paychangu.com/mobile-money/payments/${encodeURIComponent(chargeId)}/details`,
+    `https://api.paychangu.com/direct-charge/payouts/${encodeURIComponent(chargeId)}`,
+    `https://api.paychangu.com/direct-charge/payouts/verify/${encodeURIComponent(chargeId)}`,
+    `https://api.paychangu.com/direct-charge/payouts/status/${encodeURIComponent(chargeId)}`,
+  ];
+  let lastError: any;
+  for (const url of endpoints) {
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, Accept: 'application/json' },
+      });
+      return { url, payload: response.data };
+    } catch (error: any) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function safeParseJson(value?: string | null): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizePayoutStatus(payload: any): 'completed' | 'failed' | 'processing' | null {
+  const status = String(
+    payload?.data?.status ??
+    payload?.status ??
+    payload?.data?.payout_status ??
+    payload?.payout_status ??
+    ''
+  ).toLowerCase();
+  if (['success', 'successful', 'completed', 'paid'].includes(status)) return 'completed';
+  if (['failed', 'failure', 'reversed', 'cancelled', 'canceled'].includes(status)) return 'failed';
+  if (['pending', 'processing', 'queued', 'initiated'].includes(status)) return 'processing';
+  return null;
+}
+
 async function getTreasurySummaryData() {
   const [paychangu, walletAgg, pendingMinistryAgg, pendingPlatformAgg, completedRevenueAgg] = await Promise.all([
     fetchPaychanguBalance('MWK'),
     prisma.wallet.aggregate({ where: { currency: 'MWK' }, _sum: { balance: true }, _count: { _all: true } }),
     prisma.withdrawal.aggregate({
-      where: { status: { in: ['pending', 'processing'] }, wallet: { currency: 'MWK' } } as any,
+      where: { status: { in: ['pending', 'processing', 'review_required'] }, wallet: { currency: 'MWK' } } as any,
       _sum: { payoutAmount: true },
       _count: { _all: true },
     }),
     (prisma as any).platformWithdrawal.aggregate({
-      where: { status: { in: ['pending', 'processing'] } },
+      where: { status: { in: ['pending', 'processing', 'review_required'] } },
       _sum: { payoutAmount: true },
       _count: { _all: true },
     }),
@@ -344,5 +396,93 @@ export async function requestAdminTreasuryWithdrawal(req: Request, res: Response
       data: { status: 'failed', failureReason: String(error.response?.data?.message || error.message || 'Payout failed').substring(0, 500), gatewayResponse: JSON.stringify({ error: error.response?.data || error.message }) },
     });
     res.status(500).json({ success: false, message: error.response?.data?.message || error.message || 'Platform withdrawal failed' });
+  }
+}
+
+export async function reconcileAdminWithdrawal(req: Request, res: Response): Promise<void> {
+  const kind = String(req.params.kind);
+  const id = String(req.params.id);
+  if (!['ministry', 'platform'].includes(kind)) {
+    res.status(400).json({ success: false, message: 'Invalid withdrawal type' });
+    return;
+  }
+
+  const withdrawal = kind === 'ministry'
+    ? await prisma.withdrawal.findUnique({ where: { id } }) as any
+    : await (prisma as any).platformWithdrawal.findUnique({ where: { id } });
+
+  if (!withdrawal) {
+    res.status(404).json({ success: false, message: 'Withdrawal not found' });
+    return;
+  }
+  if (!withdrawal.chargeId) {
+    res.status(400).json({ success: false, message: 'Withdrawal has no gateway charge ID to reconcile' });
+    return;
+  }
+
+  try {
+    const result = await fetchPayoutStatus(withdrawal.chargeId);
+    const normalized = normalizePayoutStatus(result.payload);
+    const gatewayResponse = JSON.stringify({
+      previous: safeParseJson(withdrawal.gatewayResponse),
+      reconciliation: {
+        checkedAt: new Date().toISOString(),
+        checkedBy: req.user?.userId,
+        endpoint: result.url,
+        payload: result.payload,
+        normalizedStatus: normalized,
+      },
+    });
+
+    if (normalized === 'completed') {
+      const data = { status: 'completed', processedAt: new Date(), failureReason: null, gatewayResponse };
+      const updated = kind === 'ministry'
+        ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+        : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+      res.json({ success: true, message: 'Withdrawal reconciled as completed', data: updated });
+      return;
+    }
+
+    if (normalized === 'failed') {
+      if (kind === 'ministry' && withdrawal.status !== 'failed') {
+        await refundWithdrawal(id);
+      }
+      const data = {
+        status: 'failed',
+        failureReason: 'Reconciled with PayChangu as failed.',
+        gatewayResponse,
+      };
+      const updated = kind === 'ministry'
+        ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+        : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+      res.json({ success: true, message: kind === 'ministry' ? 'Withdrawal reconciled as failed and refunded' : 'Platform withdrawal reconciled as failed', data: updated });
+      return;
+    }
+
+    const data = {
+      status: normalized === 'processing' ? 'processing' : 'review_required',
+      failureReason: normalized === 'processing' ? null : 'PayChangu reconciliation returned an unclear payout status. Manual review still required.',
+      gatewayResponse,
+    };
+    const updated = kind === 'ministry'
+      ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+      : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+    res.json({ success: true, message: 'Reconciliation checked, but payout is not final yet', data: updated });
+  } catch (error: any) {
+    const message = error.response?.data?.message || error.message || 'Failed to reconcile payout';
+    const data = {
+      status: 'review_required',
+      failureReason: `Reconciliation failed: ${message}`,
+      gatewayResponse: JSON.stringify({
+        previous: safeParseJson(withdrawal.gatewayResponse),
+        reconciliationError: error.response?.data || error.message,
+        checkedAt: new Date().toISOString(),
+        checkedBy: req.user?.userId,
+      }),
+    };
+    const updated = kind === 'ministry'
+      ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+      : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+    res.status(502).json({ success: false, message, data: updated });
   }
 }

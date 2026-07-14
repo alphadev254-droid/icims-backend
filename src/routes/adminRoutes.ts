@@ -34,6 +34,7 @@ import {
   getAdminTreasuryBanks,
   getAdminTreasurySummary,
   getAdminTreasuryWithdrawals,
+  reconcileAdminWithdrawal,
   requestAdminTreasuryWithdrawal,
   sendAdminTreasuryOtp,
 } from '../controllers/adminTreasuryController';
@@ -64,6 +65,7 @@ router.get('/treasury/withdrawals', getAdminTreasuryWithdrawals);
 router.get('/treasury/banks', getAdminTreasuryBanks);
 router.post('/treasury/withdraw/otp', sendAdminTreasuryOtp);
 router.post('/treasury/withdraw', requestAdminTreasuryWithdrawal);
+router.post('/treasury/withdrawals/:kind/:id/reconcile', reconcileAdminWithdrawal);
 
 router.get('/churches/:id', getAdminChurch);
 router.put('/churches/:id', updateAdminChurch);
