@@ -55,6 +55,38 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 
     // Handle payouts
     if (event_type === 'api.payout') {
+      if (String(charge_id || '').startsWith('PLATFORM-PAYOUT-')) {
+        const platformWithdrawalId = charge_id.replace('PLATFORM-PAYOUT-', '');
+        const platformWithdrawal = await (prisma as any).platformWithdrawal.findUnique({ where: { id: platformWithdrawalId } });
+        if (!platformWithdrawal) return;
+        if (status === 'success' && platformWithdrawal.status !== 'completed') {
+          await (prisma as any).platformWithdrawal.update({
+            where: { id: platformWithdrawalId },
+            data: {
+              status: 'completed',
+              processedAt: new Date(),
+              gatewayResponse: JSON.stringify({
+                previous: platformWithdrawal.gatewayResponse ? safeJsonParse(platformWithdrawal.gatewayResponse) : null,
+                webhookPayload: payload,
+              }),
+            },
+          });
+        } else if (status !== 'success' && platformWithdrawal.status !== 'failed') {
+          await (prisma as any).platformWithdrawal.update({
+            where: { id: platformWithdrawalId },
+            data: {
+              status: 'failed',
+              failureReason: String(payload.message || payload.status || 'Platform payout failed').substring(0, 500),
+              gatewayResponse: JSON.stringify({
+                previous: platformWithdrawal.gatewayResponse ? safeJsonParse(platformWithdrawal.gatewayResponse) : null,
+                webhookPayload: payload,
+              }),
+            },
+          });
+        }
+        return;
+      }
+
       const withdrawalId = charge_id?.replace('PAYOUT-', '');
       if (!withdrawalId) return;
 

@@ -978,6 +978,54 @@ model WithdrawalOtp {
   @@map("withdrawal_otps")
 }
 
+model PlatformWithdrawal {
+  id                 String   @id @default(cuid())
+  initiatedBy        String
+  approvedBy         String?
+  amount             Float
+  fee                Float
+  gatewayFeeAmount   Float   @default(0)
+  gatewayFeeRate     Float?
+  bankFixedFeeAmount Float   @default(0)
+  netAmount          Float
+  payoutAmount       Float   @default(0)
+  method             String
+  status             String   @default("pending")
+  mobileOperator     String?
+  mobileNumber       String?
+  bankCode           String?
+  accountName        String?
+  accountNumber      String?
+  chargeId           String?  @unique
+  gatewayPayload     String?  @db.LongText
+  gatewayResponse    String?  @db.LongText
+  failureReason      String?  @db.Text
+  processedAt        DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([initiatedBy])
+  @@index([status])
+  @@index([createdAt])
+  @@map("platform_withdrawals")
+}
+
+model PlatformWithdrawalOtp {
+  id          String    @id @default(cuid())
+  userId      String
+  otpHash     String
+  payloadHash String
+  expiresAt   DateTime
+  usedAt      DateTime?
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, expiresAt])
+  @@index([payloadHash])
+  @@map("platform_withdrawal_otps")
+}
+
 model KPI {
   id              String   @id @default(cuid())
   name            String

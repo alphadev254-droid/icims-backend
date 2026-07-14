@@ -30,6 +30,13 @@ import {
   deletePackage,
   getConversionRates,
 } from '../controllers/packageManagementController';
+import {
+  getAdminTreasuryBanks,
+  getAdminTreasurySummary,
+  getAdminTreasuryWithdrawals,
+  requestAdminTreasuryWithdrawal,
+  sendAdminTreasuryOtp,
+} from '../controllers/adminTreasuryController';
 
 const router = Router();
 router.use(authenticate, authorizeSystemAdmin);
@@ -52,6 +59,11 @@ router.get('/transactions', getAdminTransactions);
 router.get('/system-transactions', getAdminSystemTransactions);
 router.get('/system-transactions/:id', getAdminSystemTransaction);
 router.get('/withdrawals', getAdminWithdrawals);
+router.get('/treasury/summary', getAdminTreasurySummary);
+router.get('/treasury/withdrawals', getAdminTreasuryWithdrawals);
+router.get('/treasury/banks', getAdminTreasuryBanks);
+router.post('/treasury/withdraw/otp', sendAdminTreasuryOtp);
+router.post('/treasury/withdraw', requestAdminTreasuryWithdrawal);
 
 router.get('/churches/:id', getAdminChurch);
 router.put('/churches/:id', updateAdminChurch);
