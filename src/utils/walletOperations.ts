@@ -106,7 +106,7 @@ export async function refundWithdrawal(withdrawalId: string) {
 
   await creditChurchWallet(
     withdrawal.wallet.churchId,
-    withdrawal.amount,
+    withdrawal.netAmount,
     'refund',
     withdrawalId,
     `Refund for failed withdrawal - ${withdrawalId}`

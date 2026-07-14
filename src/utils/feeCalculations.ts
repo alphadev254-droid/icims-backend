@@ -16,6 +16,13 @@ function requireEnv(key: string): number {
   return num;
 }
 
+function optionalEnv(key: string, fallback: number): number {
+  const val = process.env[key];
+  if (!val) return fallback;
+  const num = parseFloat(val);
+  return isNaN(num) ? fallback : num;
+}
+
 function ceilMoney(value: number): number {
   return Math.ceil(value);
 }
@@ -67,14 +74,24 @@ function normalizeRate(raw: number): number {
 
 export function calculateWithdrawalFee(
   amount: number,
-  method: 'mobile_money' | 'bank_transfer'
+  method: 'mobile_money' | 'bank_transfer',
+  mobileOperator?: 'airtel' | 'tnm'
 ): WithdrawalFees {
   let gatewayFeeAmount: number;
   let gatewayFeeRate: number;
   let bankFixedFeeAmount = 0;
 
   if (method === 'mobile_money') {
-    gatewayFeeRate = normalizeRate(requireEnv('WITHDRAWAL_MOBILE_MONEY_FEE_RATE'));
+    const operatorRate =
+      mobileOperator === 'airtel'
+        ? optionalEnv('WITHDRAWAL_AIRTEL_MONEY_FEE_RATE', 0.018)
+        : mobileOperator === 'tnm'
+          ? optionalEnv('WITHDRAWAL_TNM_MPAMBA_FEE_RATE', 0.015)
+          : null;
+    if (operatorRate == null) {
+      throw new Error('Mobile money operator is required for withdrawal fee calculation.');
+    }
+    gatewayFeeRate = normalizeRate(operatorRate);
     gatewayFeeAmount = ceilMoney(amount * gatewayFeeRate);
   } else {
     gatewayFeeRate = normalizeRate(requireEnv('WITHDRAWAL_BANK_FEE_RATE'));
@@ -85,8 +102,8 @@ export function calculateWithdrawalFee(
   const systemFeeRate = normalizeRate(requireEnv('WITHDRAWAL_SYSTEM_FEE_RATE'));
   const systemFeeAmount = ceilMoney(amount * systemFeeRate);
   const fee = gatewayFeeAmount + systemFeeAmount;
-  const netAmount = amount - fee;
-  const payoutAmount = netAmount;
+  const payoutAmount = amount;
+  const netAmount = amount + fee;
 
   return {
     amount: parseFloat(amount.toFixed(2)),

@@ -197,6 +197,26 @@ const withdrawalConfirmSchema = withdrawalBaseSchema.extend({
 const WITHDRAWAL_OTP_EXPIRY_MINUTES = Number(process.env.WITHDRAWAL_OTP_EXPIRY_MINUTES || 5);
 const WITHDRAWAL_OTP_MAX_ATTEMPTS = Number(process.env.WITHDRAWAL_OTP_MAX_ATTEMPTS || 5);
 
+function getMobileOperatorFromNumber(value?: string | null): 'airtel' | 'tnm' | null {
+  const digits = String(value || '').replace(/\D/g, '');
+  const local = digits.startsWith('265') ? `0${digits.slice(3)}` : digits;
+  if (local.startsWith('099') || local.startsWith('098')) return 'airtel';
+  if (local.startsWith('088') || local.startsWith('089')) return 'tnm';
+  return null;
+}
+
+function validateMobileOperatorNumber(data: z.infer<typeof withdrawalBaseSchema>): string | null {
+  if (data.method !== 'mobile_money') return null;
+  const detected = getMobileOperatorFromNumber(data.mobileNumber);
+  if (!detected) return 'Enter a valid Airtel Money or TNM Mpamba number.';
+  if (data.mobileOperator && detected !== data.mobileOperator) {
+    const expected = data.mobileOperator === 'airtel' ? 'Airtel Money' : 'TNM Mpamba';
+    const actual = detected === 'airtel' ? 'Airtel Money' : 'TNM Mpamba';
+    return `The selected operator is ${expected}, but the number looks like ${actual}. Please correct the operator or mobile number.`;
+  }
+  return null;
+}
+
 function getWithdrawalPayloadHash(payload: z.infer<typeof withdrawalBaseSchema>) {
   const normalized = {
     amount: Number(payload.amount),
@@ -277,10 +297,50 @@ async function getWithdrawalContext(req: Request) {
   return { userId, roleName, wallets };
 }
 
+export async function getWithdrawalFeePreview(req: Request, res: Response): Promise<void> {
+  const parsed = withdrawalSchema.safeParse({
+    ...req.query,
+    amount: Number(req.query.amount),
+  });
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+  const mobileValidationError = validateMobileOperatorNumber(parsed.data);
+  if (mobileValidationError) {
+    res.status(400).json({ success: false, message: mobileValidationError });
+    return;
+  }
+
+  const context = await getWithdrawalContext(req);
+  if ('errorStatus' in context) {
+    res.status(context.errorStatus ?? 400).json({ success: false, message: context.errorMessage });
+    return;
+  }
+
+  const fees = calculateWithdrawalFee(parsed.data.amount, parsed.data.method, parsed.data.mobileOperator);
+  const totalBalance = context.wallets.reduce((sum, w) => sum + w.balance, 0);
+  res.json({
+    success: true,
+    data: {
+      ...fees,
+      availableBalance: totalBalance,
+      hasEnoughBalance: totalBalance >= fees.netAmount,
+      shortfall: Math.max(0, fees.netAmount - totalBalance),
+      currency: context.wallets[0]?.currency || 'MWK',
+    },
+  });
+}
+
 export async function sendWithdrawalOtp(req: Request, res: Response): Promise<void> {
   const parsed = withdrawalSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+  const mobileValidationError = validateMobileOperatorNumber(parsed.data);
+  if (mobileValidationError) {
+    res.status(400).json({ success: false, message: mobileValidationError });
     return;
   }
 
@@ -291,12 +351,16 @@ export async function sendWithdrawalOtp(req: Request, res: Response): Promise<vo
   }
 
   const totalBalance = context.wallets.reduce((sum, w) => sum + w.balance, 0);
-  if (totalBalance < parsed.data.amount) {
-    res.status(400).json({ success: false, message: `Insufficient balance. Available: ${totalBalance}` });
+  const fees = calculateWithdrawalFee(parsed.data.amount, parsed.data.method, parsed.data.mobileOperator);
+  if (totalBalance < fees.netAmount) {
+    res.status(400).json({
+      success: false,
+      message: `Insufficient transaction cost to withdraw ${parsed.data.amount}. You need ${fees.netAmount} including fees, but available balance is ${totalBalance}. Reduce the withdrawal amount.`,
+    });
     return;
   }
 
-  const selectedWallet = context.wallets.find(w => w.balance >= parsed.data.amount) || context.wallets.sort((a, b) => b.balance - a.balance)[0];
+  const selectedWallet = context.wallets.find(w => w.balance >= fees.netAmount) || context.wallets.sort((a, b) => b.balance - a.balance)[0];
   const user = await prisma.user.findUnique({
     where: { id: context.userId },
     select: { firstName: true, email: true },
@@ -381,6 +445,11 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
     return;
   }
+  const mobileValidationError = validateMobileOperatorNumber(parsed.data);
+  if (mobileValidationError) {
+    res.status(400).json({ success: false, message: mobileValidationError });
+    return;
+  }
 
   const { amount, method, mobileOperator, mobileNumber, bankCode, accountName, accountNumber, otpCode } = parsed.data;
 
@@ -457,9 +526,15 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   const totalBalance = wallets.reduce((sum, w) => sum + w.balance, 0);
   console.log('Total balance:', totalBalance);
 
-  if (totalBalance < amount) {
-    console.error('ERROR: Insufficient balance. Total:', totalBalance, 'Requested:', amount);
-    res.status(400).json({ success: false, message: `Insufficient balance. Available: ${totalBalance}` });
+  const fees = calculateWithdrawalFee(amount, method, mobileOperator);
+  console.log('Fees calculated:', fees);
+
+  if (totalBalance < fees.netAmount) {
+    console.error('ERROR: Insufficient transaction cost. Total:', totalBalance, 'Required:', fees.netAmount, 'Requested:', amount);
+    res.status(400).json({
+      success: false,
+      message: `Insufficient transaction cost to withdraw ${amount}. You need ${fees.netAmount} including fees, but available balance is ${totalBalance}. Reduce the withdrawal amount.`,
+    });
     return;
   }
 
@@ -504,11 +579,8 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   });
 
   // Use the first wallet with sufficient balance, or the one with highest balance
-  let selectedWallet = wallets.find(w => w.balance >= amount) || wallets.sort((a, b) => b.balance - a.balance)[0];
+  let selectedWallet = wallets.find(w => w.balance >= fees.netAmount) || wallets.sort((a, b) => b.balance - a.balance)[0];
   console.log('Selected wallet:', selectedWallet.id, 'Balance:', selectedWallet.balance);
-
-  const fees = calculateWithdrawalFee(amount, method);
-  console.log('Fees calculated:', fees);
 
   const withdrawal = await prisma.withdrawal.create({
     data: {
@@ -538,7 +610,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
 
   await debitChurchWallet(
     selectedWallet.id,
-    amount,
+    fees.netAmount,
     'withdrawal',
     withdrawal.id,
     `Withdrawal request - ${method}`

@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth';
 import {
   getWalletBalance,
   getWalletTransactions,
+  getWithdrawalFeePreview,
   sendWithdrawalOtp,
   requestWithdrawal,
   getWithdrawals,
@@ -13,6 +14,7 @@ const router = Router();
 
 router.get('/balance', authenticate, getWalletBalance);
 router.get('/transactions', authenticate, getWalletTransactions);
+router.get('/withdraw/fees', authenticate, getWithdrawalFeePreview);
 router.post('/withdraw/otp', authenticate, sendWithdrawalOtp);
 router.post('/withdraw', authenticate, requestWithdrawal);
 router.get('/withdrawals', authenticate, getWithdrawals);

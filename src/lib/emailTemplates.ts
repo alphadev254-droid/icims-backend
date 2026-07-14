@@ -417,9 +417,9 @@ export const withdrawalRequestUserTemplate = (data: {
       <div class="info-box">
         <h3>Withdrawal Details</h3>
         <p><strong>Request ID:</strong> ${data.withdrawalId}</p>
-        <p><strong>Amount:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
+        <p><strong>Payout Amount:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
         <p><strong>Processing Fee:</strong> ${data.currency} ${data.fee.toLocaleString()}</p>
-        <p><strong>Net Amount:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
+        <p><strong>Total Debited:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
         <p><strong>Method:</strong> ${data.method === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}</p>
         ${data.churchName ? `<p><strong>Ministry:</strong> ${data.churchName}</p>` : ''}
         <p><strong>Platform:</strong> ${SYSTEM_NAME}</p>
@@ -486,9 +486,9 @@ export const withdrawalRequestAdminTemplate = (data: {
         <h3>Request Details</h3>
         <p><strong>Request ID:</strong> ${data.withdrawalId}</p>
         <p><strong>Requested By:</strong> ${data.userName} (${data.userEmail})</p>
-        <p><strong>Amount:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
+        <p><strong>Payout Amount:</strong> ${data.currency} ${data.amount.toLocaleString()}</p>
         <p><strong>Processing Fee:</strong> ${data.currency} ${data.fee.toLocaleString()}</p>
-        <p><strong>Net Amount:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
+        <p><strong>Total Debited:</strong> ${data.currency} ${data.netAmount.toLocaleString()}</p>
         <p><strong>Method:</strong> ${data.method === 'mobile_money' ? 'Mobile Money' : 'Bank Transfer'}</p>
         ${data.churchName ? `<p><strong>Ministry:</strong> ${data.churchName}</p>` : ''}
         <p><strong>Platform:</strong> ${SYSTEM_NAME}</p>
