@@ -11,6 +11,9 @@ import { refundWithdrawal } from '../utils/walletOperations';
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 const OTP_EXPIRY_MINUTES = Number(process.env.WITHDRAWAL_OTP_EXPIRY_MINUTES || 5);
 const OTP_MAX_ATTEMPTS = Number(process.env.WITHDRAWAL_OTP_MAX_ATTEMPTS || 5);
+let paychanguMobileOperatorsCache: any[] | null = null;
+let paychanguMobileOperatorsCacheAt: number | null = null;
+const PAYCHANGU_OPERATOR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const treasuryBaseSchema = z.object({
   amount: z.number().positive(),
@@ -74,6 +77,31 @@ function validateMobileOperatorNumber(data: z.infer<typeof treasuryBaseSchema>):
     return `The selected operator is ${expected}, but the number looks like ${actual}. Please correct the operator or mobile number.`;
   }
   return null;
+}
+
+function getPaychanguMobileOperatorRefId(operators: any[], operator?: string | null): string | null {
+  const op = String(operator || '').toLowerCase();
+  const envValue = op === 'airtel'
+    ? process.env.PAYCHANGU_AIRTEL_MONEY_OPERATOR_REF_ID
+    : op === 'tnm'
+      ? process.env.PAYCHANGU_TNM_MPAMBA_OPERATOR_REF_ID
+      : null;
+  if (envValue) return envValue;
+  const match = operators.find((item: any) => {
+    const name = String(item.name || '').toLowerCase();
+    const shortCode = String(item.short_code || '').toLowerCase();
+    if (op === 'airtel') return shortCode === 'airtel' || name.includes('airtel');
+    if (op === 'tnm') return shortCode === 'tnm' || name.includes('tnm') || name.includes('mpamba');
+    return false;
+  });
+  return match?.ref_id || match?.mobile_money_operator_ref_id || match?.operator_ref_id || null;
+}
+
+function normalizeMsisdn(value?: string | null): string {
+  let msisdn = String(value || '').replace(/\D/g, '');
+  if (msisdn.startsWith('0')) msisdn = `265${msisdn.slice(1)}`;
+  else if (!msisdn.startsWith('265')) msisdn = `265${msisdn}`;
+  return msisdn;
 }
 
 function calculatePlatformPayoutFee(amount: number, method: 'mobile_money' | 'bank_transfer', mobileOperator?: 'airtel' | 'tnm') {
@@ -151,25 +179,118 @@ async function fetchPaychanguBanks() {
   return Array.isArray(response.data?.data) ? response.data.data : response.data;
 }
 
-async function fetchPayoutStatus(chargeId: string) {
-  const endpoints = [
-    `https://api.paychangu.com/mobile-money/payments/${encodeURIComponent(chargeId)}/details`,
-    `https://api.paychangu.com/direct-charge/payouts/${encodeURIComponent(chargeId)}`,
-    `https://api.paychangu.com/direct-charge/payouts/verify/${encodeURIComponent(chargeId)}`,
-    `https://api.paychangu.com/direct-charge/payouts/status/${encodeURIComponent(chargeId)}`,
-  ];
-  let lastError: any;
-  for (const url of endpoints) {
+async function fetchPaychanguMobileOperators(): Promise<any[]> {
+  const now = Date.now();
+  if (paychanguMobileOperatorsCache && paychanguMobileOperatorsCacheAt && now - paychanguMobileOperatorsCacheAt < PAYCHANGU_OPERATOR_CACHE_TTL_MS) {
+    return paychanguMobileOperatorsCache;
+  }
+
+  const response = await axios.get('https://api.paychangu.com/mobile-money/', {
+    headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, Accept: 'application/json' },
+  });
+  const operators = Array.isArray(response.data?.data) ? response.data.data : response.data;
+  paychanguMobileOperatorsCache = operators;
+  paychanguMobileOperatorsCacheAt = now;
+  return operators;
+}
+
+function getNestedValue(source: any, path: string): unknown {
+  return path.split('.').reduce((value, key) => value?.[key], source);
+}
+
+function collectValuesByKeys(source: unknown, keys: Set<string>, values: string[] = [], seen = new Set<unknown>()): string[] {
+  if (!source || typeof source !== 'object' || seen.has(source)) return values;
+  seen.add(source);
+  if (Array.isArray(source)) {
+    source.forEach(item => collectValuesByKeys(item, keys, values, seen));
+    return values;
+  }
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (keys.has(key) && value != null) values.push(String(value).trim());
+    collectValuesByKeys(value, keys, values, seen);
+  }
+  return values;
+}
+
+function collectObjects(source: unknown, values: any[] = [], seen = new Set<unknown>()): any[] {
+  if (!source || typeof source !== 'object' || seen.has(source)) return values;
+  seen.add(source);
+  if (Array.isArray(source)) {
+    source.forEach(item => collectObjects(item, values, seen));
+    return values;
+  }
+  values.push(source);
+  for (const value of Object.values(source as Record<string, unknown>)) {
+    collectObjects(value, values, seen);
+  }
+  return values;
+}
+
+function getPaychanguLookupIds(withdrawal: any): string[] {
+  const parsedResponse = safeParseJson(withdrawal.gatewayResponse) as any;
+  const parsedPayload = safeParseJson(withdrawal.gatewayPayload) as any;
+  const nestedIds = collectValuesByKeys(parsedResponse, new Set(['charge_id', 'ref_id', 'reference', 'trans_id']));
+  const candidates = [
+    withdrawal.chargeId,
+    ...nestedIds,
+    getNestedValue(parsedResponse, 'initializeResponse.data.charge_id'),
+    getNestedValue(parsedResponse, 'initializeResponse.data.id'),
+    getNestedValue(parsedResponse, 'initializeResponse.data.ref_id'),
+    getNestedValue(parsedResponse, 'initializeResponse.data.reference'),
+    getNestedValue(parsedResponse, 'initializeResponse.data.trans_id'),
+    getNestedValue(parsedResponse, 'initializeResponse.charge_id'),
+    getNestedValue(parsedResponse, 'initializeResponse.id'),
+    getNestedValue(parsedResponse, 'initializeResponse.ref_id'),
+    getNestedValue(parsedResponse, 'initializeResponse.reference'),
+    getNestedValue(parsedResponse, 'initializeResponse.trans_id'),
+    getNestedValue(parsedPayload, 'payload.charge_id'),
+  ]
+    .map(value => value == null ? '' : String(value).trim())
+    .filter(Boolean);
+
+  return [...new Set(candidates)];
+}
+
+function getStoredFinalPayoutPayload(withdrawal: any): { normalized: 'completed' | 'failed'; payload: any } | null {
+  const parsedResponse = safeParseJson(withdrawal.gatewayResponse);
+  const objects = collectObjects(parsedResponse);
+  const payoutPayload = objects.find((item) => {
+    const eventType = String(item?.event_type || '').toLowerCase();
+    const type = String(item?.type || '').toLowerCase();
+    return eventType === 'api.payout' || type === 'api payout';
+  });
+  if (!payoutPayload) return null;
+  const normalized = normalizePayoutStatus(payoutPayload);
+  if (normalized === 'completed' || normalized === 'failed') {
+    return { normalized, payload: payoutPayload };
+  }
+  return null;
+}
+
+async function fetchPayoutStatus(withdrawal: any) {
+  const lookupIds = getPaychanguLookupIds(withdrawal);
+  const attempts: Array<{ lookupId: string; url: string; status?: number; error?: any }> = [];
+  for (const lookupId of lookupIds) {
+    const url = withdrawal.method === 'bank_transfer'
+      ? `https://api.paychangu.com/direct-charge/payouts/${encodeURIComponent(lookupId)}/details`
+      : `https://api.paychangu.com/mobile-money/payments/${encodeURIComponent(lookupId)}/details`;
     try {
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, Accept: 'application/json' },
       });
-      return { url, payload: response.data };
+      return { url, lookupId, payload: response.data, attempts };
     } catch (error: any) {
-      lastError = error;
+      attempts.push({
+        lookupId,
+        url,
+        status: error.response?.status,
+        error: error.response?.data || error.message,
+      });
     }
   }
-  throw lastError;
+  const err: any = new Error('PayChangu charge details lookup failed for all known payout references');
+  err.reconciliationAttempts = attempts;
+  throw err;
 }
 
 function safeParseJson(value?: string | null): unknown {
@@ -298,28 +419,46 @@ export async function sendAdminTreasuryOtp(req: Request, res: Response): Promise
 }
 
 async function processPlatformPayout(withdrawal: any) {
+  if (withdrawal.method === 'mobile_money') {
+    const operators = await fetchPaychanguMobileOperators();
+    const operatorRefId = getPaychanguMobileOperatorRefId(operators, withdrawal.mobileOperator);
+    if (!operatorRefId) throw new Error(`Unable to resolve PayChangu mobile money operator ref_id for ${withdrawal.mobileOperator}`);
+    if (!withdrawal.mobileNumber) throw new Error('Missing mobileNumber for mobile money withdrawal');
+    const chargeId = `PLATFORM-PAYOUT-${withdrawal.id}`;
+    const payload = {
+      mobile: normalizeMsisdn(withdrawal.mobileNumber),
+      mobile_money_operator_ref_id: operatorRefId,
+      amount: String(withdrawal.payoutAmount),
+      charge_id: chargeId,
+    };
+    await (prisma as any).platformWithdrawal.update({
+      where: { id: withdrawal.id },
+      data: { gatewayPayload: JSON.stringify({ provider: 'paychangu', action: 'mobile-money.payouts.initialize', payload }) },
+    });
+    const response = await axios.post('https://api.paychangu.com/mobile-money/payouts/initialize', payload, {
+      headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    });
+    const normalizedStatus = normalizePayoutStatus(response.data) || 'processing';
+    await (prisma as any).platformWithdrawal.update({
+      where: { id: withdrawal.id },
+      data: {
+        status: normalizedStatus,
+        chargeId,
+        processedAt: normalizedStatus === 'completed' ? new Date() : null,
+        failureReason: normalizedStatus === 'failed' ? String(response.data?.message || 'Mobile payout failed').substring(0, 2000) : null,
+        gatewayResponse: JSON.stringify({ initializeResponse: response.data }),
+      },
+    });
+    if (normalizedStatus === 'failed') throw new Error(response.data?.message || 'Mobile payout failed');
+    return;
+  }
+
   const banks = await fetchPaychanguBanks();
   let bankUuid: string;
   let accountNumber: string;
   let accountName = withdrawal.accountName || 'Platform Withdrawal';
-  if (withdrawal.method === 'mobile_money') {
-    const op = String(withdrawal.mobileOperator || '').toLowerCase();
-    const match = banks.find((b: any) => {
-      const name = String(b.name || '').toLowerCase();
-      if (op === 'airtel') return name.includes('airtel');
-      if (op === 'tnm') return name.includes('tnm') || name.includes('mpamba');
-      return false;
-    });
-    bankUuid = match?.uuid || match?.id || match?.bank_uuid;
-    if (!bankUuid) throw new Error(`Unable to resolve PayChangu bank UUID for ${withdrawal.mobileOperator}`);
-    let msisdn = String(withdrawal.mobileNumber || '').replace(/\D/g, '');
-    if (msisdn.startsWith('0')) msisdn = `265${msisdn.slice(1)}`;
-    else if (!msisdn.startsWith('265')) msisdn = `265${msisdn}`;
-    accountNumber = msisdn;
-  } else {
-    bankUuid = withdrawal.bankCode;
-    accountNumber = withdrawal.accountNumber;
-  }
+  bankUuid = withdrawal.bankCode;
+  accountNumber = withdrawal.accountNumber;
   const payload = {
     payout_method: 'bank_transfer',
     bank_uuid: bankUuid,
@@ -421,7 +560,44 @@ export async function reconcileAdminWithdrawal(req: Request, res: Response): Pro
   }
 
   try {
-    const result = await fetchPayoutStatus(withdrawal.chargeId);
+    const storedFinalPayout = getStoredFinalPayoutPayload(withdrawal);
+    if (storedFinalPayout) {
+      const gatewayResponse = JSON.stringify({
+        previous: safeParseJson(withdrawal.gatewayResponse),
+        reconciliation: {
+          checkedAt: new Date().toISOString(),
+          checkedBy: req.user?.userId,
+          source: 'stored_webhook_payload',
+          payload: storedFinalPayout.payload,
+          normalizedStatus: storedFinalPayout.normalized,
+        },
+      });
+
+      if (storedFinalPayout.normalized === 'completed') {
+        const data = { status: 'completed', processedAt: new Date(), failureReason: null, gatewayResponse };
+        const updated = kind === 'ministry'
+          ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+          : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+        res.json({ success: true, message: 'Withdrawal reconciled as completed from stored PayChangu webhook', data: updated });
+        return;
+      }
+
+      if (kind === 'ministry' && withdrawal.status !== 'failed') {
+        await refundWithdrawal(id);
+      }
+      const data = {
+        status: 'failed',
+        failureReason: 'Reconciled with stored PayChangu webhook as failed.',
+        gatewayResponse,
+      };
+      const updated = kind === 'ministry'
+        ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+        : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+      res.json({ success: true, message: kind === 'ministry' ? 'Withdrawal reconciled as failed and refunded from stored webhook' : 'Platform withdrawal reconciled as failed from stored webhook', data: updated });
+      return;
+    }
+
+    const result = await fetchPayoutStatus(withdrawal);
     const normalized = normalizePayoutStatus(result.payload);
     const gatewayResponse = JSON.stringify({
       previous: safeParseJson(withdrawal.gatewayResponse),
@@ -429,6 +605,8 @@ export async function reconcileAdminWithdrawal(req: Request, res: Response): Pro
         checkedAt: new Date().toISOString(),
         checkedBy: req.user?.userId,
         endpoint: result.url,
+        lookupId: result.lookupId,
+        attempts: result.attempts,
         payload: result.payload,
         normalizedStatus: normalized,
       },
@@ -476,6 +654,7 @@ export async function reconcileAdminWithdrawal(req: Request, res: Response): Pro
       gatewayResponse: JSON.stringify({
         previous: safeParseJson(withdrawal.gatewayResponse),
         reconciliationError: error.response?.data || error.message,
+        attempts: error.reconciliationAttempts || [],
         checkedAt: new Date().toISOString(),
         checkedBy: req.user?.userId,
       }),

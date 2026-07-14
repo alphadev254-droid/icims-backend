@@ -15,6 +15,8 @@ const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 // Simple in-memory cache for Paychangu supported banks/operators
 let paychanguBanksCache: any[] | null = null;
 let paychanguBanksCacheAt: number | null = null;
+let paychanguMobileOperatorsCache: any[] | null = null;
+let paychanguMobileOperatorsCacheAt: number | null = null;
 const BANKS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function fetchPaychanguBanks(): Promise<any[]> {
@@ -39,6 +41,56 @@ async function fetchPaychanguBanks(): Promise<any[]> {
   paychanguBanksCacheAt = now;
 
   return banks;
+}
+
+async function fetchPaychanguMobileOperators(): Promise<any[]> {
+  const now = Date.now();
+  if (paychanguMobileOperatorsCache && paychanguMobileOperatorsCacheAt && now - paychanguMobileOperatorsCacheAt < BANKS_CACHE_TTL_MS) {
+    return paychanguMobileOperatorsCache;
+  }
+
+  const response = await axios.get(
+    'https://api.paychangu.com/mobile-money/',
+    { headers: { Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`, Accept: 'application/json' } },
+  );
+
+  const payload = response.data;
+  const operators = Array.isArray(payload?.data) ? payload.data : payload;
+  paychanguMobileOperatorsCache = operators;
+  paychanguMobileOperatorsCacheAt = now;
+  return operators;
+}
+
+function getPaychanguMobileOperatorRefId(operators: any[], operator?: string | null): string | null {
+  const op = String(operator || '').toLowerCase();
+  const envValue = op === 'airtel'
+    ? process.env.PAYCHANGU_AIRTEL_MONEY_OPERATOR_REF_ID
+    : op === 'tnm'
+      ? process.env.PAYCHANGU_TNM_MPAMBA_OPERATOR_REF_ID
+      : null;
+  if (envValue) return envValue;
+  const match = operators.find((item: any) => {
+    const name = String(item.name || '').toLowerCase();
+    const shortCode = String(item.short_code || '').toLowerCase();
+    if (op === 'airtel') return shortCode === 'airtel' || name.includes('airtel');
+    if (op === 'tnm') return shortCode === 'tnm' || name.includes('tnm') || name.includes('mpamba');
+    return false;
+  });
+  return match?.ref_id || match?.mobile_money_operator_ref_id || match?.operator_ref_id || null;
+}
+
+function normalizeMsisdn(value?: string | null): string {
+  let msisdn = String(value || '').replace(/\D/g, '');
+  if (msisdn.startsWith('0')) msisdn = `265${msisdn.slice(1)}`;
+  else if (!msisdn.startsWith('265')) msisdn = `265${msisdn}`;
+  return msisdn;
+}
+
+function normalizeGatewayPayoutStatus(payload: any): 'completed' | 'failed' | 'processing' {
+  const status = String(payload?.data?.status ?? payload?.status ?? '').toLowerCase();
+  if (['success', 'successful', 'completed', 'paid'].includes(status)) return 'completed';
+  if (['failed', 'failure', 'reversed', 'cancelled', 'canceled'].includes(status)) return 'failed';
+  return 'processing';
 }
 
 export async function getWalletBalance(req: Request, res: Response): Promise<void> {
@@ -815,6 +867,65 @@ async function processPaychanguPayout(withdrawal: any) {
     console.log('Withdrawal ID:', withdrawal.id);
     console.log('Method:', withdrawal.method);
     console.log('Payout Amount:', withdrawal.payoutAmount ?? withdrawal.netAmount);
+
+    if (withdrawal.method === 'mobile_money') {
+      const operators = await fetchPaychanguMobileOperators();
+      const operatorRefId = getPaychanguMobileOperatorRefId(operators, withdrawal.mobileOperator);
+      if (!operatorRefId) {
+        throw new Error(`Unable to resolve Paychangu mobile money operator ref_id for ${withdrawal.mobileOperator}`);
+      }
+      if (!withdrawal.mobileNumber) {
+        throw new Error('Missing mobileNumber for mobile money withdrawal');
+      }
+
+      const chargeId = `PAYOUT-${withdrawal.id}`;
+      const payoutPayload = {
+        mobile: normalizeMsisdn(withdrawal.mobileNumber),
+        mobile_money_operator_ref_id: operatorRefId,
+        amount: String(withdrawal.payoutAmount ?? withdrawal.netAmount),
+        charge_id: chargeId,
+      };
+
+      console.log('Paychangu Mobile Payout Payload:', payoutPayload);
+      await prisma.withdrawal.update({
+        where: { id: withdrawal.id },
+        data: { gatewayPayload: JSON.stringify({ provider: 'paychangu', action: 'mobile-money.payouts.initialize', payload: payoutPayload }) } as any,
+      });
+
+      const response = await axios.post(
+        'https://api.paychangu.com/mobile-money/payouts/initialize',
+        payoutPayload,
+        {
+          headers: {
+            Authorization: `Bearer ${PAYCHANGU_SECRET_KEY}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+        },
+      );
+
+      console.log('Paychangu Mobile Payout Response Status:', response.status);
+      console.log('Paychangu Mobile Payout Response Data:', JSON.stringify(response.data, null, 2));
+
+      const normalizedStatus = normalizeGatewayPayoutStatus(response.data);
+      await prisma.withdrawal.update({
+        where: { id: withdrawal.id },
+        data: {
+          status: normalizedStatus,
+          chargeId,
+          processedAt: normalizedStatus === 'completed' ? new Date() : null,
+          failureReason: normalizedStatus === 'failed' ? String(response.data?.message || 'Mobile payout failed').substring(0, 2000) : null,
+          gatewayResponse: JSON.stringify({ initializeResponse: response.data }),
+        } as any,
+      });
+
+      if (normalizedStatus === 'failed') {
+        throw new Error(response.data?.message || 'Mobile payout failed');
+      }
+
+      console.log(`Withdrawal status updated to ${normalizedStatus}`);
+      return;
+    }
 
     // Map withdrawal details to Paychangu direct-charge payout payload
     let bankUuid: string;
