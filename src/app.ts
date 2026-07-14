@@ -36,6 +36,7 @@ import pushRoutes from './routes/pushRoutes';
 import childrenRoutes from './routes/children';
 import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/sharedAccessRoutes';
 import { errorHandler } from './middleware/errorHandler';
+import { metricsHandler, metricsMiddleware } from './middleware/metrics';
 
 declare global {
   namespace Express {
@@ -102,6 +103,9 @@ app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+app.get('/metrics', metricsHandler);
+app.use(metricsMiddleware);
 
 // ─── Routes ────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
