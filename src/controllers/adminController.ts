@@ -1261,7 +1261,11 @@ export async function getAdminWithdrawals(req: Request, res: Response): Promise<
   }
 
   const where: any = andConditions.length > 0 ? { AND: andConditions } : {};
-  const [withdrawals, total, statusCounts, methodCounts, walletCounts, mwkAgg, kesAgg, completedMwkAgg, completedKesAgg] = await Promise.all([
+  const walletBalanceWhere: any = {
+    ...(ministry ? { ministryAdminId: ministry } : {}),
+    ...(currency ? { currency } : {}),
+  };
+  const [withdrawals, total, statusCounts, methodCounts, walletCounts, mwkAgg, kesAgg, completedMwkAgg, completedKesAgg, walletBalanceRows] = await Promise.all([
     prisma.withdrawal.findMany({
       where,
       include: {
@@ -1292,6 +1296,12 @@ export async function getAdminWithdrawals(req: Request, res: Response): Promise<
     prisma.withdrawal.aggregate({ where: { ...where, wallet: { currency: 'KES' } } as any, _sum: { amount: true, fee: true, gatewayFeeAmount: true, bankFixedFeeAmount: true, systemFeeAmount: true, netAmount: true, payoutAmount: true } as any, _count: { _all: true } }),
     prisma.withdrawal.aggregate({ where: { ...where, status: 'completed', wallet: { currency: 'MWK' } } as any, _sum: { systemFeeAmount: true } as any, _count: { _all: true } }),
     prisma.withdrawal.aggregate({ where: { ...where, status: 'completed', wallet: { currency: 'KES' } } as any, _sum: { systemFeeAmount: true } as any, _count: { _all: true } }),
+    prisma.wallet.groupBy({
+      by: ['currency'],
+      where: walletBalanceWhere,
+      _sum: { balance: true },
+      _count: { _all: true },
+    }),
   ]);
 
   const initiatorIds = [...new Set((withdrawals as any[]).map(w => w.initiatedBy).filter(Boolean))] as string[];
@@ -1335,6 +1345,11 @@ export async function getAdminWithdrawals(req: Request, res: Response): Promise<
       byStatus: Object.fromEntries(statusCounts.map((row: any) => [row.status, row._count._all])),
       byMethod: Object.fromEntries(methodCounts.map((row: any) => [row.method, row._count._all])),
       byCurrencyCount,
+      walletBalances: walletBalanceRows.map((row: any) => ({
+        currency: row.currency,
+        balance: row._sum.balance ?? 0,
+        walletCount: row._count._all,
+      })),
       byCurrency: [
         ...((mwkAgg._count as any)?._all > 0 ? [buildCurrencySummary(mwkAgg, completedMwkAgg, 'MWK')] : []),
         ...((kesAgg._count as any)?._all > 0 ? [buildCurrencySummary(kesAgg, completedKesAgg, 'KES')] : []),
