@@ -5,6 +5,7 @@ import prisma from '../lib/prisma';
 import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
 import { createSubdomain, toSlug } from '../lib/cloudflareDns';
+import { recordLoginAttempt } from '../middleware/metrics';
 import type { UserRole } from '../types';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -210,6 +211,7 @@ const loginSchema = z.object({
 export async function login(req: Request, res: Response): Promise<void> {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
+    recordLoginAttempt('failed', 'validation');
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
     return;
   }
@@ -218,20 +220,24 @@ export async function login(req: Request, res: Response): Promise<void> {
   let user = await prisma.user.findUnique({ where: { email }, include: USER_INCLUDE });
 
   if (!user || !(await comparePassword(password, user.password))) {
+    recordLoginAttempt('failed', 'invalid_credentials');
     res.status(401).json({ success: false, message: 'Invalid email or password' });
     return;
   }
 
   if (user.status === 'suspended') {
+    recordLoginAttempt('failed', 'suspended');
     res.status(403).json({ success: false, message: 'Your account has been suspended. Please contact support.' });
     return;
   }
 
   if (user.status === 'inactive') {
+    recordLoginAttempt('failed', 'inactive');
     res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
     return;
   }
   if (user.loginEnabled === false) {
+    recordLoginAttempt('failed', 'login_disabled');
     res.status(403).json({ success: false, message: 'This account does not have login access.' });
     return;
   }
@@ -239,6 +245,7 @@ export async function login(req: Request, res: Response): Promise<void> {
   // Get package from National Admin if needed
   const userWithPackage = await getUserWithPackage(user.id);
   if (!userWithPackage) {
+    recordLoginAttempt('failed', 'user_load_failed');
     res.status(500).json({ success: false, message: 'Failed to load user data' });
     return;
   }
@@ -246,6 +253,7 @@ export async function login(req: Request, res: Response): Promise<void> {
   const permissions = await getUserPermissions(userWithPackage);
 
   if (!userWithPackage) {
+    recordLoginAttempt('failed', 'user_load_failed');
     res.status(500).json({ success: false, message: 'Failed to load user data' });
     return;
   }
@@ -263,6 +271,7 @@ export async function login(req: Request, res: Response): Promise<void> {
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
+  recordLoginAttempt('success');
   res.json({ success: true, user: safeUser(userWithPackage, permissions) });
 }
 

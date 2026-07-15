@@ -9,6 +9,7 @@ import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { refundWithdrawal } from '../utils/walletOperations';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
+import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics';
 
 function safeJsonParse(value: string): any {
   try {
@@ -71,6 +72,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
               }),
             },
           });
+          recordWithdrawalEvent(platformWithdrawal.method, 'completed', 'platform');
         } else if (status !== 'success' && platformWithdrawal.status !== 'failed') {
           await (prisma as any).platformWithdrawal.update({
             where: { id: platformWithdrawalId },
@@ -83,6 +85,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
               }),
             },
           });
+          recordWithdrawalEvent(platformWithdrawal.method, 'failed', 'platform');
         }
         return;
       }
@@ -109,6 +112,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
             }),
           },
         });
+        recordWithdrawalEvent(withdrawal.method, 'completed', 'ministry');
 
         if (withdrawal.initiatedBy) {
           const initiator = await prisma.user.findUnique({
@@ -145,12 +149,14 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
             }),
           },
         });
+        recordWithdrawalEvent(withdrawal.method, 'failed', 'ministry');
       }
       return;
     }
 
     if (status !== 'success') {
       console.log(`[${traceId}] Payment not successful, skipping`);
+      recordPaymentEvent('paychangu', payload.type || 'unknown', 'failed');
       return;
     }
 
@@ -163,6 +169,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 
     if (verifyResponse.data.data?.status !== 'success') {
       console.log(`[${traceId}] Verification failed`);
+      recordPaymentEvent('paychangu', payload.type || 'unknown', 'failed');
       return;
     }
 
@@ -182,6 +189,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
     } else if (pendingTx.type === 'donation') {
       await processPaychanguDonation(pendingTx, metadata, payload, traceId);
     }
+    recordPaymentEvent('paychangu', pendingTx.type, 'completed');
 
     // Successful payments now live in payments/transactions with full payloads.
     // Remove the pending attempt so this table only shows pending, expired, or failed/stuck attempts.

@@ -7,6 +7,7 @@ import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueChurchPush } from '../lib/notificationQueue';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { givingCampaignCreatedTemplate } from '../lib/emailTemplates';
+import { recordPaymentEvent } from '../middleware/metrics';
 
 const createCampaignSchema = z.object({
   churchId: z.string().min(1),
@@ -1019,6 +1020,7 @@ async function initiatePaystackDonation(
     });
 
     console.log(`[${traceId}] Paystack SUCCESS`);
+    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'initialized');
     res.json({
       success: true,
       data: {
@@ -1032,6 +1034,7 @@ async function initiatePaystackDonation(
       },
     });
   } catch (error: any) {
+    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'failed');
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paystack error:`, error.message);
     res.status(500).json({
@@ -1093,6 +1096,7 @@ async function initiatePaychanguDonation(
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);
+    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'initialized');
     res.json({
       success: true,
       data: {
@@ -1106,6 +1110,7 @@ async function initiatePaychanguDonation(
       },
     });
   } catch (error: any) {
+    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'failed');
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paychangu error:`, error.message);
     res.status(500).json({

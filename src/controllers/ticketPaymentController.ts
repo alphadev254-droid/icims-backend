@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import axios from 'axios';
 import { getPaymentGateway, getCurrency, getGatewayCountry } from '../utils/gatewayRouter';
 import { calculatePaymentFees } from '../utils/feeCalculations';
+import { recordPaymentEvent } from '../middleware/metrics';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -179,6 +180,7 @@ async function initiatePaystackTicketPayment(
     });
 
     console.log(`[${traceId}] Paystack SUCCESS`);
+    recordPaymentEvent('paystack', pendingTx.type || 'event_ticket', 'initialized');
     res.json({
       success: true,
       data: {
@@ -192,6 +194,7 @@ async function initiatePaystackTicketPayment(
       },
     });
   } catch (error: any) {
+    recordPaymentEvent('paystack', pendingTx.type || 'event_ticket', 'failed');
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paystack error:`, error.message);
     res.status(500).json({
@@ -245,6 +248,7 @@ async function initiatePaychanguTicketPayment(
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);
+    recordPaymentEvent('paychangu', pendingTx.type || 'event_ticket', 'initialized');
     res.json({
       success: true,
       data: {
@@ -258,6 +262,7 @@ async function initiatePaychanguTicketPayment(
       },
     });
   } catch (error: any) {
+    recordPaymentEvent('paychangu', pendingTx.type || 'event_ticket', 'failed');
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paychangu error:`, error.message);
     res.status(500).json({

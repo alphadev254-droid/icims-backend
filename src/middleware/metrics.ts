@@ -27,9 +27,50 @@ const httpRequestsInFlight = new client.Gauge({
   labelNames: ['method', 'route'] as const,
 });
 
+const authLoginAttemptsTotal = new client.Counter({
+  name: 'icims_backend_auth_login_attempts_total',
+  help: 'Total ICIMS login attempts by result',
+  labelNames: ['status', 'reason'] as const,
+});
+
+const paymentEventsTotal = new client.Counter({
+  name: 'icims_backend_payment_events_total',
+  help: 'Total ICIMS payment lifecycle events',
+  labelNames: ['gateway', 'type', 'status'] as const,
+});
+
+const withdrawalEventsTotal = new client.Counter({
+  name: 'icims_backend_withdrawal_events_total',
+  help: 'Total ICIMS withdrawal lifecycle events',
+  labelNames: ['method', 'status', 'scope'] as const,
+});
+
 register.registerMetric(httpRequestsTotal);
 register.registerMetric(httpRequestDurationSeconds);
 register.registerMetric(httpRequestsInFlight);
+register.registerMetric(authLoginAttemptsTotal);
+register.registerMetric(paymentEventsTotal);
+register.registerMetric(withdrawalEventsTotal);
+
+export function recordLoginAttempt(status: 'success' | 'failed', reason = 'none') {
+  authLoginAttemptsTotal.inc({ status, reason });
+}
+
+export function recordPaymentEvent(gateway: string | null | undefined, type: string | null | undefined, status: 'initialized' | 'completed' | 'failed') {
+  paymentEventsTotal.inc({
+    gateway: gateway || 'unknown',
+    type: type || 'unknown',
+    status,
+  });
+}
+
+export function recordWithdrawalEvent(method: string | null | undefined, status: 'requested' | 'processing' | 'completed' | 'failed', scope = 'ministry') {
+  withdrawalEventsTotal.inc({
+    method: method || 'unknown',
+    status,
+    scope,
+  });
+}
 
 function normalizeRoute(path: string): string {
   return path

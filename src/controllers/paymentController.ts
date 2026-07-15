@@ -10,6 +10,7 @@ import { ticketPurchaseTemplate, donationReceiptTemplate, packageSubscriptionTem
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
+import { recordPaymentEvent } from '../middleware/metrics';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -235,6 +236,7 @@ async function initiatePaystackPayment(
     });
 
     console.log(`[${traceId}] Sending response to client`);
+    recordPaymentEvent('paystack', pendingTx.type, 'initialized');
     res.json({
       success: true,
       data: {
@@ -244,6 +246,7 @@ async function initiatePaystackPayment(
       },
     });
   } catch (error: any) {
+    recordPaymentEvent('paystack', pendingTx.type, 'failed');
     console.log(`[${traceId}] Paystack error occurred, deleting pending transaction`);
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     
@@ -334,6 +337,7 @@ async function initiatePaychanguPayment(
     });
 
     console.log(`[${traceId}] Sending response to client`);
+    recordPaymentEvent('paychangu', pendingTx.type, 'initialized');
     res.json({
       success: true,
       data: {
@@ -342,6 +346,7 @@ async function initiatePaychanguPayment(
       },
     });
   } catch (error: any) {
+    recordPaymentEvent('paychangu', pendingTx.type, 'failed');
     console.log(`[${traceId}] Paychangu error occurred, deleting pending transaction`);
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     
@@ -486,6 +491,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           },
         });
         console.log(`[${traceId}] Payment record created: ${payment.id}`);
+        recordPaymentEvent(gateway, 'package_subscription', 'completed');
         console.log(`[${traceId}] Payment — amount: ${payment.amount}, currency: ${payment.currency}, gateway: ${payment.gateway}, gatewayCharge: ${payment.gatewayCharge}`);
 
         // Create or update subscription and reset email tracking
@@ -579,6 +585,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
         if (!pendingTx) {
           console.log(`[${traceId}] Pending transaction not found and no existing transaction`);
+          recordPaymentEvent('paystack', 'event_ticket', 'failed');
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
@@ -625,6 +632,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         });
         
         console.log(`[${traceId}] Transaction created: ${transaction.id}`);
+        recordPaymentEvent(pendingMetadata.gateway || 'paystack', pendingTx.type || type, 'completed');
         console.log(`[${traceId}] Subaccount: ${transaction.subaccountCode} - ${transaction.subaccountName}`);
         console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, System Fee: ${transaction.systemFeeAmount}, Gateway Charge: ${transaction.gatewayCharge}`);
         console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
@@ -797,6 +805,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
         if (!pendingTx) {
           console.log(`[${traceId}] Pending transaction not found and no existing transaction`);
+          recordPaymentEvent('paystack', 'donation', 'failed');
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
@@ -842,6 +851,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         });
         
         console.log(`[${traceId}] Transaction created: ${transaction.id}`);
+        recordPaymentEvent(pendingMetadata.gateway || 'paystack', pendingTx.type || type, 'completed');
         console.log(`[${traceId}] Subaccount: ${transaction.subaccountCode} - ${transaction.subaccountName}`);
         console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, System Fee: ${transaction.systemFeeAmount}, Gateway Charge: ${transaction.gatewayCharge}`);
         console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
