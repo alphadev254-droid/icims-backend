@@ -39,6 +39,11 @@ function isBeforeToday(value: string): boolean {
   return date < today;
 }
 
+function campaignChurchIds(campaign: { churchId: string; linkedChurches?: Array<{ churchId: string }> }): string[] {
+  const linked = campaign.linkedChurches?.map(link => link.churchId) ?? [];
+  return [...new Set(linked.length > 0 ? linked : [campaign.churchId])];
+}
+
 // ─── Recalculate pledge status ────────────────────────────────────────────────
 
 /** Recalculate and persist pledge status after a payment is linked */
@@ -73,6 +78,7 @@ export async function recalculatePledgeStatus(pledgeId: string): Promise<void> {
 
 const createPledgeSchema = z.object({
   campaignId: z.string().min(1, 'Campaign is required'),
+  churchId: z.string().optional(),
   pledgedAmount: z.number().positive('Pledge amount must be greater than 0'),
   fulfillmentDeadline: z.string().optional(),
   notes: z.string().optional(),
@@ -110,14 +116,17 @@ export async function createPledge(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { campaignId, pledgedAmount, fulfillmentDeadline, notes, pledgerName, pledgerEmail, pledgerPhone, onBehalfOfUserId } = parsed.data;
+  const { campaignId, churchId: selectedChurchId, pledgedAmount, fulfillmentDeadline, notes, pledgerName, pledgerEmail, pledgerPhone, onBehalfOfUserId } = parsed.data;
 
   if (fulfillmentDeadline && isBeforeToday(fulfillmentDeadline)) {
     res.status(400).json({ success: false, message: 'Fulfillment deadline cannot be before today' });
     return;
   }
 
-  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
+  const campaign = await prisma.givingCampaign.findUnique({
+    where: { id: campaignId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
   if (!campaign) {
     res.status(404).json({ success: false, message: 'Campaign not found' });
     return;
@@ -131,22 +140,18 @@ export async function createPledge(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const church = await prisma.church.findUnique({ where: { id: campaign.churchId }, select: { ministryAdminId: true } });
-  const featureOwnerId = church?.ministryAdminId ?? null;
-  if (!featureOwnerId || !(await hasFeature(featureOwnerId, 'pledges_management'))) {
-    res.status(403).json({ success: false, message: 'Pledge management is not available on the current package.' });
-    return;
-  }
-
+  const availableChurchIds = campaignChurchIds(campaign);
   const isMember = roleName === 'member';
   const pledgeUserId = isMember ? userId : (onBehalfOfUserId ?? null);
+  let resolvedChurchId = selectedChurchId || campaign.churchId;
 
   if (isMember) {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true } });
-    if (!user?.churchId || user.churchId !== campaign.churchId) {
-      res.status(403).json({ success: false, message: 'You do not belong to this church' });
+    if (!user?.churchId || !availableChurchIds.includes(user.churchId)) {
+      res.status(403).json({ success: false, message: 'This campaign is not available for your church' });
       return;
     }
+    resolvedChurchId = user.churchId;
     const existing = await prisma.pledge.findFirst({
       where: { campaignId, userId, status: { not: 'fulfilled' } },
     });
@@ -163,16 +168,23 @@ export async function createPledge(req: Request, res: Response): Promise<void> {
       req.user?.regions,
       userId
     );
-    if (!accessibleChurchIds.includes(campaign.churchId)) {
+    if (!availableChurchIds.includes(resolvedChurchId) || !accessibleChurchIds.includes(resolvedChurchId)) {
       res.status(403).json({ success: false, message: 'Access denied to this church' });
       return;
     }
   }
 
+  const church = await prisma.church.findUnique({ where: { id: resolvedChurchId }, select: { ministryAdminId: true } });
+  const featureOwnerId = church?.ministryAdminId ?? null;
+  if (!featureOwnerId || !(await hasFeature(featureOwnerId, 'pledges_management'))) {
+    res.status(403).json({ success: false, message: 'Pledge management is not available on the current package.' });
+    return;
+  }
+
   const pledge = await prisma.pledge.create({
     data: {
       campaignId,
-      churchId: campaign.churchId,
+      churchId: resolvedChurchId,
       userId: pledgeUserId,
       pledgerName: pledgeUserId ? null : (pledgerName ?? null),
       pledgerEmail: pledgeUserId ? null : (pledgerEmail || null),

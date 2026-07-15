@@ -206,6 +206,7 @@ model Church {
   users         User[]
   events        Event[]
   givingCampaigns GivingCampaign[]
+  givingCampaignLinks GivingCampaignChurch[]
   donationTransactions DonationTransaction[]
   attendance    Attendance[]
   meetings      Meeting[]
@@ -453,6 +454,7 @@ model PendingTransaction {
 model GivingCampaign {
   id            String   @id @default(cuid())
   churchId      String
+  scopeType     String   @default("one_church") // one_church | selected_churches | all_churches
   name          String
   description   String?  @db.Text
   category      String   // tithe | offering | partnership | welfare | missions | fellowship_offering
@@ -471,13 +473,29 @@ model GivingCampaign {
 
   church        Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
   cell          Cell?    @relation(fields: [cellId], references: [id])
+  linkedChurches GivingCampaignChurch[]
   donations     DonationTransaction[]
   pledges       Pledge[]
 
   @@index([churchId])
+  @@index([scopeType])
   @@index([category])
   @@index([status])
   @@map("giving_campaigns")
+}
+
+model GivingCampaignChurch {
+  id         String   @id @default(cuid())
+  campaignId String
+  churchId   String
+  createdAt  DateTime @default(now())
+
+  campaign GivingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  church   Church         @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, churchId])
+  @@index([churchId])
+  @@map("giving_campaign_churches")
 }
 
 model DonationTransaction {

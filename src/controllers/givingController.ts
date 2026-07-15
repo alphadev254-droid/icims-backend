@@ -10,7 +10,9 @@ import { givingCampaignCreatedTemplate } from '../lib/emailTemplates';
 import { recordPaymentEvent } from '../middleware/metrics';
 
 const createCampaignSchema = z.object({
-  churchId: z.string().min(1),
+  churchId: z.string().optional().default(''),
+  scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
+  churchIds: z.array(z.string().min(1)).optional(),
   name: z.string().min(1),
   description: z.string().optional(),
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']),
@@ -19,9 +21,14 @@ const createCampaignSchema = z.object({
   currency: z.enum(['MWK', 'KES']).default('MWK'),
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),
+  allowPublicDonations: z.boolean().optional(),
+  allowPledging: z.boolean().optional(),
 });
 
 const updateCampaignSchema = z.object({
+  churchId: z.string().optional(),
+  scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional(),
+  churchIds: z.array(z.string().min(1)).optional(),
   name: z.string().optional(),
   description: z.string().nullable().optional(),
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']).optional(),
@@ -34,6 +41,84 @@ const updateCampaignSchema = z.object({
   allowPublicDonations: z.boolean().optional(),
   allowPledging: z.boolean().optional(),
 });
+
+type CampaignWithChurchLinks = {
+  id: string;
+  churchId: string;
+  scopeType?: string | null;
+  linkedChurches?: Array<{ churchId: string; church?: { id?: string; name: string } | null }>;
+  church?: { id?: string; name: string } | null;
+};
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function getCampaignChurchIds(campaign: CampaignWithChurchLinks): string[] {
+  const linkedIds = campaign.linkedChurches?.map(link => link.churchId) ?? [];
+  return uniqueStrings(linkedIds.length > 0 ? linkedIds : [campaign.churchId]);
+}
+
+function decorateCampaignAvailability<T extends CampaignWithChurchLinks>(campaign: T) {
+  const linkedChurches = campaign.linkedChurches ?? [];
+  const availableChurchIds = getCampaignChurchIds(campaign);
+  const availableChurches = linkedChurches.length > 0
+    ? linkedChurches.map(link => ({
+        id: link.churchId,
+        name: link.church?.name ?? 'Church',
+      }))
+    : [{ id: campaign.churchId, name: campaign.church?.name ?? 'Church' }];
+
+  return {
+    ...campaign,
+    availableChurchIds,
+    availableChurches,
+  };
+}
+
+function campaignAccessWhere(churchIds: string[]) {
+  return {
+    OR: [
+      { churchId: { in: churchIds } },
+      { linkedChurches: { some: { churchId: { in: churchIds } } } },
+    ],
+  };
+}
+
+function intersection(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return left.filter(value => rightSet.has(value));
+}
+
+function resolveRequestedScopeChurchIds(params: {
+  scopeType?: string;
+  primaryChurchId?: string | null;
+  requestedChurchIds?: string[];
+  accessibleChurchIds: string[];
+}): { churchIds?: string[]; error?: string } {
+  const scopeType = params.scopeType || 'one_church';
+  let churchIds: string[] = [];
+
+  if (scopeType === 'all_churches') {
+    churchIds = params.accessibleChurchIds;
+  } else if (scopeType === 'selected_churches') {
+    churchIds = uniqueStrings(params.requestedChurchIds ?? []);
+    if (churchIds.length === 0 && params.primaryChurchId) churchIds = [params.primaryChurchId];
+  } else {
+    churchIds = params.primaryChurchId ? [params.primaryChurchId] : [];
+  }
+
+  if (churchIds.length === 0) {
+    return { error: 'Select at least one church for this campaign' };
+  }
+
+  const inaccessible = churchIds.filter(id => !params.accessibleChurchIds.includes(id));
+  if (inaccessible.length > 0) {
+    return { error: 'Access denied to one or more selected churches' };
+  }
+
+  return { churchIds };
+}
 
 export async function createCampaign(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -53,7 +138,29 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { churchId: targetChurchId, endDate, ...data } = parsed.data;
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, endDate, allowPublicDonations, allowPledging, ...data } = parsed.data;
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
+
+  const resolvedScope = resolveRequestedScopeChurchIds({
+    scopeType,
+    primaryChurchId: targetChurchId,
+    requestedChurchIds,
+    accessibleChurchIds,
+  });
+  if (resolvedScope.error || !resolvedScope.churchIds) {
+    res.status(403).json({ success: false, message: resolvedScope.error });
+    return;
+  }
+  const scopedCampaignChurchIds = resolvedScope.churchIds;
+  const primaryChurchId = scopedCampaignChurchIds[0];
 
   // Check maxGivings limit
   let ministryAdminId: string | null = roleName === 'ministry_admin' ? userId! : null;
@@ -77,71 +184,68 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   const gateway = await getPaymentGateway(userId!);
   
   if (gateway === 'paystack') {
-    // Kenya account - check for subaccount
-    const subaccount = await prisma.subaccount.findUnique({
-      where: { churchId: targetChurchId }
+    const subaccounts = await prisma.subaccount.findMany({
+      where: { churchId: { in: scopedCampaignChurchIds } },
+      select: { churchId: true },
     });
-    
-    if (!subaccount) {
-      res.status(400).json({ 
-        success: false, 
-        message: 'To create giving campaigns, you need to set up a Paystack subaccount first. Please go to Branches > Finance account management to create your finance account.' 
+    const coveredChurchIds = new Set(subaccounts.map(subaccount => subaccount.churchId));
+    const missingSubaccount = scopedCampaignChurchIds.some(selectedChurchId => !coveredChurchIds.has(selectedChurchId));
+
+    if (missingSubaccount) {
+      res.status(400).json({
+        success: false,
+        message: 'To create giving campaigns for these churches, each selected church needs a Paystack subaccount first. Please go to Branches > Finance account management.'
       });
       return;
     }
   }
 
-  // Verify user has access to this church
-  const accessibleChurchIds = await getAccessibleChurchIds(
-    roleName!,
-    churchId,
-    req.user?.districts,
-    req.user?.traditionalAuthorities,
-    req.user?.regions,
-    userId
-  );
-
-  if (!accessibleChurchIds.includes(targetChurchId)) {
-    res.status(403).json({ success: false, message: 'Access denied to this church' });
-    return;
-  }
-
   const campaign = await prisma.givingCampaign.create({
     data: {
       ...data,
-      churchId: targetChurchId,
+      churchId: primaryChurchId,
+      scopeType,
       endDate: endDate ? new Date(endDate) : null,
-      allowPublicDonations: (req.body.allowPublicDonations === true || req.body.allowPublicDonations === 'true') ? true : false,
-      allowPledging: (req.body.allowPledging === true || req.body.allowPledging === 'true') ? true : false,
+      allowPublicDonations: allowPublicDonations === true,
+      allowPledging: allowPledging === true,
+      linkedChurches: {
+        create: scopedCampaignChurchIds.map(selectedChurchId => ({ churchId: selectedChurchId })),
+      },
+    },
+    include: {
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
 
-  res.status(201).json({ success: true, data: campaign });
+  res.status(201).json({ success: true, data: decorateCampaignAvailability(campaign) });
 
-  // Fire-and-forget: worker resolves members and sends push off the request cycle
-  const church = await prisma.church.findUnique({ where: { id: targetChurchId }, select: { name: true } });
-  queueChurchPush(
-    targetChurchId,
-    `${church?.name || 'Your Church'} · New Giving Campaign`,
-    `${campaign.name} — ${campaign.category.replace('_', ' ')}`,
-    { type: 'giving_campaign_created', campaignId: campaign.id, churchId: targetChurchId }
-  ).catch(err => console.error('[Giving] Failed to queue push:', err));
+  // Fire-and-forget: worker resolves members and sends push/email off the request cycle.
+  for (const targetNotificationChurchId of scopedCampaignChurchIds) {
+    const church = campaign.linkedChurches.find(link => link.churchId === targetNotificationChurchId)?.church;
+    queueChurchPush(
+      targetNotificationChurchId,
+      `${church?.name || 'Your Church'} - New Giving Campaign`,
+      `${campaign.name} - ${campaign.category.replace('_', ' ')}`,
+      { type: 'giving_campaign_created', campaignId: campaign.id, churchId: targetNotificationChurchId }
+    ).catch(err => console.error('[Giving] Failed to queue push:', err));
 
-  queueChurchMemberEmails({
-    churchId: targetChurchId,
-    subject: `${church?.name || 'Your Church'} - New Giving Campaign: ${campaign.name}`,
-    buildHtml: member => givingCampaignCreatedTemplate({
-      firstName: member.firstName,
-      campaignName: campaign.name,
-      category: campaign.category,
-      currency: campaign.currency,
-      targetAmount: campaign.targetAmount,
-      endDate: campaign.endDate ? new Date(campaign.endDate).toLocaleDateString() : null,
-      description: campaign.description,
-      churchName: church?.name || 'Your Church',
-    }),
-    emailType: 'notification',
-  }).catch(err => console.error('[Giving] Failed to queue member emails:', err));
+    queueChurchMemberEmails({
+      churchId: targetNotificationChurchId,
+      subject: `${church?.name || 'Your Church'} - New Giving Campaign: ${campaign.name}`,
+      buildHtml: member => givingCampaignCreatedTemplate({
+        firstName: member.firstName,
+        campaignName: campaign.name,
+        category: campaign.category,
+        currency: campaign.currency,
+        targetAmount: campaign.targetAmount,
+        endDate: campaign.endDate ? new Date(campaign.endDate).toLocaleDateString() : null,
+        description: campaign.description,
+        churchName: church?.name || 'Your Church',
+      }),
+      emailType: 'notification',
+    }).catch(err => console.error('[Giving] Failed to queue member emails:', err));
+  }
 }
 
 export async function getCampaigns(req: Request, res: Response): Promise<void> {
@@ -181,12 +285,13 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
 
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
-      churchId: { in: scopedChurchIds },
+      ...campaignAccessWhere(scopedChurchIds),
       ...(category     && { category: String(category) }),
       ...(statusFilter && { status: statusFilter }),
     },
     include: {
-      church: { select: { name: true } },
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
       _count: { select: { donations: true } },
     },
     orderBy: { createdAt: 'desc' },
@@ -253,7 +358,7 @@ for (const d of guestDonorStats) {
   const campaignsWithStats = campaigns.map(campaign => {
     const memberData = memberDonationMap.get(campaign.id);
     return {
-      ...campaign,
+      ...decorateCampaignAvailability(campaign),
       totalRaised: raisedMap.get(campaign.id) ?? 0,
       donorCount: donorCountMap.get(campaign.id) ?? 0,
       userHasDonated: memberData?.hasDonated ?? false,
@@ -301,7 +406,7 @@ export async function getCampaignSelect(req: Request, res: Response): Promise<vo
 
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
-      churchId: { in: scopedChurchIds },
+      ...campaignAccessWhere(scopedChurchIds),
       ...(category && { category }),
       ...(statusFilter && { status: statusFilter }),
     },
@@ -311,14 +416,16 @@ export async function getCampaignSelect(req: Request, res: Response): Promise<vo
       category: true,
       status: true,
       churchId: true,
+      scopeType: true,
       currency: true,
-      church: { select: { name: true } },
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
     orderBy: { createdAt: 'desc' },
     take: 500,
   });
 
-  res.json({ success: true, data: campaigns });
+  res.json({ success: true, data: campaigns.map(decorateCampaignAvailability) });
 }
 
 export async function getGivingSummary(req: Request, res: Response): Promise<void> {
@@ -431,7 +538,8 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
   const campaign = await prisma.givingCampaign.findUnique({
     where: { id: String(id) },
     include: {
-      church: { select: { name: true } },
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
       _count: { select: { donations: true } },
     },
   });
@@ -456,7 +564,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
   res.json({
     success: true,
     data: {
-      ...campaign,
+      ...decorateCampaignAvailability(campaign),
       totalRaised: stats._sum?.amount || 0,
       donorCount: uniqueDonors.length,
     },
@@ -480,7 +588,10 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
   // Check if campaign exists and user has access
   const existingCampaign = await prisma.givingCampaign.findUnique({ 
     where: { id: String(id) }, 
-    include: { church: true } 
+    include: {
+      church: true,
+      linkedChurches: { select: { churchId: true } },
+    } 
   });
   if (!existingCampaign) {
     res.status(404).json({ success: false, message: 'Campaign not found' });
@@ -501,7 +612,8 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
 
   console.log(`[updateCampaign] accessibleChurchIds=${JSON.stringify(accessibleChurchIds)}`);
 
-  let hasAccess = accessibleChurchIds.includes(existingCampaign.churchId);
+  const existingChurchIds = getCampaignChurchIds(existingCampaign);
+  let hasAccess = existingChurchIds.some(existingChurchId => accessibleChurchIds.includes(existingChurchId));
   console.log(`[updateCampaign] hasAccess via getAccessibleChurchIds=${hasAccess}`);
 
   // Fallback for ministry_admin: directly check church.ministryAdminId
@@ -519,17 +631,49 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
 
   console.log(`[updateCampaign] ✓ access granted — proceeding with update`);
 
-  const { endDate, ...data } = parsed.data;
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, endDate, ...data } = parsed.data;
+  const nextScopeType = scopeType ?? existingCampaign.scopeType ?? 'one_church';
+  const shouldUpdateScope = scopeType !== undefined || targetChurchId !== undefined || requestedChurchIds !== undefined;
+  const resolvedScope = shouldUpdateScope
+    ? resolveRequestedScopeChurchIds({
+        scopeType: nextScopeType,
+        primaryChurchId: targetChurchId ?? existingCampaign.churchId,
+        requestedChurchIds: requestedChurchIds ?? existingChurchIds,
+        accessibleChurchIds,
+      })
+    : { churchIds: existingChurchIds };
 
-  const campaign = await prisma.givingCampaign.update({
-    where: { id: String(id) },
-    data: {
-      ...data,
-      ...(endDate !== undefined ? { endDate: endDate ? new Date(endDate) : null } : {}),
-    },
+  if (resolvedScope.error || !resolvedScope.churchIds) {
+    res.status(403).json({ success: false, message: resolvedScope.error });
+    return;
+  }
+
+  const campaign = await prisma.$transaction(async tx => {
+    if (shouldUpdateScope) {
+      await tx.givingCampaignChurch.deleteMany({ where: { campaignId: String(id) } });
+    }
+
+    return tx.givingCampaign.update({
+      where: { id: String(id) },
+      data: {
+        ...data,
+        ...(endDate !== undefined ? { endDate: endDate ? new Date(endDate) : null } : {}),
+        ...(shouldUpdateScope ? {
+          churchId: resolvedScope.churchIds![0],
+          scopeType: nextScopeType,
+          linkedChurches: {
+            create: resolvedScope.churchIds!.map(selectedChurchId => ({ churchId: selectedChurchId })),
+          },
+        } : {}),
+      },
+      include: {
+        church: { select: { id: true, name: true } },
+        linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+      },
+    });
   });
 
-  res.json({ success: true, data: campaign });
+  res.json({ success: true, data: decorateCampaignAvailability(campaign) });
 }
 
 export async function deleteCampaign(req: Request, res: Response): Promise<void> {
@@ -541,7 +685,7 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
   // Check if campaign exists and user has access
   const existingCampaign = await prisma.givingCampaign.findUnique({ 
     where: { id: String(id) }, 
-    include: { church: true } 
+    include: { church: true, linkedChurches: { select: { churchId: true } } } 
   });
   if (!existingCampaign) {
     res.status(404).json({ success: false, message: 'Campaign not found' });
@@ -558,7 +702,7 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
     userId
   );
 
-  if (!accessibleChurchIds.includes(existingCampaign.churchId)) {
+  if (!getCampaignChurchIds(existingCampaign).some(existingChurchId => accessibleChurchIds.includes(existingChurchId))) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
@@ -702,6 +846,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
 
 const createDonationSchema = z.object({
   campaignId: z.string().min(1),
+  churchId: z.string().optional(),
   amount: z.number().positive(),
   isAnonymous: z.boolean().optional().default(false),
   donorName: z.string().optional(),
@@ -721,6 +866,7 @@ const donationItemSchema = z.object({
 
 const createMultipleDonationSchema = z.object({
   items: z.array(donationItemSchema).min(1).max(20),
+  churchId: z.string().optional(),
   isAnonymous: z.boolean().optional().default(false),
   donorName: z.string().optional(),
   donorEmail: z.string().email().optional(),
@@ -730,12 +876,17 @@ const createMultipleDonationSchema = z.object({
 
 const createGuestMultipleDonationSchema = z.object({
   items: z.array(donationItemSchema.omit({ pledgeId: true })).min(1).max(20),
+  churchId: z.string().optional(),
   guestName: z.string().min(1),
   guestEmail: z.string().email(),
   guestPhone: z.string().optional(),
 });
 
-async function resolveDonationCampaigns(items: Array<{ campaignId: string; amount: number; cellId?: string }>, requirePublic: boolean) {
+async function resolveDonationCampaigns(
+  items: Array<{ campaignId: string; amount: number; cellId?: string }>,
+  requirePublic: boolean,
+  options: { selectedChurchId?: string | null; userChurchId?: string | null } = {},
+) {
   const ids = [...new Set(items.map(item => item.campaignId))];
   if (ids.length !== items.length) {
     return { error: 'Select each campaign only once' };
@@ -743,6 +894,9 @@ async function resolveDonationCampaigns(items: Array<{ campaignId: string; amoun
 
   const campaigns = await prisma.givingCampaign.findMany({
     where: { id: { in: ids } },
+    include: {
+      linkedChurches: { select: { churchId: true } },
+    },
   });
   if (campaigns.length !== ids.length) {
     return { error: 'One or more campaigns were not found' };
@@ -754,9 +908,31 @@ async function resolveDonationCampaigns(items: Array<{ campaignId: string; amoun
     return { error: 'One or more campaigns are not publicly available' };
   }
 
-  const churchIds = [...new Set(campaigns.map(campaign => campaign.churchId))];
-  if (churchIds.length !== 1) {
-    return { error: 'Please give to campaigns from one church at a time' };
+  const campaignChurchLists = campaigns.map(getCampaignChurchIds);
+  let commonChurchIds = campaignChurchLists[0] ?? [];
+  for (const churchList of campaignChurchLists.slice(1)) {
+    commonChurchIds = intersection(commonChurchIds, churchList);
+  }
+
+  if (commonChurchIds.length === 0) {
+    return { error: 'Please give to campaigns that are available to the same church' };
+  }
+
+  let resolvedChurchId: string | undefined;
+  if (options.userChurchId) {
+    if (!commonChurchIds.includes(options.userChurchId)) {
+      return { error: 'This campaign is not available for your church' };
+    }
+    resolvedChurchId = options.userChurchId;
+  } else if (options.selectedChurchId) {
+    if (!commonChurchIds.includes(options.selectedChurchId)) {
+      return { error: 'This campaign is not available for the selected church' };
+    }
+    resolvedChurchId = options.selectedChurchId;
+  } else if (commonChurchIds.length === 1) {
+    resolvedChurchId = commonChurchIds[0];
+  } else {
+    return { error: 'Select the church this giving should go to' };
   }
 
   const currencies = [...new Set(campaigns.map(campaign => campaign.currency))];
@@ -770,9 +946,18 @@ async function resolveDonationCampaigns(items: Array<{ campaignId: string; amoun
     if (campaign?.category === 'fellowship_offering' && !item.cellId) {
       return { error: `Please select a cell/fellowship for ${campaign.name}` };
     }
+    if (campaign?.category === 'fellowship_offering' && item.cellId) {
+      const cell = await prisma.cell.findFirst({
+        where: { id: item.cellId, churchId: resolvedChurchId, status: 'active' },
+        select: { id: true },
+      });
+      if (!cell) {
+        return { error: `The selected cell/fellowship is not available for ${campaign.name}` };
+      }
+    }
   }
 
-  return { campaigns, campaignMap, churchId: churchIds[0], currency: currencies[0] };
+  return { campaigns, campaignMap, churchId: resolvedChurchId as string, currency: currencies[0], availableChurchIds: commonChurchIds };
 }
 
 export async function createDonation(req: Request, res: Response): Promise<void> {
@@ -789,18 +974,23 @@ export async function createDonation(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { campaignId, amount, isAnonymous, donorName, donorEmail, donorPhone, notes, cellId, pledgeId } = parsed.data;
+  const { campaignId, churchId: selectedChurchId, amount, isAnonymous, donorName, donorEmail, donorPhone, notes, cellId, pledgeId } = parsed.data;
 
-  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
-  if (!campaign) {
-    res.status(404).json({ success: false, message: 'Campaign not found' });
+  const member = await prisma.user.findUnique({ where: { id: userId! }, select: { churchId: true } });
+  if (!member?.churchId) {
+    res.status(403).json({ success: false, message: 'Your account is not linked to a church' });
     return;
   }
-
-  if (campaign.status !== 'active') {
-    res.status(400).json({ success: false, message: 'Campaign is not active' });
+  const resolved = await resolveDonationCampaigns(
+    [{ campaignId, amount, cellId }],
+    false,
+    { userChurchId: member?.churchId ?? null, selectedChurchId },
+  );
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
     return;
   }
+  const campaign = resolved.campaignMap.get(campaignId)!;
 
   // Determine gateway using existing function
   const { getPaymentGateway, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
@@ -809,6 +999,10 @@ export async function createDonation(req: Request, res: Response): Promise<void>
   const gateway = await getPaymentGateway(userId!);
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
+  if (currency !== resolved.currency) {
+    res.status(400).json({ success: false, message: `Selected campaign uses ${resolved.currency}, but your payment gateway uses ${currency}` });
+    return;
+  }
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
   
@@ -826,7 +1020,7 @@ export async function createDonation(req: Request, res: Response): Promise<void>
       amount: fees.totalAmount,
       currency,
       userId: userId!,
-      churchId: campaign.churchId,
+      churchId: resolved.churchId,
       type: 'donation',
       expiresAt,
       metadata: JSON.stringify({
@@ -872,23 +1066,18 @@ export async function createMultipleDonation(req: Request, res: Response): Promi
     return;
   }
 
-  const { items, isAnonymous, donorName, donorEmail, donorPhone, notes } = parsed.data;
-  const resolved = await resolveDonationCampaigns(items, false);
-  if ('error' in resolved) {
-    res.status(400).json({ success: false, message: resolved.error });
+  const { items, churchId: selectedChurchId, isAnonymous, donorName, donorEmail, donorPhone, notes } = parsed.data;
+  const member = await prisma.user.findUnique({ where: { id: userId! }, select: { churchId: true } });
+  if (!member?.churchId) {
+    res.status(403).json({ success: false, message: 'Your account is not linked to a church' });
     return;
   }
-
-  const accessibleChurchIds = await getAccessibleChurchIds(
-    req.user?.role!,
-    req.user?.churchId,
-    req.user?.districts,
-    req.user?.traditionalAuthorities,
-    req.user?.regions,
-    userId,
-  );
-  if (!accessibleChurchIds.includes(resolved.churchId)) {
-    res.status(403).json({ success: false, message: 'Access denied to one or more campaigns' });
+  const resolved = await resolveDonationCampaigns(items, false, {
+    userChurchId: member?.churchId ?? null,
+    selectedChurchId,
+  });
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
     return;
   }
 
@@ -977,7 +1166,7 @@ async function initiatePaystackDonation(
     
     // Get church subaccount
     const subaccount = await prisma.subaccount.findUnique({
-      where: { churchId: campaign.churchId }
+      where: { churchId: pendingTx.churchId }
     });
 
     console.log(`[${traceId}] Subaccount found: ${subaccount ? subaccount.subaccountCode : 'NONE'}`);
@@ -1121,7 +1310,7 @@ async function initiatePaychanguDonation(
 }
 
 export async function getGuestDonationFees(req: Request, res: Response): Promise<void> {
-  const { campaignId, amount } = req.query as { campaignId: string; amount: string };
+  const { campaignId, amount, churchId } = req.query as { campaignId: string; amount: string; churchId?: string };
   if (!campaignId || !amount) {
     res.status(400).json({ success: false, message: 'campaignId and amount required' });
     return;
@@ -1132,16 +1321,20 @@ export async function getGuestDonationFees(req: Request, res: Response): Promise
     return;
   }
 
-  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
-  if (!campaign || !campaign.allowPublicDonations) {
-    res.status(404).json({ success: false, message: 'Campaign not found' });
+  const resolved = await resolveDonationCampaigns(
+    [{ campaignId, amount: parsedAmount }],
+    true,
+    { selectedChurchId: churchId ?? null },
+  );
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
     return;
   }
 
   const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
 
-  const gateway = await getPaymentGatewayByChurch(campaign.churchId);
+  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   const fees = calculatePaymentFees(parsedAmount, gatewayCountry);
@@ -1164,7 +1357,10 @@ export async function getPublicCampaign(req: Request, res: Response): Promise<vo
 
   const campaign = await prisma.givingCampaign.findUnique({
     where: { id: String(id) },
-    include: { church: { select: { name: true } } },
+    include: {
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+    },
   });
 
   if (!campaign || !campaign.allowPublicDonations) {
@@ -1179,11 +1375,12 @@ export async function getPublicCampaign(req: Request, res: Response): Promise<vo
 
   const { targetAmount, ...publicFields } = campaign;
 
-  res.json({ success: true, data: publicFields });
+  res.json({ success: true, data: decorateCampaignAvailability(publicFields as any) });
 }
 
 const guestDonationSchema = z.object({
   campaignId: z.string().min(1),
+  churchId: z.string().optional(),
   amount: z.number().positive(),
   guestName: z.string().min(1),
   guestEmail: z.string().email(),
@@ -1201,22 +1398,22 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
     return;
   }
 
-  const { campaignId, amount, guestName, guestEmail, guestPhone, cellId } = parsed.data;
-
-  const campaign = await prisma.givingCampaign.findUnique({ where: { id: campaignId } });
-  if (!campaign || !campaign.allowPublicDonations) {
-    res.status(404).json({ success: false, message: 'Campaign not found or not publicly available' });
+  const { campaignId, churchId: selectedChurchId, amount, guestName, guestEmail, guestPhone, cellId } = parsed.data;
+  const resolved = await resolveDonationCampaigns(
+    [{ campaignId, amount, cellId }],
+    true,
+    { selectedChurchId },
+  );
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
     return;
   }
-  if (campaign.status !== 'active') {
-    res.status(400).json({ success: false, message: 'Campaign is not active' });
-    return;
-  }
+  const campaign = resolved.campaignMap.get(campaignId)!;
 
   const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
 
-  const gateway = await getPaymentGatewayByChurch(campaign.churchId);
+  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   const fees = calculatePaymentFees(amount, gatewayCountry);
@@ -1229,7 +1426,7 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
       amount: fees.totalAmount,
       currency,
       userId: null,
-      churchId: campaign.churchId,
+      churchId: resolved.churchId,
       type: 'donation',
       expiresAt,
       metadata: JSON.stringify({
@@ -1271,8 +1468,8 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
     return;
   }
 
-  const { items, guestName, guestEmail, guestPhone } = parsed.data;
-  const resolved = await resolveDonationCampaigns(items, true);
+  const { items, churchId: selectedChurchId, guestName, guestEmail, guestPhone } = parsed.data;
+  const resolved = await resolveDonationCampaigns(items, true, { selectedChurchId });
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
     return;
@@ -1411,6 +1608,7 @@ export async function getDonationTransaction(req: Request, res: Response): Promi
 
 const recordCashDonationSchema = z.object({
   campaignId: z.string().min(1),
+  churchId: z.string().optional(),
   donorType: z.enum(['member', 'guest', 'anonymous']),
   memberId: z.string().optional(),
   guestName: z.string().optional(),
@@ -1434,7 +1632,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { campaignId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes, cellId } = parsed.data;
+  const { campaignId, churchId: selectedChurchId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes, cellId } = parsed.data;
 
   // Validate required fields per donor type
   if (donorType === 'member' && !memberId) {
@@ -1464,13 +1662,10 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     adminId
   );
 
-  if (!accessibleChurchIds.includes(campaign.churchId)) {
-    res.status(403).json({ success: false, message: 'Access denied to this campaign' });
-    return;
-  }
 
   // For member type — verify member exists and is in scope
   let resolvedUserId: string | null = null;
+  let memberChurchId: string | null = null;
   if (donorType === 'member' && memberId) {
     const member = await prisma.user.findUnique({
       where: { id: memberId },
@@ -1485,6 +1680,21 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
       return;
     }
     resolvedUserId = member.id;
+    memberChurchId = member.churchId ?? null;
+  }
+
+  const resolved = await resolveDonationCampaigns(
+    [{ campaignId, amount, cellId }],
+    false,
+    { selectedChurchId: selectedChurchId ?? null, userChurchId: memberChurchId },
+  );
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
+    return;
+  }
+  if (!accessibleChurchIds.includes(resolved.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to this campaign' });
+    return;
   }
 
   // Create Transaction record for consistency (cash type)
@@ -1500,7 +1710,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
       notes: notes || undefined,
       baseAmount: amount,
       userId: resolvedUserId,
-      churchId: campaign.churchId,
+      churchId: resolved.churchId,
       paidAt: new Date(date),
       createdAt: new Date(date),
       // donor info
@@ -1514,7 +1724,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
   const donation = await prisma.donationTransaction.create({
     data: {
       campaignId,
-      churchId: campaign.churchId,
+      churchId: resolved.churchId,
       amount,
       currency,
       paymentMethod: 'cash',
@@ -1547,19 +1757,20 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
 
 export async function getPublicCampaignCells(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
+  const selectedChurchId = req.query.churchId as string | undefined;
 
-  const campaign = await prisma.givingCampaign.findUnique({
-    where: { id: String(id) },
-    select: { churchId: true, allowPublicDonations: true, category: true },
-  });
-
-  if (!campaign || !campaign.allowPublicDonations) {
-    res.status(404).json({ success: false, message: 'Campaign not found' });
+  const resolved = await resolveDonationCampaigns(
+    [{ campaignId: String(id), amount: 1 }],
+    true,
+    { selectedChurchId: selectedChurchId ?? null },
+  );
+  if ('error' in resolved) {
+    res.status(400).json({ success: false, message: resolved.error });
     return;
   }
 
   const cells = await prisma.cell.findMany({
-    where: { churchId: campaign.churchId, status: 'active' },
+    where: { churchId: resolved.churchId, status: 'active' },
     select: { id: true, name: true, zone: true },
     orderBy: { name: 'asc' },
   });

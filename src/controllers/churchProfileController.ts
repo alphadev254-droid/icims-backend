@@ -500,18 +500,28 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   // Public campaigns — active, allowPublicDonations
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
-      churchId: { in: churchIds },
+      OR: [
+        { churchId: { in: churchIds } },
+        { linkedChurches: { some: { churchId: { in: churchIds } } } },
+      ],
       allowPublicDonations: true,
       status: 'active',
     },
     select: {
-      id: true, name: true, description: true, category: true,
+      id: true, churchId: true, scopeType: true, name: true, description: true, category: true,
       targetAmount: true, currency: true, imageUrl: true,
-      church: { select: { name: true } },
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
   });
+  const publicCampaigns = campaigns.map(campaign => ({
+    ...campaign,
+    availableChurches: campaign.linkedChurches.length > 0
+      ? campaign.linkedChurches.map(link => ({ id: link.churchId, name: link.church.name }))
+      : [{ id: campaign.churchId, name: campaign.church.name }],
+  }));
 
   res.json({
     success: true,
@@ -520,7 +530,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
       ministryName: user.ministryName ?? `${user.firstName} ${user.lastName}`,
       churches,
       events,
-      campaigns,
+      campaigns: publicCampaigns,
       sermons,
       ministries,
     },

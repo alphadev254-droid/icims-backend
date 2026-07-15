@@ -123,6 +123,11 @@ export async function createDonationRecordsForTransaction(args: {
   const campaignMap = new Map(campaigns.map(campaign => [campaign.id, campaign]));
   const firstCampaign = campaigns[0];
   if (!firstCampaign) return created;
+  const receivingChurch = await prisma.church.findUnique({
+    where: { id: pendingTx.churchId },
+    select: { name: true },
+  });
+  const receivingChurchName = receivingChurch?.name || firstCampaign.church.name;
 
   const donorFirstName = isGuest ? guestFirstName : donor?.firstName || 'Donor';
   const donorFullName = isGuest
@@ -147,7 +152,7 @@ export async function createDonationRecordsForTransaction(args: {
         label: campaignMap.get(line.campaignId)?.name || line.campaignName || 'Campaign',
         value: `${currency} ${line.amount.toLocaleString()}`,
       })),
-      { label: 'Church', value: firstCampaign.church.name },
+      { label: 'Church', value: receivingChurchName },
       { label: 'Anonymous', value: metadata.isAnonymous ? 'Yes' : 'No' },
     ],
   });
@@ -163,7 +168,7 @@ export async function createDonationRecordsForTransaction(args: {
       reference,
       isAnonymous: metadata.isAnonymous || false,
       isGuest,
-      churchName: firstCampaign.church.name,
+      churchName: receivingChurchName,
     }),
     [{ filename: `donation-receipt-${reference}.pdf`, content: receiptPDF }],
   );
