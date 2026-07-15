@@ -538,11 +538,6 @@ export async function registerMember(req: Request, res: Response): Promise<void>
 
   const data = parsed.data;
 
-  if (data.inviteToken) {
-    res.status(400).json({ success: false, message: 'Member invite registration must use the member registration endpoint' });
-    return;
-  }
-
   const existing = await prisma.user.findUnique({ where: { email: data.email } });
   if (existing) {
     res.status(409).json({ success: false, message: 'An account with this email already exists' });
