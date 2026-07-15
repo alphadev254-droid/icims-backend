@@ -42,6 +42,7 @@ type MergePlan = {
 const args = new Set(process.argv.slice(2));
 const apply = args.has('--apply');
 const includeInactive = args.has('--include-inactive');
+const includeUnscoped = args.has('--include-unscoped');
 
 function normalizeName(value: string): string {
   return value
@@ -137,6 +138,7 @@ async function buildPlans(): Promise<MergePlan[]> {
 
   const groups = new Map<string, CampaignRow[]>();
   for (const campaign of campaigns) {
+    if (!includeUnscoped && !campaign.church.ministryAdminId) continue;
     const normalizedName = normalizeName(campaign.name);
     if (!normalizedName) continue;
     const key = [
@@ -290,6 +292,7 @@ async function main() {
     console.log('\nDry run only. No database changes made.');
     console.log('Run with --apply to execute these merges.');
     console.log('Optional: add --include-inactive if you also want cancelled campaigns considered in the grouping.');
+    console.log('Optional: add --include-unscoped if you intentionally want campaigns with no ministry admin included.');
     return;
   }
 
