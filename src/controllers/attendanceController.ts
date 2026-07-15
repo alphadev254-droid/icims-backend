@@ -196,7 +196,7 @@ function isQrOpen(attendance: any) {
 async function assertAttendanceAccess(req: Request, attendanceId: string) {
   const record = await (prisma.attendance as any).findUnique({
     where: { id: attendanceId },
-    include: { church: { select: { id: true, name: true } } },
+    include: { church: { select: { id: true, name: true, ministryAdminId: true } } },
   });
   if (!record) return { ok: false as const, status: 404, message: 'Record not found' };
 
@@ -214,6 +214,14 @@ async function assertAttendanceAccess(req: Request, attendanceId: string) {
   }
 
   return { ok: true as const, record };
+}
+
+function normalizeContactValue(value?: string | null) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizePhoneValue(value?: string | null) {
+  return String(value || '').replace(/\D/g, '');
 }
 
 export async function getAttendance(req: Request, res: Response): Promise<void> {
@@ -689,6 +697,7 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
             memberType: true,
             gender: true,
             dateOfBirth: true,
+            church: { select: { id: true, name: true } },
           },
         },
       },
@@ -699,7 +708,78 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
     participantDelegate.count({ where: { attendanceId } }),
   ]);
 
-  res.json({ success: true, data: participants, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  const attendanceMinistryId = access.record.church?.ministryAdminId;
+  const guestEmails = participants
+    .filter((participant: any) => !participant.userId)
+    .map((participant: any) => normalizeContactValue(participant.guestEmail))
+    .filter((value: string): value is string => Boolean(value));
+  const guestPhones = participants
+    .filter((participant: any) => !participant.userId)
+    .map((participant: any) => normalizeContactValue(participant.guestPhone))
+    .filter((value: string): value is string => Boolean(value));
+
+  let matchedMembers: any[] = [];
+  if (attendanceMinistryId && (guestEmails.length > 0 || guestPhones.length > 0)) {
+    matchedMembers = await prisma.user.findMany({
+      where: {
+        AND: [
+          {
+            OR: [
+              { ministryAdminId: attendanceMinistryId },
+              { church: { ministryAdminId: attendanceMinistryId } },
+            ],
+          },
+          {
+            OR: [
+              ...(guestEmails.length ? [{ email: { in: Array.from(new Set<string>(guestEmails)) } }] : []),
+              ...(guestPhones.length ? [{ phone: { in: Array.from(new Set<string>(guestPhones)) } }] : []),
+            ],
+          },
+        ],
+        status: 'active',
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        memberType: true,
+        church: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  const memberByEmail = new Map<string, any>();
+  const memberByPhone = new Map<string, any>();
+  for (const member of matchedMembers) {
+    const email = normalizeContactValue(member.email);
+    const phone = normalizePhoneValue(member.phone);
+    if (email) memberByEmail.set(email, member);
+    if (phone) memberByPhone.set(phone, member);
+  }
+
+  const enrichedParticipants = participants.map((participant: any) => {
+    if (participant.userId) return participant;
+    const matchedMember =
+      memberByEmail.get(normalizeContactValue(participant.guestEmail)) ||
+      memberByPhone.get(normalizePhoneValue(participant.guestPhone));
+    if (!matchedMember) return participant;
+    return {
+      ...participant,
+      ministryMember: {
+        id: matchedMember.id,
+        firstName: matchedMember.firstName,
+        lastName: matchedMember.lastName,
+        email: matchedMember.email,
+        phone: matchedMember.phone,
+        memberType: matchedMember.memberType,
+        church: matchedMember.church,
+      },
+    };
+  });
+
+  res.json({ success: true, data: enrichedParticipants, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function searchAttendanceMembers(req: Request, res: Response): Promise<void> {
