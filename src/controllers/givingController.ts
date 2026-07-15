@@ -59,15 +59,19 @@ function getCampaignChurchIds(campaign: CampaignWithChurchLinks): string[] {
   return uniqueStrings(linkedIds.length > 0 ? linkedIds : [campaign.churchId]);
 }
 
-function decorateCampaignAvailability<T extends CampaignWithChurchLinks>(campaign: T) {
+function decorateCampaignAvailability<T extends CampaignWithChurchLinks>(campaign: T, scopedChurchIds?: string[]) {
   const linkedChurches = campaign.linkedChurches ?? [];
-  const availableChurchIds = getCampaignChurchIds(campaign);
-  const availableChurches = linkedChurches.length > 0
+  const allAvailableChurchIds = getCampaignChurchIds(campaign);
+  const availableChurchIds = scopedChurchIds?.length
+    ? intersection(allAvailableChurchIds, scopedChurchIds)
+    : allAvailableChurchIds;
+  const availableChurches = (linkedChurches.length > 0
     ? linkedChurches.map(link => ({
         id: link.churchId,
         name: link.church?.name ?? 'Church',
       }))
-    : [{ id: campaign.churchId, name: campaign.church?.name ?? 'Church' }];
+    : [{ id: campaign.churchId, name: campaign.church?.name ?? 'Church' }])
+    .filter(church => availableChurchIds.includes(church.id));
 
   return {
     ...campaign,
@@ -358,7 +362,7 @@ for (const d of guestDonorStats) {
   const campaignsWithStats = campaigns.map(campaign => {
     const memberData = memberDonationMap.get(campaign.id);
     return {
-      ...decorateCampaignAvailability(campaign),
+      ...decorateCampaignAvailability(campaign, scopedChurchIds),
       totalRaised: raisedMap.get(campaign.id) ?? 0,
       donorCount: donorCountMap.get(campaign.id) ?? 0,
       userHasDonated: memberData?.hasDonated ?? false,
@@ -425,7 +429,7 @@ export async function getCampaignSelect(req: Request, res: Response): Promise<vo
     take: 500,
   });
 
-  res.json({ success: true, data: campaigns.map(decorateCampaignAvailability) });
+  res.json({ success: true, data: campaigns.map(campaign => decorateCampaignAvailability(campaign, scopedChurchIds)) });
 }
 
 export async function getGivingSummary(req: Request, res: Response): Promise<void> {
@@ -534,6 +538,16 @@ export async function getGivingSummary(req: Request, res: Response): Promise<voi
 
 export async function getCampaign(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
+  const userId = req.user?.userId;
+  const roleName = req.user?.role;
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName!,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
 
   const campaign = await prisma.givingCampaign.findUnique({
     where: { id: String(id) },
@@ -546,6 +560,12 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
 
   if (!campaign) {
     res.status(404).json({ success: false, message: 'Campaign not found' });
+    return;
+  }
+
+  const scopedCampaignChurchIds = intersection(getCampaignChurchIds(campaign), accessibleChurchIds);
+  if (scopedCampaignChurchIds.length === 0) {
+    res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
 
@@ -564,7 +584,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
   res.json({
     success: true,
     data: {
-      ...decorateCampaignAvailability(campaign),
+      ...decorateCampaignAvailability(campaign, scopedCampaignChurchIds),
       totalRaised: stats._sum?.amount || 0,
       donorCount: uniqueDonors.length,
     },
