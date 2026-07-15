@@ -14,6 +14,8 @@
     "seed:admin-profile": "ts-node scripts/seed-admin-profile.ts",
     "backfill:child-ages": "ts-node scripts/backfill-child-ages.ts",
     "backfill:child-users": "ts-node scripts/backfill-child-user-identities.ts",
+    "recalculate:attendance": "ts-node scripts/recalculate-attendance-summaries.ts",
+    "recalculate:attendance:apply": "ts-node scripts/recalculate-attendance-summaries.ts --apply",
     "db:studio": "prisma studio",
     "db:generate": "prisma generate"
   },

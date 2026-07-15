@@ -103,6 +103,7 @@ function getAge(dateOfBirth?: Date | string | null) {
   let age = today.getFullYear() - dob.getFullYear();
   const monthDelta = today.getMonth() - dob.getMonth();
   if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age -= 1;
+  if (age < 0 || age > 130) return null;
   return age;
 }
 
@@ -113,6 +114,19 @@ function ageBucketFromAge(age: number | null) {
   if (age <= 35) return 'youngAdults';
   if (age <= 59) return 'adults';
   return 'seniors';
+}
+
+function ageBucketForMember(member: { memberType?: string | null; dateOfBirth?: Date | string | null }) {
+  const memberType = String(member.memberType || '').toLowerCase();
+  const age = getAge(member.dateOfBirth);
+  if (age === null) {
+    if (memberType === 'child') return 'children';
+    if (memberType === 'adult') return 'adults';
+    return null;
+  }
+  if (memberType === 'adult' && age < 18) return 'adults';
+  if (memberType === 'child' && age >= 18) return 'children';
+  return ageBucketFromAge(age);
 }
 
 function ageBucketFromBracket(ageBracket?: string | null) {
@@ -823,7 +837,7 @@ export async function addManualAttendanceMembers(req: Request, res: Response): P
       }));
       incrementData = mergeAttendanceIncrement(
         incrementData,
-        attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth)))
+        attendanceIncrementData(member.gender, ageBucketForMember(member))
       );
     }
 
@@ -1088,7 +1102,7 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
     });
     await (tx.attendance as any).update({
       where: { id: attendance.id },
-      data: attendanceIncrementData(user.gender, ageBucketFromAge(getAge(user.dateOfBirth))),
+      data: attendanceIncrementData(user.gender, ageBucketForMember(user)),
     });
     return created;
   });
@@ -1220,7 +1234,7 @@ export async function scanMemberAttendanceQr(req: Request, res: Response): Promi
     });
     await (tx.attendance as any).update({
       where: { id: attendanceId },
-      data: attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth))),
+      data: attendanceIncrementData(member.gender, ageBucketForMember(member)),
     });
     return created;
   });

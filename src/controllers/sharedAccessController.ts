@@ -681,6 +681,7 @@ function getAge(dateOfBirth?: Date | string | null) {
   let age = today.getFullYear() - dob.getFullYear();
   const monthDelta = today.getMonth() - dob.getMonth();
   if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age -= 1;
+  if (age < 0 || age > 130) return null;
   return age;
 }
 
@@ -691,6 +692,19 @@ function ageBucketFromAge(age: number | null) {
   if (age <= 35) return 'youngAdults';
   if (age <= 59) return 'adults';
   return 'seniors';
+}
+
+function ageBucketForMember(member: { memberType?: string | null; dateOfBirth?: Date | string | null }) {
+  const memberType = String(member.memberType || '').toLowerCase();
+  const age = getAge(member.dateOfBirth);
+  if (age === null) {
+    if (memberType === 'child') return 'children';
+    if (memberType === 'adult') return 'adults';
+    return null;
+  }
+  if (memberType === 'adult' && age < 18) return 'adults';
+  if (memberType === 'child' && age >= 18) return 'children';
+  return ageBucketFromAge(age);
 }
 
 function attendanceIncrementData(gender?: string | null, ageBucket?: string | null) {
@@ -858,7 +872,7 @@ export async function addMembersByScannerLink(req: Request, res: Response): Prom
         data: { attendanceId: attendance.id, userId: member.id, checkInMethod: 'shared_scanner_search' },
         include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
       }));
-      const memberIncrement = attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth)));
+      const memberIncrement = attendanceIncrementData(member.gender, ageBucketForMember(member));
       for (const key of Object.keys(memberIncrement)) {
         incrementData[key] = { increment: (incrementData[key]?.increment || 0) + memberIncrement[key].increment };
       }
@@ -931,7 +945,7 @@ export async function scanMemberByScannerLink(req: Request, res: Response): Prom
     });
     await (tx.attendance as any).update({
       where: { id: attendance.id },
-      data: attendanceIncrementData(member.gender, ageBucketFromAge(getAge(member.dateOfBirth))),
+      data: attendanceIncrementData(member.gender, ageBucketForMember(member)),
     });
     await tx.sharedAccessLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date() } });
     return created;
