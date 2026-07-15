@@ -154,10 +154,21 @@ function extractQrToken(value: string) {
   return decodeURIComponent(match?.[1] || trimmed);
 }
 
-function parseOptionalDate(value: string | null | undefined) {
-  if (!value) return null;
+function parseRequiredDate(value: string, label: string) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (Number.isNaN(date.getTime())) {
+    return { ok: false as const, message: `Invalid ${label}` };
+  }
+  return { ok: true as const, date };
+}
+
+function validateOptionalDate(value: string | null | undefined, label: string) {
+  if (!value) return { ok: true as const, date: null };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return { ok: false as const, message: `Invalid ${label}` };
+  }
+  return { ok: true as const, date };
 }
 
 function isQrOpen(attendance: any) {
@@ -314,7 +325,12 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const attendanceDate = new Date(data.date);
+  const parsedAttendanceDate = parseRequiredDate(data.date, 'attendance date');
+  if (!parsedAttendanceDate.ok) {
+    res.status(400).json({ success: false, message: parsedAttendanceDate.message });
+    return;
+  }
+  const attendanceDate = parsedAttendanceDate.date;
   const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
 
   // Auto-set newVisitors count from visitors array if provided
@@ -406,7 +422,27 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const attendanceDate = new Date(parsed.data.date);
+  const parsedAttendanceDate = parseRequiredDate(parsed.data.date, 'attendance date');
+  if (!parsedAttendanceDate.ok) {
+    res.status(400).json({ success: false, message: parsedAttendanceDate.message });
+    return;
+  }
+  const attendanceDate = parsedAttendanceDate.date;
+  const qrActiveFrom = validateOptionalDate(parsed.data.qrActiveFrom, 'QR active from');
+  const qrActiveUntil = validateOptionalDate(parsed.data.qrActiveUntil, 'QR active until');
+  if (!qrActiveFrom.ok) {
+    res.status(400).json({ success: false, message: qrActiveFrom.message });
+    return;
+  }
+  if (!qrActiveUntil.ok) {
+    res.status(400).json({ success: false, message: qrActiveUntil.message });
+    return;
+  }
+  const effectiveQrActiveFrom = qrActiveFrom.date || attendanceDate;
+  if (qrActiveUntil.date && qrActiveUntil.date <= effectiveQrActiveFrom) {
+    res.status(400).json({ success: false, message: 'QR active until must be after QR active from' });
+    return;
+  }
   const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
   const existingWhere: any = {
     churchId: parsed.data.churchId,
@@ -426,8 +462,8 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
         digitalCheckInEnabled: true,
         qrStatus: 'active',
         qrToken: existing.qrToken || generateQrToken(),
-        qrActiveFrom: parseOptionalDate(parsed.data.qrActiveFrom) || existing.qrActiveFrom || new Date(),
-        qrActiveUntil: parseOptionalDate(parsed.data.qrActiveUntil),
+        qrActiveFrom: qrActiveFrom.date || existing.qrActiveFrom || attendanceDate,
+        qrActiveUntil: qrActiveUntil.date,
       },
       include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
     });
@@ -454,8 +490,8 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
       digitalCheckInEnabled: true,
       qrStatus: 'active',
       qrToken: generateQrToken(),
-      qrActiveFrom: parseOptionalDate(parsed.data.qrActiveFrom) || new Date(),
-      qrActiveUntil: parseOptionalDate(parsed.data.qrActiveUntil),
+      qrActiveFrom: effectiveQrActiveFrom,
+      qrActiveUntil: qrActiveUntil.date,
     },
     include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
   });
@@ -522,13 +558,18 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
   }
 
   const summaryLocked = !!record.qrToken || record.digitalCheckInEnabled || (record as any)._count?.participants > 0;
+  const parsedAttendanceDate = parseRequiredDate(data.date, 'attendance date');
+  if (!parsedAttendanceDate.ok) {
+    res.status(400).json({ success: false, message: parsedAttendanceDate.message });
+    return;
+  }
 
   if (summaryLocked) {
     const updated = await prisma.attendance.update({
       where: { id },
       data: {
         churchId: targetChurchId,
-        date: new Date(data.date),
+        date: parsedAttendanceDate.date,
         serviceType: data.serviceType,
         eventId,
       },
@@ -543,7 +584,7 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
   const updated = await prisma.$transaction(async (tx) => {
     const attendance = await tx.attendance.update({
       where: { id },
-      data: { ...data, newVisitors: newVisitorsCount, date: new Date(data.date), churchId: targetChurchId, eventId },
+      data: { ...data, newVisitors: newVisitorsCount, date: parsedAttendanceDate.date, churchId: targetChurchId, eventId },
     });
     if (visitors !== undefined) {
       await tx.attendanceVisitor.deleteMany({ where: { attendanceId: id } });
@@ -870,8 +911,24 @@ export async function updateAttendanceQrSettings(req: Request, res: Response): P
   const data: any = {};
   if (parsed.data.digitalCheckInEnabled !== undefined) data.digitalCheckInEnabled = parsed.data.digitalCheckInEnabled;
   if (parsed.data.qrStatus) data.qrStatus = parsed.data.qrStatus;
-  if (parsed.data.qrActiveFrom !== undefined) data.qrActiveFrom = parseOptionalDate(parsed.data.qrActiveFrom);
-  if (parsed.data.qrActiveUntil !== undefined) data.qrActiveUntil = parseOptionalDate(parsed.data.qrActiveUntil);
+  const qrActiveFrom = validateOptionalDate(parsed.data.qrActiveFrom, 'QR active from');
+  const qrActiveUntil = validateOptionalDate(parsed.data.qrActiveUntil, 'QR active until');
+  if (!qrActiveFrom.ok) {
+    res.status(400).json({ success: false, message: qrActiveFrom.message });
+    return;
+  }
+  if (!qrActiveUntil.ok) {
+    res.status(400).json({ success: false, message: qrActiveUntil.message });
+    return;
+  }
+  const effectiveQrActiveFrom = parsed.data.qrActiveFrom !== undefined ? qrActiveFrom.date : access.record.qrActiveFrom;
+  const effectiveQrActiveUntil = parsed.data.qrActiveUntil !== undefined ? qrActiveUntil.date : access.record.qrActiveUntil;
+  if (effectiveQrActiveFrom && effectiveQrActiveUntil && effectiveQrActiveUntil <= effectiveQrActiveFrom) {
+    res.status(400).json({ success: false, message: 'QR active until must be after QR active from' });
+    return;
+  }
+  if (parsed.data.qrActiveFrom !== undefined) data.qrActiveFrom = qrActiveFrom.date;
+  if (parsed.data.qrActiveUntil !== undefined) data.qrActiveUntil = qrActiveUntil.date;
   if (!access.record.qrToken) data.qrToken = generateQrToken();
 
   const updated = await (prisma.attendance as any).update({
