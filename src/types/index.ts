@@ -12,6 +12,9 @@ export type ChurchLevel = 'national' | 'regional' | 'district' | 'local';
 export interface JwtPayload {
   userId: string;
   email: string;
+  firstName?: string;
+  lastName?: string;
+  userName?: string;
   role: UserRole;         // convenience role name string
   churchId: string | null;
   permissions: string[];

@@ -11,11 +11,75 @@ import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { recordPaymentEvent } from '../middleware/metrics';
+import { displayName, maskEmail, maskPhone } from '../utils/logger';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
 const SYSTEM_SUBACCOUNT_CODE = process.env.SYSTEM_SUBACCOUNT_CODE!;
 const BACKEND_URL = process.env.BACKEND_URL!;
+
+function packagePaymentLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
+  return {
+    traceId,
+    pendingTransactionId: pendingTx?.id,
+    reference: pendingTx?.reference,
+    ministryAdminId: metadata.ministryAdminId,
+    packageId: metadata.packageId,
+    packageName: metadata.packageName,
+    billingCycle: metadata.billingCycle,
+    amount: metadata.baseAmount,
+    totalAmount: metadata.totalAmount ?? pendingTx?.amount,
+    currency: pendingTx?.currency,
+    initiatedBy: metadata.initiatedBy,
+    initiatedByName: metadata.initiatedByName,
+    ...extra,
+  };
+}
+
+function eventTicketPaymentLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
+  return {
+    traceId,
+    pendingTransactionId: pendingTx?.id,
+    transactionId: extra.transactionId,
+    reference: pendingTx?.reference,
+    eventId: metadata.eventId ?? pendingTx?.eventId,
+    churchId: pendingTx?.churchId,
+    userId: metadata.userId ?? pendingTx?.userId,
+    userName: metadata.userName,
+    isGuest: metadata.isGuest === true,
+    guestName: metadata.guestName,
+    guestEmail: maskEmail(metadata.guestEmail),
+    guestPhone: maskPhone(metadata.guestPhone),
+    quantity: metadata.quantity,
+    amount: metadata.baseAmount,
+    totalAmount: metadata.totalAmount ?? pendingTx?.amount,
+    currency: pendingTx?.currency,
+    ...extra,
+  };
+}
+
+function donationPaymentLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
+  return {
+    traceId,
+    pendingTransactionId: pendingTx?.id,
+    transactionId: extra.transactionId,
+    reference: pendingTx?.reference,
+    campaignId: metadata.campaignId,
+    campaignName: metadata.campaignName,
+    churchId: pendingTx?.churchId || metadata.churchId,
+    userId: metadata.userId ?? pendingTx?.userId,
+    userName: metadata.userName,
+    isGuest: metadata.isGuest === true,
+    guestName: metadata.guestName,
+    donorName: metadata.donorName,
+    guestEmail: maskEmail(metadata.guestEmail),
+    guestPhone: maskPhone(metadata.guestPhone),
+    amount: metadata.baseAmount,
+    totalAmount: metadata.totalAmount ?? pendingTx?.amount,
+    currency: pendingTx?.currency,
+    ...extra,
+  };
+}
 
 const subscribeSchema = z.object({
   packageId: z.string().min(1, 'Package ID required'),
@@ -142,6 +206,8 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
       metadata: JSON.stringify({
         traceId,
         ministryAdminId,
+        initiatedBy: userId,
+        initiatedByName: displayName(user.firstName, user.lastName),
         packageId,
         packageName: pkg.name,
         billingCycle,
@@ -179,10 +245,10 @@ async function initiatePaystackPayment(
 ): Promise<void> {
   console.log(`[${traceId}] initiatePaystackPayment called`);
   const amountInKobo = Math.round(fees.totalAmount * 100);
+  const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
   console.log(`[${traceId}] Amount in kobo: ${amountInKobo}`);
 
   try {
-    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
     const paystackPayload = {
       email: ministryAdmin.email,
       amount: amountInKobo,
@@ -236,7 +302,10 @@ async function initiatePaystackPayment(
     });
 
     console.log(`[${traceId}] Sending response to client`);
-    recordPaymentEvent('paystack', pendingTx.type, 'initialized');
+    recordPaymentEvent('paystack', pendingTx.type, 'initialized', packagePaymentLogMeta(traceId, pendingTx, metadata, {
+      reference: response.data.data.reference,
+      gatewayStatus: response.status,
+    }));
     res.json({
       success: true,
       data: {
@@ -246,7 +315,10 @@ async function initiatePaystackPayment(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paystack', pendingTx.type, 'failed');
+    recordPaymentEvent('paystack', pendingTx.type, 'failed', packagePaymentLogMeta(traceId, pendingTx, metadata, {
+      gatewayStatus: error.response?.status,
+      errorMessage: error.message,
+    }));
     console.log(`[${traceId}] Paystack error occurred, deleting pending transaction`);
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     
@@ -279,6 +351,7 @@ async function initiatePaychanguPayment(
   console.log(`[${traceId}] initiatePaychanguPayment called`);
   const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
   console.log(`[${traceId}] Paychangu secret key exists: ${!!PAYCHANGU_SECRET_KEY}`);
+  const existingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
 
   try {
     const tx_ref = pendingTx.reference || `PKG-${Date.now()}`;
@@ -297,7 +370,6 @@ async function initiatePaychanguPayment(
       }
     };
 
-    const existingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
     await prisma.pendingTransaction.update({
       where: { id: pendingTx.id },
       data: {
@@ -337,7 +409,10 @@ async function initiatePaychanguPayment(
     });
 
     console.log(`[${traceId}] Sending response to client`);
-    recordPaymentEvent('paychangu', pendingTx.type, 'initialized');
+    recordPaymentEvent('paychangu', pendingTx.type, 'initialized', packagePaymentLogMeta(traceId, pendingTx, existingMetadata, {
+      reference: tx_ref,
+      gatewayStatus: response.status,
+    }));
     res.json({
       success: true,
       data: {
@@ -346,7 +421,10 @@ async function initiatePaychanguPayment(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paychangu', pendingTx.type, 'failed');
+    recordPaymentEvent('paychangu', pendingTx.type, 'failed', packagePaymentLogMeta(traceId, pendingTx, existingMetadata, {
+      gatewayStatus: error.response?.status,
+      errorMessage: error.message,
+    }));
     console.log(`[${traceId}] Paychangu error occurred, deleting pending transaction`);
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     
@@ -491,7 +569,15 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           },
         });
         console.log(`[${traceId}] Payment record created: ${payment.id}`);
-        recordPaymentEvent(gateway, 'package_subscription', 'completed');
+        recordPaymentEvent(gateway, 'package_subscription', 'completed', packagePaymentLogMeta(traceId, pendingTx, {
+          ...metadata,
+          ...pendingMetadata,
+        }, {
+          paymentId: payment.id,
+          reference: data.reference,
+          gatewayStatus: data.status,
+          gatewayCharge: payment.gatewayCharge,
+        }));
         console.log(`[${traceId}] Payment — amount: ${payment.amount}, currency: ${payment.currency}, gateway: ${payment.gateway}, gatewayCharge: ${payment.gatewayCharge}`);
 
         // Create or update subscription and reset email tracking
@@ -585,7 +671,11 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
         if (!pendingTx) {
           console.log(`[${traceId}] Pending transaction not found and no existing transaction`);
-          recordPaymentEvent('paystack', 'event_ticket', 'failed');
+          recordPaymentEvent('paystack', 'event_ticket', 'failed', {
+            traceId,
+            reference: String(reference),
+            errorMessage: 'Pending transaction not found',
+          });
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
@@ -632,7 +722,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         });
         
         console.log(`[${traceId}] Transaction created: ${transaction.id}`);
-        recordPaymentEvent(pendingMetadata.gateway || 'paystack', pendingTx.type || type, 'completed');
+        recordPaymentEvent(pendingMetadata.gateway || 'paystack', pendingTx.type || type, 'completed', eventTicketPaymentLogMeta(traceId, pendingTx, pendingMetadata, {
+          transactionId: transaction.id,
+          reference: data.reference,
+          gatewayStatus: data.status,
+          gatewayCharge: transaction.gatewayCharge,
+        }));
         console.log(`[${traceId}] Subaccount: ${transaction.subaccountCode} - ${transaction.subaccountName}`);
         console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, System Fee: ${transaction.systemFeeAmount}, Gateway Charge: ${transaction.gatewayCharge}`);
         console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);
@@ -805,7 +900,11 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 
         if (!pendingTx) {
           console.log(`[${traceId}] Pending transaction not found and no existing transaction`);
-          recordPaymentEvent('paystack', 'donation', 'failed');
+          recordPaymentEvent('paystack', 'donation', 'failed', {
+            traceId,
+            reference: String(reference),
+            errorMessage: 'Pending transaction not found',
+          });
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
@@ -851,7 +950,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         });
         
         console.log(`[${traceId}] Transaction created: ${transaction.id}`);
-        recordPaymentEvent(pendingMetadata.gateway || 'paystack', pendingTx.type || type, 'completed');
+        recordPaymentEvent(pendingMetadata.gateway || 'paystack', pendingTx.type || type, 'completed', donationPaymentLogMeta(traceId, pendingTx, pendingMetadata, {
+          transactionId: transaction.id,
+          reference: data.reference,
+          gatewayStatus: data.status,
+          gatewayCharge: transaction.gatewayCharge,
+        }));
         console.log(`[${traceId}] Subaccount: ${transaction.subaccountCode} - ${transaction.subaccountName}`);
         console.log(`[${traceId}] Transaction saved with fees - Base: ${transaction.baseAmount}, Convenience: ${transaction.convenienceFee}, System Fee: ${transaction.systemFeeAmount}, Gateway Charge: ${transaction.gatewayCharge}`);
         console.log(`[${traceId}] System fee applied: ${pendingMetadata.systemFeeAmount > 0 ? 'YES' : 'NO'} (${pendingMetadata.gatewayCountry})`);

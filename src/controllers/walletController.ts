@@ -664,6 +664,8 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
     withdrawalId: withdrawal.id,
     walletId: selectedWallet.id,
     ministryAdminId: userId,
+    initiatedBy: userId,
+    initiatedByName: req.user?.userName,
     amount: fees.amount,
     totalDebited: fees.netAmount,
     payoutAmount: fees.payoutAmount,

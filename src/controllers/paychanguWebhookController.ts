@@ -10,6 +10,7 @@ import { generateReceiptPDF } from '../lib/receiptPDF';
 import { refundWithdrawal } from '../utils/walletOperations';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics';
+import { maskEmail, maskPhone } from '../utils/logger';
 
 function safeJsonParse(value: string): any {
   try {
@@ -17,6 +18,38 @@ function safeJsonParse(value: string): any {
   } catch {
     return value;
   }
+}
+
+function paychanguPaymentLogMeta(traceId: string, pendingTx: any, metadata: any = {}, payload: any = {}, extra: Record<string, unknown> = {}) {
+  return {
+    traceId,
+    pendingTransactionId: pendingTx?.id,
+    reference: pendingTx?.reference || payload?.tx_ref,
+    chargeId: payload?.charge_id,
+    type: pendingTx?.type || payload?.type,
+    ministryAdminId: metadata.ministryAdminId,
+    packageId: metadata.packageId,
+    billingCycle: metadata.billingCycle,
+    initiatedBy: metadata.initiatedBy,
+    initiatedByName: metadata.initiatedByName,
+    eventId: metadata.eventId,
+    eventTitle: metadata.eventTitle,
+    campaignId: metadata.campaignId,
+    campaignName: metadata.campaignName,
+    churchId: pendingTx?.churchId || metadata.churchId,
+    userId: pendingTx?.userId || metadata.userId,
+    userName: metadata.userName,
+    isGuest: metadata.isGuest === true,
+    guestName: metadata.guestName,
+    donorName: metadata.donorName,
+    guestEmail: maskEmail(metadata.guestEmail),
+    guestPhone: maskPhone(metadata.guestPhone),
+    amount: metadata.baseAmount,
+    totalAmount: metadata.totalAmount || pendingTx?.amount,
+    currency: pendingTx?.currency || payload?.currency,
+    gatewayStatus: payload?.status,
+    ...extra,
+  };
 }
 
 export async function paychanguWebhook(req: Request, res: Response): Promise<void> {
@@ -156,7 +189,12 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 
     if (status !== 'success') {
       console.log(`[${traceId}] Payment not successful, skipping`);
-      recordPaymentEvent('paychangu', payload.type || 'unknown', 'failed');
+      recordPaymentEvent('paychangu', payload.type || 'unknown', 'failed', {
+        traceId,
+        reference: tx_ref,
+        chargeId: charge_id,
+        gatewayStatus: status,
+      });
       return;
     }
 
@@ -169,7 +207,12 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 
     if (verifyResponse.data.data?.status !== 'success') {
       console.log(`[${traceId}] Verification failed`);
-      recordPaymentEvent('paychangu', payload.type || 'unknown', 'failed');
+      recordPaymentEvent('paychangu', payload.type || 'unknown', 'failed', {
+        traceId,
+        reference: tx_ref,
+        chargeId: charge_id,
+        gatewayStatus: verifyResponse.data.data?.status,
+      });
       return;
     }
 
@@ -189,7 +232,9 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
     } else if (pendingTx.type === 'donation') {
       await processPaychanguDonation(pendingTx, metadata, payload, traceId);
     }
-    recordPaymentEvent('paychangu', pendingTx.type, 'completed');
+    recordPaymentEvent('paychangu', pendingTx.type, 'completed', paychanguPaymentLogMeta(traceId, pendingTx, metadata, payload, {
+      verifiedStatus: verifyResponse.data.data?.status,
+    }));
 
     // Successful payments now live in payments/transactions with full payloads.
     // Remove the pending attempt so this table only shows pending, expired, or failed/stuck attempts.

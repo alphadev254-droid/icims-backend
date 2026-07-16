@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { NextFunction, Request, Response } from 'express';
-import { logger, maskEmail } from '../utils/logger';
+import { displayName, logger, maskEmail } from '../utils/logger';
 
 declare global {
   namespace Express {
@@ -56,6 +56,9 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       ip: getClientIp(req),
       userAgent: req.get('user-agent'),
       userId: user?.userId,
+      userName: user?.userName || displayName(user?.firstName, user?.lastName),
+      firstName: user?.firstName,
+      lastName: user?.lastName,
       email: maskEmail(user?.email),
       role: user?.role,
       churchId: user?.churchId,

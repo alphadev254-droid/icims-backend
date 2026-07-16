@@ -5,11 +5,34 @@ import axios from 'axios';
 import { getPaymentGateway, getCurrency, getGatewayCountry } from '../utils/gatewayRouter';
 import { calculatePaymentFees } from '../utils/feeCalculations';
 import { recordPaymentEvent } from '../middleware/metrics';
+import { displayName, maskEmail, maskPhone } from '../utils/logger';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
 const BACKEND_URL = process.env.BACKEND_URL!;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
+
+function ticketPaymentLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
+  return {
+    traceId,
+    pendingTransactionId: pendingTx?.id,
+    reference: pendingTx?.reference,
+    eventId: metadata.eventId ?? pendingTx?.eventId,
+    eventTitle: metadata.eventTitle,
+    churchId: pendingTx?.churchId,
+    userId: metadata.userId ?? pendingTx?.userId,
+    userName: metadata.userName,
+    isGuest: metadata.isGuest === true,
+    guestName: metadata.guestName,
+    guestEmail: maskEmail(metadata.guestEmail),
+    guestPhone: maskPhone(metadata.guestPhone),
+    quantity: metadata.quantity,
+    amount: metadata.baseAmount,
+    totalAmount: metadata.totalAmount ?? pendingTx?.amount,
+    currency: pendingTx?.currency,
+    ...extra,
+  };
+}
 
 const purchaseTicketSchema = z.object({
   eventId: z.string().min(1, 'Event ID required'),
@@ -99,6 +122,8 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
         traceId,
         eventId,
         eventTitle: event.title,
+        userId,
+        userName: displayName(user.firstName, user.lastName),
         quantity,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
@@ -180,7 +205,10 @@ async function initiatePaystackTicketPayment(
     });
 
     console.log(`[${traceId}] Paystack SUCCESS`);
-    recordPaymentEvent('paystack', pendingTx.type || 'event_ticket', 'initialized');
+    recordPaymentEvent('paystack', pendingTx.type || 'event_ticket', 'initialized', ticketPaymentLogMeta(traceId, pendingTx, metadata, {
+      reference: response.data.data.reference,
+      gatewayStatus: response.status,
+    }));
     res.json({
       success: true,
       data: {
@@ -194,7 +222,11 @@ async function initiatePaystackTicketPayment(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paystack', pendingTx.type || 'event_ticket', 'failed');
+    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+    recordPaymentEvent('paystack', pendingTx.type || 'event_ticket', 'failed', ticketPaymentLogMeta(traceId, pendingTx, metadata, {
+      gatewayStatus: error.response?.status,
+      errorMessage: error.message,
+    }));
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paystack error:`, error.message);
     res.status(500).json({
@@ -248,7 +280,11 @@ async function initiatePaychanguTicketPayment(
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);
-    recordPaymentEvent('paychangu', pendingTx.type || 'event_ticket', 'initialized');
+    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+    recordPaymentEvent('paychangu', pendingTx.type || 'event_ticket', 'initialized', ticketPaymentLogMeta(traceId, pendingTx, metadata, {
+      reference: tx_ref,
+      gatewayStatus: response.status,
+    }));
     res.json({
       success: true,
       data: {
@@ -262,7 +298,12 @@ async function initiatePaychanguTicketPayment(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paychangu', pendingTx.type || 'event_ticket', 'failed');
+    const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+    recordPaymentEvent('paychangu', pendingTx.type || 'event_ticket', 'failed', ticketPaymentLogMeta(traceId, pendingTx, metadata, {
+      reference: tx_ref,
+      gatewayStatus: error.response?.status,
+      errorMessage: error.message,
+    }));
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paychangu error:`, error.message);
     res.status(500).json({

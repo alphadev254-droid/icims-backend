@@ -8,6 +8,31 @@ import { queueChurchPush } from '../lib/notificationQueue';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { givingCampaignCreatedTemplate } from '../lib/emailTemplates';
 import { recordPaymentEvent } from '../middleware/metrics';
+import { maskEmail, maskPhone } from '../utils/logger';
+
+function donationLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
+  return {
+    traceId,
+    pendingTransactionId: pendingTx?.id,
+    reference: pendingTx?.reference,
+    campaignId: metadata.campaignId,
+    campaignName: metadata.campaignName,
+    churchId: pendingTx?.churchId || metadata.churchId,
+    userId: metadata.userId ?? pendingTx?.userId,
+    userName: metadata.userName,
+    isGuest: metadata.isGuest === true,
+    guestName: metadata.guestName,
+    donorName: metadata.donorName,
+    guestEmail: maskEmail(metadata.guestEmail),
+    donorEmail: maskEmail(metadata.donorEmail),
+    guestPhone: maskPhone(metadata.guestPhone),
+    donorPhone: maskPhone(metadata.donorPhone),
+    amount: metadata.baseAmount,
+    totalAmount: metadata.totalAmount ?? pendingTx?.amount,
+    currency: pendingTx?.currency,
+    ...extra,
+  };
+}
 
 const createCampaignSchema = z.object({
   churchId: z.string().optional().default(''),
@@ -1047,6 +1072,8 @@ export async function createDonation(req: Request, res: Response): Promise<void>
         traceId,
         campaignId,
         campaignName: campaign.name,
+        userId,
+        userName: req.user?.userName,
         isGuest: false,
         isAnonymous,
         donorName,
@@ -1129,6 +1156,8 @@ export async function createMultipleDonation(req: Request, res: Response): Promi
         traceId,
         campaignId: items[0].campaignId,
         campaignName: resolved.campaignMap.get(items[0].campaignId)?.name,
+        userId,
+        userName: req.user?.userName,
         items: items.map(item => ({
           campaignId: item.campaignId,
           campaignName: resolved.campaignMap.get(item.campaignId)?.name,
@@ -1175,9 +1204,9 @@ async function initiatePaystackDonation(
   const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
   const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
   const BACKEND_URL = process.env.BACKEND_URL!;
+  const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
 
   try {
-    const metadata = JSON.parse(pendingTx.metadata);
     const amountInKobo = Math.round(fees.totalAmount * 100);
     const isGuest = metadata.isGuest === true;
     const callbackUrl = isGuest
@@ -1229,14 +1258,11 @@ async function initiatePaystackDonation(
     });
 
     console.log(`[${traceId}] Paystack SUCCESS`);
-    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'initialized', {
-      traceId,
-      pendingTransactionId: pendingTx.id,
+    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'initialized', donationLogMeta(traceId, pendingTx, metadata, {
       reference: response.data.data.reference,
-      amount: fees.baseAmount,
-      totalAmount: fees.totalAmount,
       currency,
-    });
+      gatewayStatus: response.status,
+    }));
     res.json({
       success: true,
       data: {
@@ -1250,15 +1276,11 @@ async function initiatePaystackDonation(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'failed', {
-      traceId,
-      pendingTransactionId: pendingTx.id,
-      amount: fees.baseAmount,
-      totalAmount: fees.totalAmount,
+    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'failed', donationLogMeta(traceId, pendingTx, metadata, {
       currency,
       errorMessage: error.message,
       gatewayStatus: error.response?.status,
-    });
+    }));
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paystack error:`, error.message);
     res.status(500).json({
@@ -1282,9 +1304,9 @@ async function initiatePaychanguDonation(
   const BACKEND_URL = process.env.BACKEND_URL!;
   const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
   const tx_ref = `DON-${Date.now()}`;
+  const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
 
   try {
-    const metadata = JSON.parse(pendingTx.metadata);
     const isGuest = metadata.isGuest === true;
     const returnUrl = isGuest
       ? `${FRONTEND_URL}/payment/callback?status=success&type=donation&isGuest=true&reference=${tx_ref}&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=MWK`
@@ -1320,14 +1342,11 @@ async function initiatePaychanguDonation(
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);
-    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'initialized', {
-      traceId,
-      pendingTransactionId: pendingTx.id,
+    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'initialized', donationLogMeta(traceId, pendingTx, metadata, {
       reference: tx_ref,
-      amount: fees.baseAmount,
-      totalAmount: fees.totalAmount,
       currency: 'MWK',
-    });
+      gatewayStatus: response.status,
+    }));
     res.json({
       success: true,
       data: {
@@ -1341,16 +1360,12 @@ async function initiatePaychanguDonation(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'failed', {
-      traceId,
-      pendingTransactionId: pendingTx.id,
+    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'failed', donationLogMeta(traceId, pendingTx, metadata, {
       reference: tx_ref,
-      amount: fees.baseAmount,
-      totalAmount: fees.totalAmount,
       currency: 'MWK',
       errorMessage: error.message,
       gatewayStatus: error.response?.status,
-    });
+    }));
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paychangu error:`, error.message);
     res.status(500).json({

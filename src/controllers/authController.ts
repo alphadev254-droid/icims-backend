@@ -6,7 +6,7 @@ import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
 import { createSubdomain, toSlug } from '../lib/cloudflareDns';
 import { recordLoginAttempt } from '../middleware/metrics';
-import { maskEmail } from '../utils/logger';
+import { displayName, maskEmail } from '../utils/logger';
 import type { UserRole } from '../types';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -228,6 +228,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     email: maskEmail(email),
     ip: req.ip,
     userId: user?.id,
+    userName: displayName(user?.firstName, user?.lastName),
     role: user?.role?.name,
     churchId: user?.churchId,
     accountCountry: user?.accountCountry,
@@ -275,6 +276,9 @@ export async function login(req: Request, res: Response): Promise<void> {
   const token = signToken({
     userId: userWithPackage.id,
     email: userWithPackage.email,
+    firstName: userWithPackage.firstName,
+    lastName: userWithPackage.lastName,
+    userName: displayName(userWithPackage.firstName, userWithPackage.lastName),
     role: (userWithPackage.role?.name || 'member') as UserRole,
     churchId: userWithPackage.churchId,
     permissions,

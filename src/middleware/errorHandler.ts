@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { logger, maskEmail } from '../utils/logger';
+import { displayName, logger, maskEmail } from '../utils/logger';
 
 export function errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
   logger.error('unhandled_error', {
@@ -8,6 +8,9 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
     path: _req.path,
     originalUrl: _req.originalUrl,
     userId: _req.user?.userId,
+    userName: _req.user?.userName || displayName(_req.user?.firstName, _req.user?.lastName),
+    firstName: _req.user?.firstName,
+    lastName: _req.user?.lastName,
     email: maskEmail(_req.user?.email),
     role: _req.user?.role,
     churchId: _req.user?.churchId,

@@ -29,6 +29,14 @@ export function maskToken(token?: string | null) {
   return maskMiddle(token, 6, 4);
 }
 
+export function displayName(firstName?: string | null, lastName?: string | null) {
+  const name = [firstName, lastName]
+    .map(part => part?.trim())
+    .filter(Boolean)
+    .join(' ');
+  return name || undefined;
+}
+
 function cleanValue(value: unknown): unknown {
   if (value instanceof Error) {
     return {
