@@ -10,6 +10,7 @@ import axios from 'axios';
 import { queueEmail } from '../lib/emailQueue';
 import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate, withdrawalOtpTemplate } from '../lib/emailTemplates';
 import { recordWithdrawalEvent } from '../middleware/metrics';
+import { maskPhone } from '../utils/logger';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 
@@ -658,7 +659,21 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
       initiatedBy: userId,
     } as any
   });
-  recordWithdrawalEvent(method, 'requested', 'ministry');
+  recordWithdrawalEvent(method, 'requested', 'ministry', {
+    requestId: req.requestId,
+    withdrawalId: withdrawal.id,
+    walletId: selectedWallet.id,
+    ministryAdminId: userId,
+    amount: fees.amount,
+    totalDebited: fees.netAmount,
+    payoutAmount: fees.payoutAmount,
+    fee: fees.fee,
+    gatewayFeeAmount: fees.gatewayFeeAmount,
+    systemFeeAmount: fees.systemFeeAmount,
+    currency: selectedWallet.currency,
+    mobileOperator,
+    mobileNumber: maskPhone(mobileNumber),
+  });
 
   console.log('Withdrawal created:', withdrawal.id);
 
@@ -921,7 +936,16 @@ async function processPaychanguPayout(withdrawal: any) {
         } as any,
       });
 
-      recordWithdrawalEvent(withdrawal.method, normalizedStatus === 'completed' ? 'completed' : normalizedStatus === 'failed' ? 'failed' : 'processing', 'ministry');
+      recordWithdrawalEvent(withdrawal.method, normalizedStatus === 'completed' ? 'completed' : normalizedStatus === 'failed' ? 'failed' : 'processing', 'ministry', {
+        withdrawalId: withdrawal.id,
+        chargeId,
+        amount: withdrawal.amount,
+        payoutAmount: withdrawal.payoutAmount,
+        totalDebited: withdrawal.netAmount,
+        gatewayStatus: response.status,
+        mobileOperator: withdrawal.mobileOperator,
+        mobileNumber: maskPhone(withdrawal.mobileNumber),
+      });
 
       if (normalizedStatus === 'failed') {
         throw new Error(response.data?.message || 'Mobile payout failed');
@@ -1025,7 +1049,16 @@ async function processPaychanguPayout(withdrawal: any) {
       } as any,
     });
 
-    recordWithdrawalEvent(withdrawal.method, 'processing', 'ministry');
+    recordWithdrawalEvent(withdrawal.method, 'processing', 'ministry', {
+      withdrawalId: withdrawal.id,
+      chargeId: `PAYOUT-${withdrawal.id}`,
+      amount: withdrawal.amount,
+      payoutAmount: withdrawal.payoutAmount,
+      totalDebited: withdrawal.netAmount,
+      gatewayStatus: response.status,
+      mobileOperator: withdrawal.mobileOperator,
+      mobileNumber: maskPhone(withdrawal.mobileNumber),
+    });
     console.log('✅ Withdrawal status updated to processing');
   } catch (error: any) {
     // Re-throw error to be caught by requestWithdrawal
@@ -1057,7 +1090,17 @@ async function processPaychanguPayout(withdrawal: any) {
       } as any
     });
 
-    recordWithdrawalEvent(withdrawal.method, 'failed', 'ministry');
+    recordWithdrawalEvent(withdrawal.method, 'failed', 'ministry', {
+      withdrawalId: withdrawal.id,
+      chargeId: withdrawal.chargeId || `PAYOUT-${withdrawal.id}`,
+      amount: withdrawal.amount,
+      payoutAmount: withdrawal.payoutAmount,
+      totalDebited: withdrawal.netAmount,
+      gatewayStatus: error.response?.status,
+      errorMessage: error.message,
+      mobileOperator: withdrawal.mobileOperator,
+      mobileNumber: maskPhone(withdrawal.mobileNumber),
+    });
     console.log('✅ Withdrawal status updated to failed');
     
     throw new Error(failureReason);

@@ -37,6 +37,7 @@ import childrenRoutes from './routes/children';
 import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/sharedAccessRoutes';
 import { errorHandler } from './middleware/errorHandler';
 import { metricsHandler, metricsMiddleware } from './middleware/metrics';
+import { requestLogger } from './middleware/requestLogger';
 
 declare global {
   namespace Express {
@@ -47,6 +48,8 @@ declare global {
 }
 
 const app = express();
+
+app.use(requestLogger);
 
 // ─── CORS — allow frontend origin with credentials ─────────────────────────
 app.use(cors({

@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import client from 'prom-client';
+import { logger } from '../utils/logger';
 
 const register = new client.Registry();
 
@@ -52,23 +53,42 @@ register.registerMetric(authLoginAttemptsTotal);
 register.registerMetric(paymentEventsTotal);
 register.registerMetric(withdrawalEventsTotal);
 
-export function recordLoginAttempt(status: 'success' | 'failed', reason = 'none') {
+type LifecycleLogMeta = Record<string, unknown>;
+
+export function recordLoginAttempt(status: 'success' | 'failed', reason = 'none', meta: LifecycleLogMeta = {}) {
   authLoginAttemptsTotal.inc({ status, reason });
+  logger[status === 'success' ? 'info' : 'warn']('auth_login_attempt', {
+    status,
+    reason,
+    ...meta,
+  });
 }
 
-export function recordPaymentEvent(gateway: string | null | undefined, type: string | null | undefined, status: 'initialized' | 'completed' | 'failed') {
+export function recordPaymentEvent(gateway: string | null | undefined, type: string | null | undefined, status: 'initialized' | 'completed' | 'failed', meta: LifecycleLogMeta = {}) {
   paymentEventsTotal.inc({
     gateway: gateway || 'unknown',
     type: type || 'unknown',
     status,
   });
+  logger[status === 'failed' ? 'error' : 'info']('payment_event', {
+    gateway: gateway || 'unknown',
+    type: type || 'unknown',
+    status,
+    ...meta,
+  });
 }
 
-export function recordWithdrawalEvent(method: string | null | undefined, status: 'requested' | 'processing' | 'completed' | 'failed', scope = 'ministry') {
+export function recordWithdrawalEvent(method: string | null | undefined, status: 'requested' | 'processing' | 'completed' | 'failed', scope = 'ministry', meta: LifecycleLogMeta = {}) {
   withdrawalEventsTotal.inc({
     method: method || 'unknown',
     status,
     scope,
+  });
+  logger[status === 'failed' ? 'error' : 'info']('withdrawal_event', {
+    method: method || 'unknown',
+    status,
+    scope,
+    ...meta,
   });
 }
 

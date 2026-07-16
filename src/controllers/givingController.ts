@@ -1229,7 +1229,14 @@ async function initiatePaystackDonation(
     });
 
     console.log(`[${traceId}] Paystack SUCCESS`);
-    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'initialized');
+    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'initialized', {
+      traceId,
+      pendingTransactionId: pendingTx.id,
+      reference: response.data.data.reference,
+      amount: fees.baseAmount,
+      totalAmount: fees.totalAmount,
+      currency,
+    });
     res.json({
       success: true,
       data: {
@@ -1243,7 +1250,15 @@ async function initiatePaystackDonation(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'failed');
+    recordPaymentEvent('paystack', pendingTx.type || 'donation', 'failed', {
+      traceId,
+      pendingTransactionId: pendingTx.id,
+      amount: fees.baseAmount,
+      totalAmount: fees.totalAmount,
+      currency,
+      errorMessage: error.message,
+      gatewayStatus: error.response?.status,
+    });
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paystack error:`, error.message);
     res.status(500).json({
@@ -1305,7 +1320,14 @@ async function initiatePaychanguDonation(
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);
-    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'initialized');
+    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'initialized', {
+      traceId,
+      pendingTransactionId: pendingTx.id,
+      reference: tx_ref,
+      amount: fees.baseAmount,
+      totalAmount: fees.totalAmount,
+      currency: 'MWK',
+    });
     res.json({
       success: true,
       data: {
@@ -1319,7 +1341,16 @@ async function initiatePaychanguDonation(
       },
     });
   } catch (error: any) {
-    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'failed');
+    recordPaymentEvent('paychangu', pendingTx.type || 'donation', 'failed', {
+      traceId,
+      pendingTransactionId: pendingTx.id,
+      reference: tx_ref,
+      amount: fees.baseAmount,
+      totalAmount: fees.totalAmount,
+      currency: 'MWK',
+      errorMessage: error.message,
+      gatewayStatus: error.response?.status,
+    });
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
     console.error(`[${traceId}] Paychangu error:`, error.message);
     res.status(500).json({
