@@ -15,7 +15,10 @@ export function maskEmail(email?: string | null) {
   if (!email) return undefined;
   const [local, domain] = email.trim().toLowerCase().split('@');
   if (!local || !domain) return maskMiddle(email, 2, 2);
-  return `${maskMiddle(local, 2, 1)}@${domain}`;
+  if (local.length <= 3) return `${maskMiddle(local, 1, 0)}@${domain}`;
+  const maskLength = Math.min(3, Math.max(1, local.length - 2));
+  const start = Math.floor((local.length - maskLength) / 2);
+  return `${local.slice(0, start)}${'*'.repeat(maskLength)}${local.slice(start + maskLength)}@${domain}`;
 }
 
 export function maskPhone(phone?: string | null) {
