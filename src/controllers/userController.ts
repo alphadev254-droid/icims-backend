@@ -129,7 +129,10 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const filterRole    = req.query.role      as string | undefined;
   const filterRoleId  = req.query.roleId    as string | undefined;
   const filterCellId  = req.query.cellId    as string | undefined;
-  const filterStatus  = req.query.status    as string | undefined;
+  const requestedStatus = (req.query.status as string | undefined)?.trim();
+  const filterStatus = requestedStatus && ['active', 'inactive', 'cancelled', 'all'].includes(requestedStatus)
+    ? requestedStatus
+    : 'active';
   const filterTeamId  = req.query.teamId    as string | undefined;
   const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
@@ -204,7 +207,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     andConditions.push({ cellMemberships: { some: { cellId: filterCellId, status: { not: 'inactive' } } } });
   }
 
-  if (filterStatus) andConditions.push({ status: filterStatus });
+  if (filterStatus !== 'all') andConditions.push({ status: filterStatus });
   if (filterTeamId) andConditions.push({ teams: { some: { teamId: filterTeamId } } });
 
   // Search: scoped with AND so it narrows within the ministry, never widens
@@ -280,7 +283,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
 
   const scopedChurches = roleScopeChurchIds.size > 0
     ? await prisma.church.findMany({
-        where: { id: { in: Array.from(roleScopeChurchIds) } },
+        where: { id: { in: Array.from(roleScopeChurchIds) }, status: 'active' },
         select: { id: true, name: true },
       })
     : [];
@@ -562,7 +565,7 @@ const updateUserSchema = z.object({
   residentialNeighbourhood: z.string().optional(),
   serviceInterest: z.string().optional(),
   baptizedByImmersion: z.boolean().optional(),
-  status: z.enum(['active', 'inactive']).optional(),
+  status: z.enum(['active', 'inactive', 'cancelled']).optional(),
 });
 
 export async function updateUser(req: Request, res: Response): Promise<void> {
@@ -674,8 +677,18 @@ export async function deleteUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  await prisma.user.delete({ where: { id: String(req.params.id) } });
-  res.json({ success: true, message: 'User deleted' });
+  await prisma.$transaction([
+    prisma.deviceToken.deleteMany({ where: { userId: target.id } }),
+    prisma.user.update({
+      where: { id: target.id },
+      data: {
+        status: 'cancelled',
+        loginEnabled: false,
+      },
+    }),
+  ]);
+
+  res.json({ success: true, message: 'User cancelled' });
 }
 
 // ─── POST /api/users/bulk — bulk create users ────────────────────────────────

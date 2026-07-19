@@ -38,7 +38,7 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
     recentRegistrations, recentPayments,
   ] = await Promise.all([
     prisma.user.count(),
-    prisma.church.count(),
+    prisma.church.count({ where: { status: 'active' } }),
     prisma.user.count({ where: { roleId: ministryAdminRole?.id } }),
     prisma.user.count({ where: { roleId: memberRole?.id } }),
     prisma.user.count({ where: { accountCountry: 'Malawi' } }),
@@ -431,7 +431,7 @@ const updateUserSchema = z.object({
   lastName: z.string().min(1).optional(),
   email: z.string().email().optional(),
   phone: z.string().nullable().optional(),
-  status: z.enum(['active', 'suspended', 'inactive']).optional(),
+  status: z.enum(['active', 'suspended', 'inactive', 'cancelled']).optional(),
   accountCountry: z.enum(['Malawi', 'Kenya']).nullable().optional(),
   title: z.string().nullable().optional(),
   titleOther: z.string().nullable().optional(),
@@ -560,8 +560,17 @@ export async function deleteAdminUser(req: Request, res: Response): Promise<void
     res.status(403).json({ success: false, message: 'Cannot delete a system admin' }); return;
   }
 
-  await prisma.user.delete({ where: { id } });
-  res.json({ success: true, message: 'User deleted successfully' });
+  await prisma.$transaction([
+    prisma.deviceToken.deleteMany({ where: { userId: id } }),
+    prisma.user.update({
+      where: { id },
+      data: {
+        status: 'cancelled',
+        loginEnabled: false,
+      },
+    }),
+  ]);
+  res.json({ success: true, message: 'User cancelled successfully' });
 }
 
 // ─── POST /api/admin/users/:id/reset-password ─────────────────────────────────
@@ -742,20 +751,61 @@ export async function deleteAdminChurch(req: Request, res: Response): Promise<vo
   const church = await prisma.church.findUnique({ where: { id }, select: { id: true } });
   if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.event.deleteMany({ where: { churchId: id } });
-    await tx.givingCampaign.deleteMany({ where: { churchId: id } });
-    await tx.donationTransaction.deleteMany({ where: { churchId: id } });
-    await tx.attendance.deleteMany({ where: { churchId: id } });
-    await tx.meeting.deleteMany({ where: { churchId: id } });
-    await tx.announcement.deleteMany({ where: { churchId: id } });
-    await tx.resource.deleteMany({ where: { churchId: id } });
-    await tx.transaction.deleteMany({ where: { churchId: id } });
-    await tx.user.updateMany({ where: { churchId: id }, data: { churchId: null } });
-    await tx.church.delete({ where: { id } });
+  const result = await prisma.$transaction(async (tx) => {
+    const campaigns = await tx.givingCampaign.findMany({
+      where: { churchId: id, status: { not: 'cancelled' } },
+      select: {
+        id: true,
+        scopeType: true,
+        linkedChurches: {
+          select: {
+            churchId: true,
+            church: { select: { status: true } },
+          },
+        },
+      },
+    });
+
+    const campaignIdsToCancel = campaigns
+      .filter(campaign => {
+        if (campaign.scopeType === 'one_church') return true;
+
+        const hasOtherActiveChurch = campaign.linkedChurches.some(link =>
+          link.churchId !== id && link.church?.status === 'active'
+        );
+
+        return !hasOtherActiveChurch;
+      })
+      .map(campaign => campaign.id);
+
+    const [events, campaignsCancelled] = await Promise.all([
+      tx.event.updateMany({
+        where: { churchId: id, status: { not: 'cancelled' } },
+        data: { status: 'cancelled' },
+      }),
+      campaignIdsToCancel.length > 0
+        ? tx.givingCampaign.updateMany({
+            where: { id: { in: campaignIdsToCancel } },
+            data: { status: 'cancelled' },
+          })
+        : Promise.resolve({ count: 0 }),
+    ]);
+
+    await tx.church.update({
+      where: { id },
+      data: {
+        status: 'cancelled',
+        inviteToken: null,
+      },
+    });
+
+    return {
+      eventsCancelled: events.count,
+      campaignsCancelled: campaignsCancelled.count,
+    };
   });
 
-  res.json({ success: true, message: 'Church deleted successfully' });
+  res.json({ success: true, message: 'Church cancelled successfully', data: result });
 }
 
 // ─── PUT /api/admin/church-users/:id ──────────────────────────────────────────

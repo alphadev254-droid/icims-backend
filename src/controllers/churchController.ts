@@ -5,18 +5,21 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
-async function resolveAccessibleChurchIds(req: Request): Promise<string[]> {
+async function resolveAccessibleChurchIds(req: Request, status: 'active' | 'cancelled' | 'all' = 'active'): Promise<string[]> {
   const role = req.user?.role ?? 'member';
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
+  const statusWhere = status === 'all' ? {} : { status };
 
   if (role === 'ministry_admin' && userId) {
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, ...statusWhere },
       select: { id: true },
     });
     return churches.map(c => c.id);
   }
+
+  if (status !== 'active') return [];
 
   return getAccessibleChurchIds(
     role,
@@ -29,12 +32,15 @@ async function resolveAccessibleChurchIds(req: Request): Promise<string[]> {
 }
 
 export async function getChurches(req: Request, res: Response): Promise<void> {
-  const churchIds = await resolveAccessibleChurchIds(req);
+  const rawStatus = String(req.query.status || 'active');
+  const status = rawStatus === 'cancelled' || rawStatus === 'all' ? rawStatus : 'active';
+  const churchIds = await resolveAccessibleChurchIds(req, status);
+  const statusWhere = status === 'all' ? {} : { status };
 
   const memberRole = await prisma.role.findUnique({ where: { name: 'member' }, select: { id: true } });
   
   const allChurches = await prisma.church.findMany({
-    where: { id: { in: churchIds } },
+    where: { id: { in: churchIds }, ...statusWhere },
     orderBy: { name: 'asc' },
   });
   
@@ -57,7 +63,7 @@ export async function getChurchSelect(req: Request, res: Response): Promise<void
   }
 
   const churches = await prisma.church.findMany({
-    where: { id: { in: churchIds } },
+    where: { id: { in: churchIds }, status: 'active' },
     select: {
       id: true,
       name: true,
@@ -81,7 +87,7 @@ export async function getChurch(req: Request, res: Response): Promise<void> {
   const church = await prisma.church.findUnique({
     where: { id: String(req.params.id) },
   });
-  if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
+  if (!church || church.status !== 'active') { res.status(404).json({ success: false, message: 'Church not found' }); return; }
   
   const memberCount = await prisma.user.count({
     where: { churchId: church.id, roleId: memberRole?.id }
@@ -138,7 +144,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
 
   const adminUser = await prisma.user.findUnique({
     where: { id: adminUserId },
-    include: { ownedChurches: true }
+    include: { ownedChurches: { where: { status: 'active' } } }
   });
 
   if (!adminUser) {
@@ -227,7 +233,7 @@ export async function updateChurch(req: Request, res: Response): Promise<void> {
   }
 
   const church = await prisma.church.findUnique({ where: { id: String(req.params.id) } });
-  if (!church) { 
+  if (!church || church.status !== 'active') { 
     res.status(404).json({ success: false, message: 'Church not found' }); 
     return; 
   }
@@ -307,8 +313,8 @@ export async function getChurchByInvite(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const church = await prisma.church.findUnique({
-    where: { inviteToken },
+  const church = await prisma.church.findFirst({
+    where: { inviteToken, status: 'active' },
     select: { id: true, name: true, location: true, logoUrl: true }
   });
 
@@ -333,7 +339,7 @@ export async function generateInviteLink(req: Request, res: Response): Promise<v
   }
 
   const church = await prisma.church.findUnique({ where: { id: String(req.params.id) } });
-  if (!church) { 
+  if (!church || church.status !== 'active') { 
     res.status(404).json({ success: false, message: 'Church not found' }); 
     return; 
   }
@@ -378,7 +384,7 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
   }
 
   const church = await prisma.church.findUnique({ where: { id: String(req.params.id) } });
-  if (!church) { 
+  if (!church || church.status !== 'active') { 
     res.status(404).json({ success: false, message: 'Church not found' }); 
     return; 
   }
@@ -413,35 +419,15 @@ export async function deleteChurch(req: Request, res: Response): Promise<void> {
     return; 
   }
 
-  // Delete logo file if exists
-  if (church.logoUrl) {
-    const logoPath = path.join(process.cwd(), church.logoUrl.replace(/^\//, ''));
-    if (fs.existsSync(logoPath)) fs.unlinkSync(logoPath);
-  }
-
-  // Delete related records first to avoid foreign key constraint violations
   await prisma.$transaction(async (tx) => {
-    // Delete all related records
-    await tx.event.deleteMany({ where: { churchId: church.id } });
-    await tx.givingCampaign.deleteMany({ where: { churchId: church.id } });
-    await tx.donationTransaction.deleteMany({ where: { churchId: church.id } });
-    await tx.attendance.deleteMany({ where: { churchId: church.id } });
-    await tx.meeting.deleteMany({ where: { churchId: church.id } });
-    await tx.announcement.deleteMany({ where: { churchId: church.id } });
-    await tx.resource.deleteMany({ where: { churchId: church.id } });
-    // Payment model uses ministryAdminId, not churchId
-    await tx.payment.deleteMany({ where: { ministryAdminId: church.ministryAdminId || undefined } });
-    await tx.transaction.deleteMany({ where: { churchId: church.id } });
-    
-    // Update users to remove church association (but don't delete the users)
-    await tx.user.updateMany({ 
-      where: { churchId: church.id }, 
-      data: { churchId: null } 
+    await tx.church.update({
+      where: { id: church.id },
+      data: {
+        status: 'cancelled',
+        inviteToken: null,
+      },
     });
-    
-    // Finally delete the church
-    await tx.church.delete({ where: { id: church.id } });
   });
   
-  res.json({ success: true, message: 'Church deleted successfully' });
+  res.json({ success: true, message: 'Church cancelled successfully' });
 }

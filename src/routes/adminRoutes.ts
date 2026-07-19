@@ -94,6 +94,7 @@ router.get('/all-churches', async (req, res) => {
   const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
   const skip = (page - 1) * limit;
   const where: any = {
+    status: 'active',
     ...(ministry ? { ministryAdminId: ministry } : {}),
     ...(q ? {
       OR: [

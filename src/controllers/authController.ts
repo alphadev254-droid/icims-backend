@@ -251,6 +251,11 @@ export async function login(req: Request, res: Response): Promise<void> {
     res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
     return;
   }
+  if (user.status === 'cancelled') {
+    recordLoginAttempt('failed', 'cancelled', loginLogMeta);
+    res.status(403).json({ success: false, message: 'This account has been cancelled. Please contact support.' });
+    return;
+  }
   if (user.loginEnabled === false) {
     recordLoginAttempt('failed', 'login_disabled', loginLogMeta);
     res.status(403).json({ success: false, message: 'This account does not have login access.' });
@@ -657,6 +662,10 @@ export async function getMe(req: Request, res: Response): Promise<void> {
 
   if (user.status === 'inactive') {
     res.status(403).json({ success: false, message: 'Your account is inactive. Please contact support.' });
+    return;
+  }
+  if (user.status === 'cancelled') {
+    res.status(403).json({ success: false, message: 'This account has been cancelled. Please contact support.' });
     return;
   }
   if (user.loginEnabled === false) {

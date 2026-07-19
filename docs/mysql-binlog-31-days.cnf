@@ -1,0 +1,38 @@
+# ICIMS MySQL binary log configuration.
+# Add these under the [mysqld] section of the active MySQL config.
+#
+# For XAMPP this is usually:
+#   /opt/lampp/etc/my.cnf
+#
+# Then restart MySQL:
+#   /opt/lampp/lampp restartmysql
+#
+# Verify:
+#   /opt/lampp/bin/mysql -u root -p -h 127.0.0.1 -P 3306 -e "
+#   SHOW VARIABLES LIKE 'log_bin';
+#   SHOW VARIABLES LIKE 'binlog_format';
+#   SHOW VARIABLES LIKE 'binlog_row_image';
+#   SHOW VARIABLES LIKE 'binlog_expire_logs_seconds';
+#   SHOW BINARY LOGS;
+#   "
+
+[mysqld]
+server-id=1
+
+# Keep binary logs in the MySQL data directory. Ensure this directory has space.
+log_bin=/opt/lampp/var/mysql/mysql-bin
+
+# Safer recovery format: stores row-level changes instead of just SQL statements.
+binlog_format=ROW
+
+# Stores full before/after row images for better inspection and reverse recovery.
+binlog_row_image=FULL
+
+# 31 days = 31 * 24 * 60 * 60
+binlog_expire_logs_seconds=2678400
+
+# Rotate binlog files before they become too large.
+max_binlog_size=256M
+
+# Safer durability for financial/member data. This can add a little write overhead.
+sync_binlog=1

@@ -194,6 +194,7 @@ model Church {
   memberCount          Int      @default(0)
   yearFounded          Int?
   branchCode           String?  @unique
+  status               String   @default("active")
   ministryAdminId      String?
   latitude             Float?
   longitude            Float?
@@ -223,6 +224,8 @@ model Church {
   sharedAccessLinks SharedAccessLink[]
   children      Child[]
 
+  @@index([ministryAdminId, status])
+  @@index([status])
   @@map("churches")
 }
 

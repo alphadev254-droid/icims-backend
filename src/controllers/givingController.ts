@@ -198,7 +198,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
     ministryAdminId = u?.ministryAdminId ?? null;
   }
   if (ministryAdminId) {
-    const churches = await prisma.church.findMany({ where: { ministryAdminId }, select: { id: true } });
+    const churches = await prisma.church.findMany({ where: { ministryAdminId, status: 'active' }, select: { id: true } });
     const churchIds = churches.map((c: { id: string }) => c.id);
     const currentCampaigns = await prisma.givingCampaign.count({ where: { churchId: { in: churchIds }, status: 'active' } });
     const limitCheck = await checkLimit(ministryAdminId, 'max_givings', currentCampaigns);
@@ -309,8 +309,9 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
     scopedChurchIds = [filterChurchId];
   }
 
-  // Members always see only active campaigns — ignore any status query param
-  const statusFilter = roleName === 'member' ? 'active' : (status ? String(status) : undefined);
+  // Default to active campaigns. Admins can explicitly request status=all.
+  const requestedStatus = typeof status === 'string' ? status : undefined;
+  const statusFilter = requestedStatus && requestedStatus !== 'all' ? requestedStatus : 'active';
 
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
@@ -332,25 +333,29 @@ export async function getCampaigns(req: Request, res: Response): Promise<void> {
   }
 
   const campaignIds = campaigns.map(c => c.id);
+  const completedDonationScope = {
+    campaignId: { in: campaignIds },
+    churchId: { in: scopedChurchIds },
+    status: 'completed',
+  };
 
  const [raisedStats, memberDonorStats, guestDonorStats] = await Promise.all([
   // Total raised per campaign
   prisma.donationTransaction.groupBy({
     by: ['campaignId'],
-    where: { campaignId: { in: campaignIds }, status: 'completed' },
+    where: completedDonationScope,
     _sum: { amount: true },
   }),
   // Unique MEMBER donors (distinct userId)
   prisma.donationTransaction.findMany({
-    where: { campaignId: { in: campaignIds }, status: 'completed', userId: { not: null } },
+    where: { ...completedDonationScope, userId: { not: null } },
     select: { campaignId: true, userId: true },
     distinct: ['campaignId', 'userId'],
   }),
   // Unique GUEST donors (distinct by guestEmail per campaign)
   prisma.donationTransaction.findMany({
     where: { 
-      campaignId: { in: campaignIds }, 
-      status: 'completed', 
+      ...completedDonationScope,
       userId: null,
       guestEmail: { not: null },
     },
@@ -431,7 +436,8 @@ export async function getCampaignSelect(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const statusFilter = roleName === 'member' ? 'active' : status;
+  // Default to active campaigns. Admins can explicitly request status=all.
+  const statusFilter = status && status !== 'all' ? status : 'active';
 
   const campaigns = await prisma.givingCampaign.findMany({
     where: {
@@ -565,6 +571,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
   const userId = req.user?.userId;
   const roleName = req.user?.role;
+  const filterChurchId = req.query.churchId as string | undefined;
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
     req.user?.churchId,
@@ -594,24 +601,40 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  let statChurchIds = scopedCampaignChurchIds;
+  if (filterChurchId) {
+    if (!scopedCampaignChurchIds.includes(filterChurchId)) {
+      res.status(403).json({ success: false, message: 'Access denied for selected church' });
+      return;
+    }
+    statChurchIds = [filterChurchId];
+  }
+
   const stats = await prisma.donationTransaction.aggregate({
-    where: { campaignId: String(id), status: 'completed' },
+    where: { campaignId: String(id), churchId: { in: statChurchIds }, status: 'completed' },
     _sum: { amount: true },
   });
 
-  // Count unique donors
-  const uniqueDonors = await prisma.donationTransaction.findMany({
-    where: { campaignId: String(id), status: 'completed' },
-    select: { userId: true },
-    distinct: ['userId'],
-  });
+  const [uniqueMemberDonors, uniqueGuestDonors] = await Promise.all([
+    prisma.donationTransaction.findMany({
+      where: { campaignId: String(id), churchId: { in: statChurchIds }, status: 'completed', userId: { not: null } },
+      select: { userId: true },
+      distinct: ['userId'],
+    }),
+    prisma.donationTransaction.findMany({
+      where: { campaignId: String(id), churchId: { in: statChurchIds }, status: 'completed', userId: null, guestEmail: { not: null } },
+      select: { guestEmail: true },
+      distinct: ['guestEmail'],
+    }),
+  ]);
 
   res.json({
     success: true,
     data: {
       ...decorateCampaignAvailability(campaign, scopedCampaignChurchIds),
       totalRaised: stats._sum?.amount || 0,
-      donorCount: uniqueDonors.length,
+      donorCount: uniqueMemberDonors.length + uniqueGuestDonors.length,
+      selectedChurchId: filterChurchId || null,
     },
   });
 }
@@ -752,9 +775,12 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  await prisma.givingCampaign.delete({ where: { id: String(id) } });
+  await prisma.givingCampaign.update({
+    where: { id: String(id) },
+    data: { status: 'cancelled' },
+  });
 
-  res.json({ success: true, message: 'Campaign deleted' });
+  res.json({ success: true, message: 'Campaign cancelled' });
 }
 
 export async function getDonations(req: Request, res: Response): Promise<void> {
@@ -1752,7 +1778,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
   const resolved = await resolveDonationCampaigns(
     [{ campaignId, amount, cellId }],
     false,
-    { selectedChurchId: selectedChurchId ?? null, userChurchId: memberChurchId },
+    { selectedChurchId: selectedChurchId ?? memberChurchId },
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });

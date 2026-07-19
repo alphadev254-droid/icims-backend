@@ -34,7 +34,7 @@ export async function getMembers(req: Request, res: Response): Promise<void> {
   if (role === 'ministry_admin') {
     // National admin sees members from their churches
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, status: 'active' },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -53,7 +53,8 @@ export async function getMembers(req: Request, res: Response): Promise<void> {
   const members = await prisma.user.findMany({
     where: { 
       churchId: { in: churchIds },
-      roleId: memberRole?.id
+      roleId: memberRole?.id,
+      status: { not: 'cancelled' },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -110,6 +111,16 @@ export async function updateMember(req: Request, res: Response): Promise<void> {
 }
 
 export async function deleteMember(req: Request, res: Response): Promise<void> {
-  await prisma.user.delete({ where: { id: String(req.params.id) } });
-  res.json({ success: true, message: 'Member removed' });
+  const id = String(req.params.id);
+  await prisma.$transaction([
+    prisma.deviceToken.deleteMany({ where: { userId: id } }),
+    prisma.user.update({
+      where: { id },
+      data: {
+        status: 'cancelled',
+        loginEnabled: false,
+      },
+    }),
+  ]);
+  res.json({ success: true, message: 'Member cancelled' });
 }

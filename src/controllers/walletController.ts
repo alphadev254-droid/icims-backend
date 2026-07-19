@@ -110,7 +110,7 @@ export async function getWalletBalance(req: Request, res: Response): Promise<voi
   
   if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, status: 'active' },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -166,7 +166,7 @@ export async function getWalletTransactions(req: Request, res: Response): Promis
   
   if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, status: 'active' },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -322,7 +322,7 @@ async function getWithdrawalContext(req: Request) {
   let churchIds: string[] = [];
   if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, status: 'active' },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -539,7 +539,7 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   
   if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, status: 'active' },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);
@@ -811,7 +811,7 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
   
   if (roleName === 'ministry_admin') {
     const churches = await prisma.church.findMany({
-      where: { ministryAdminId: userId },
+      where: { ministryAdminId: userId, status: 'active' },
       select: { id: true }
     });
     churchIds = churches.map(c => c.id);

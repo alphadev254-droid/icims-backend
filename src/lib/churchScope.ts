@@ -1,5 +1,7 @@
 import prisma from './prisma';
 
+const activeChurchWhere = { status: 'active' };
+
 function parseList(value?: string | null): string[] {
   if (!value) return [];
   try {
@@ -31,13 +33,13 @@ export async function getAccessibleChurchIds(
   if (roleName === 'ministry_admin') {
     if (userId) {
       const churches = await prisma.church.findMany({ 
-        where: { ministryAdminId: userId },
+        where: { ministryAdminId: userId, ...activeChurchWhere },
         select: { id: true } 
       });
       return churches.map(c => c.id);
     }
     // Fallback to all churches if no userId provided
-    const churches = await prisma.church.findMany({ select: { id: true } });
+    const churches = await prisma.church.findMany({ where: activeChurchWhere, select: { id: true } });
     return churches.map(c => c.id);
   }
 
@@ -67,7 +69,7 @@ export async function getAccessibleChurchIds(
 
     if (customRoleScope.scopeType === 'all_ministry') {
       const churches = await prisma.church.findMany({
-        where: { ministryAdminId },
+        where: { ministryAdminId, ...activeChurchWhere },
         select: { id: true },
       });
       return churches.map(c => c.id);
@@ -77,7 +79,7 @@ export async function getAccessibleChurchIds(
       const ids = parseList(customRoleScope.churchIds);
       if (ids.length === 0) return [];
       const churches = await prisma.church.findMany({
-        where: { id: { in: ids }, ministryAdminId },
+        where: { id: { in: ids }, ministryAdminId, ...activeChurchWhere },
         select: { id: true },
       });
       return churches.map(c => c.id);
@@ -87,7 +89,7 @@ export async function getAccessibleChurchIds(
       const values = parseList(customRoleScope.regions);
       if (values.length === 0) return [];
       const churches = await prisma.church.findMany({
-        where: { ministryAdminId, region: { in: values } },
+        where: { ministryAdminId, region: { in: values }, ...activeChurchWhere },
         select: { id: true },
       });
       return churches.map(c => c.id);
@@ -97,7 +99,7 @@ export async function getAccessibleChurchIds(
       const values = parseList(customRoleScope.districts);
       if (values.length === 0) return [];
       const churches = await prisma.church.findMany({
-        where: { ministryAdminId, district: { in: values } },
+        where: { ministryAdminId, district: { in: values }, ...activeChurchWhere },
         select: { id: true },
       });
       return churches.map(c => c.id);
@@ -107,7 +109,7 @@ export async function getAccessibleChurchIds(
       const values = parseList(customRoleScope.traditionalAuthorities);
       if (values.length === 0) return [];
       const churches = await prisma.church.findMany({
-        where: { ministryAdminId, traditionalAuthority: { in: values } },
+        where: { ministryAdminId, traditionalAuthority: { in: values }, ...activeChurchWhere },
         select: { id: true },
       });
       return churches.map(c => c.id);
@@ -116,12 +118,12 @@ export async function getAccessibleChurchIds(
 
   if (roleName === 'regional_admin') {
     if (!regions || regions.length === 0) return churchId ? [churchId] : [];
-    const whereClause: any = { region: { in: regions } };
+    const whereClause: any = { region: { in: regions }, ...activeChurchWhere };
     if (ministryAdminId) whereClause.ministryAdminId = ministryAdminId;
     
     if (regions.includes('__all__')) {
       const churches = await prisma.church.findMany({ 
-        where: ministryAdminId ? { ministryAdminId } : {},
+        where: ministryAdminId ? { ministryAdminId, ...activeChurchWhere } : activeChurchWhere,
         select: { id: true } 
       });
       return churches.map(c => c.id);
@@ -135,12 +137,12 @@ export async function getAccessibleChurchIds(
 
   if (roleName === 'district_admin') {
     if (!districts || districts.length === 0) return churchId ? [churchId] : [];
-    const whereClause: any = { district: { in: districts } };
+    const whereClause: any = { district: { in: districts }, ...activeChurchWhere };
     if (ministryAdminId) whereClause.ministryAdminId = ministryAdminId;
     
     if (districts.includes('__all__')) {
       const churches = await prisma.church.findMany({ 
-        where: ministryAdminId ? { ministryAdminId } : {},
+        where: ministryAdminId ? { ministryAdminId, ...activeChurchWhere } : activeChurchWhere,
         select: { id: true } 
       });
       return churches.map(c => c.id);
@@ -154,12 +156,12 @@ export async function getAccessibleChurchIds(
 
   if (roleName === 'branch_admin') {
     if (!traditionalAuthorities || traditionalAuthorities.length === 0) return churchId ? [churchId] : [];
-    const whereClause: any = { traditionalAuthority: { in: traditionalAuthorities } };
+    const whereClause: any = { traditionalAuthority: { in: traditionalAuthorities }, ...activeChurchWhere };
     if (ministryAdminId) whereClause.ministryAdminId = ministryAdminId;
     
     if (traditionalAuthorities.includes('__all__')) {
       const churches = await prisma.church.findMany({ 
-        where: ministryAdminId ? { ministryAdminId } : {},
+        where: ministryAdminId ? { ministryAdminId, ...activeChurchWhere } : activeChurchWhere,
         select: { id: true } 
       });
       return churches.map(c => c.id);
@@ -172,5 +174,7 @@ export async function getAccessibleChurchIds(
   }
 
   // member or unknown role → own church only
-  return churchId ? [churchId] : [];
+  if (!churchId) return [];
+  const church = await prisma.church.findFirst({ where: { id: churchId, ...activeChurchWhere }, select: { id: true } });
+  return church ? [church.id] : [];
 }

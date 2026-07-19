@@ -57,6 +57,10 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
   const filterChurchId = req.query.churchId as string | undefined;
+  const requestedStatus = (req.query.status as string | undefined)?.trim();
+  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'all'].includes(requestedStatus)
+    ? requestedStatus
+    : 'current';
 
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -87,7 +91,14 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   }
 
   const events = await prisma.event.findMany({
-    where: { churchId: { in: scopedChurchIds } },
+    where: {
+      churchId: { in: scopedChurchIds },
+      status: filterStatus === 'all'
+        ? undefined
+        : filterStatus === 'current'
+        ? { not: 'cancelled' }
+        : filterStatus,
+    },
     select: { id: true, title: true, date: true, time: true, churchId: true, requiresTicket: true },
     orderBy: { date: 'desc' },
     take: 500,
@@ -103,6 +114,10 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const filterChurchId = req.query.churchId as string | undefined;
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
+  const requestedStatus = (req.query.status as string | undefined)?.trim();
+  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'all'].includes(requestedStatus)
+    ? requestedStatus
+    : 'current';
   const isSimple = req.query.simple === 'true'; // lightweight dropdown mode
 
   // Pagination
@@ -141,6 +156,11 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   }
 
   const whereClause: any = { churchId: { in: scopedChurchIds } };
+  if (filterStatus === 'current') {
+    whereClause.status = { not: 'cancelled' };
+  } else if (filterStatus !== 'all') {
+    whereClause.status = filterStatus;
+  }
 
   // Apply date filters
   if (startDate) {
@@ -373,8 +393,37 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
 }
 
 export async function deleteEvent(req: Request, res: Response): Promise<void> {
-  await prisma.event.delete({ where: { id: String(req.params.id) } });
-  res.json({ success: true, message: 'Event deleted' });
+  const userId = req.user?.userId;
+  const roleName = req.user?.role ?? 'member';
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const event = await prisma.event.findUnique({ where: { id: String(req.params.id) } });
+  if (!event) {
+    res.status(404).json({ success: false, message: 'Event not found' });
+    return;
+  }
+
+  const churchIds = await getAccessibleChurchIds(
+    roleName,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+  if (!churchIds.includes(event.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  await prisma.event.update({
+    where: { id: event.id },
+    data: { status: 'cancelled' },
+  });
+  res.json({ success: true, message: 'Event cancelled' });
 }
 
 export async function bookTicket(req: Request, res: Response): Promise<void> {

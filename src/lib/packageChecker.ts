@@ -97,7 +97,7 @@ export async function checkLimit(
 // ─── Convenience helpers for resource creation checks ─────────────────────────
 
 export async function checkChurchLimit(ministryAdminId: string): Promise<{ allowed: boolean; message?: string }> {
-  const currentCount = await prisma.church.count({ where: { ministryAdminId } });
+  const currentCount = await prisma.church.count({ where: { ministryAdminId, status: 'active' } });
   const result = await checkLimit(ministryAdminId, 'max_churches', currentCount);
   return { allowed: result.allowed, message: result.message };
 }
@@ -112,7 +112,7 @@ export async function checkMemberLimit(ministryAdminId: string, churchId?: strin
 export async function checkEventLimit(ministryAdminId: string): Promise<{ allowed: boolean; message?: string }> {
   // Count events created this month
   const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0,0,0,0);
-  const churches = await prisma.church.findMany({ where: { ministryAdminId }, select: { id: true } });
+  const churches = await prisma.church.findMany({ where: { ministryAdminId, status: 'active' }, select: { id: true } });
   const churchIds = churches.map(c => c.id);
   const currentCount = await prisma.event.count({ where: { churchId: { in: churchIds }, createdAt: { gte: startOfMonth } } });
   const result = await checkLimit(ministryAdminId, 'max_events_per_month', currentCount);
@@ -120,7 +120,7 @@ export async function checkEventLimit(ministryAdminId: string): Promise<{ allowe
 }
 
 export async function checkCellLimit(ministryAdminId: string): Promise<{ allowed: boolean; message?: string }> {
-  const churches = await prisma.church.findMany({ where: { ministryAdminId }, select: { id: true } });
+  const churches = await prisma.church.findMany({ where: { ministryAdminId, status: 'active' }, select: { id: true } });
   const churchIds = churches.map(c => c.id);
   const currentCount = await prisma.cell.count({ where: { churchId: { in: churchIds } } });
   const result = await checkLimit(ministryAdminId, 'max_cells', currentCount);
