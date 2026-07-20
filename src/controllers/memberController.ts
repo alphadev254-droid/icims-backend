@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { cancelUserAccount } from '../lib/userCancellation';
 
 // Note: Member model doesn't exist in schema. This controller is currently non-functional.
 // Members are tracked via User model with role 'member'
@@ -112,15 +113,8 @@ export async function updateMember(req: Request, res: Response): Promise<void> {
 
 export async function deleteMember(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id);
-  await prisma.$transaction([
-    prisma.deviceToken.deleteMany({ where: { userId: id } }),
-    prisma.user.update({
-      where: { id },
-      data: {
-        status: 'cancelled',
-        loginEnabled: false,
-      },
-    }),
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await cancelUserAccount(tx, id);
+  });
   res.json({ success: true, message: 'Member cancelled' });
 }

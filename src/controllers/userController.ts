@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { cancelUserAccount } from '../lib/userCancellation';
 
 const USER_INCLUDE = {
   role: true,
@@ -690,11 +691,26 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
     if (!regions) updateData.regions = null;
   }
 
-  const updated = await prisma.user.update({
-    where: { id: String(req.params.id) },
-    data: updateData,
-    include: USER_INCLUDE,
-  });
+  const updated = status === 'cancelled'
+    ? await prisma.$transaction(async (tx) => {
+        const cancelled = await cancelUserAccount(tx, String(req.params.id));
+        if (!cancelled) throw new Error('User not found');
+        return tx.user.update({
+          where: { id: String(req.params.id) },
+          data: {
+            ...updateData,
+            email: cancelled.email,
+            status: 'cancelled',
+            loginEnabled: false,
+          },
+          include: USER_INCLUDE,
+        });
+      })
+    : await prisma.user.update({
+        where: { id: String(req.params.id) },
+        data: updateData,
+        include: USER_INCLUDE,
+      });
   res.json({ success: true, data: safeUser(updated) });
 }
 
@@ -726,16 +742,9 @@ export async function deleteUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  await prisma.$transaction([
-    prisma.deviceToken.deleteMany({ where: { userId: target.id } }),
-    prisma.user.update({
-      where: { id: target.id },
-      data: {
-        status: 'cancelled',
-        loginEnabled: false,
-      },
-    }),
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await cancelUserAccount(tx, target.id);
+  });
 
   res.json({ success: true, message: 'User cancelled' });
 }

@@ -16,6 +16,8 @@
     "backfill:child-users": "ts-node scripts/backfill-child-user-identities.ts",
     "recalculate:attendance": "ts-node scripts/recalculate-attendance-summaries.ts",
     "recalculate:attendance:apply": "ts-node scripts/recalculate-attendance-summaries.ts --apply",
+    "users:archive-cancelled-emails": "ts-node scripts/archive-cancelled-user-emails.ts",
+    "users:archive-cancelled-emails:apply": "ts-node scripts/archive-cancelled-user-emails.ts --apply",
     "giving:merge-duplicates": "ts-node scripts/merge-duplicate-giving-campaigns.ts",
     "giving:merge-duplicates:apply": "ts-node scripts/merge-duplicate-giving-campaigns.ts --apply",
     "db:studio": "prisma studio",

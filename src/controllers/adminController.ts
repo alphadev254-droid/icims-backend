@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
+import { cancelUserAccount } from '../lib/userCancellation';
 
 function safeUser(user: any) {
   const { password: _pw, ...rest } = user;
@@ -533,11 +534,26 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
     else if (role.name === 'member' && ministryAdminId) updateData.ministryAdminId = ministryAdminId;
   }
 
-  const updated = await prisma.user.update({
-    where: { id },
-    data: updateData,
-    include: { role: { select: { id: true, name: true, displayName: true } } },
-  });
+  const updated = parsed.data.status === 'cancelled'
+    ? await prisma.$transaction(async (tx) => {
+        const cancelled = await cancelUserAccount(tx, id);
+        if (!cancelled) throw new Error('User not found');
+        return tx.user.update({
+          where: { id },
+          data: {
+            ...updateData,
+            email: cancelled.email,
+            status: 'cancelled',
+            loginEnabled: false,
+          },
+          include: { role: { select: { id: true, name: true, displayName: true } } },
+        });
+      })
+    : await prisma.user.update({
+        where: { id },
+        data: updateData,
+        include: { role: { select: { id: true, name: true, displayName: true } } },
+      });
 
   res.json({ success: true, data: safeUser(updated) });
 }
@@ -560,16 +576,9 @@ export async function deleteAdminUser(req: Request, res: Response): Promise<void
     res.status(403).json({ success: false, message: 'Cannot delete a system admin' }); return;
   }
 
-  await prisma.$transaction([
-    prisma.deviceToken.deleteMany({ where: { userId: id } }),
-    prisma.user.update({
-      where: { id },
-      data: {
-        status: 'cancelled',
-        loginEnabled: false,
-      },
-    }),
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await cancelUserAccount(tx, id);
+  });
   res.json({ success: true, message: 'User cancelled successfully' });
 }
 
