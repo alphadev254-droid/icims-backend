@@ -40,23 +40,14 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
     return;
   }
 
-  // Parse JSON fields for role-based access
-  let districts: string[] | undefined;
-  let traditionalAuthorities: string[] | undefined;
-  let regions: string[] | undefined;
-
-  if (roleName === 'district_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { districts: true } });
-    districts = user?.districts ? JSON.parse(user.districts) : undefined;
-  } else if (roleName === 'branch_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { traditionalAuthorities: true } });
-    traditionalAuthorities = user?.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
-  } else if (roleName === 'regional_admin') {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { regions: true } });
-    regions = user?.regions ? JSON.parse(user.regions) : undefined;
-  }
-
-  const churchIds = await getAccessibleChurchIds(roleName, churchId, districts, traditionalAuthorities, regions, userId);
+  const churchIds = await getAccessibleChurchIds(
+    roleName,
+    churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
   
   const whereClause: any = { churchId: { in: churchIds } };
   

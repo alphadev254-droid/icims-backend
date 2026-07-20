@@ -10,8 +10,7 @@ const USER_INCLUDE = {
   church: true,
 } as const;
 
-const ASSIGNABLE_SYSTEM_ROLES = ['member', 'regional_admin', 'district_admin', 'branch_admin'];
-const SCOPED_SYSTEM_ROLES = ['regional_admin', 'district_admin', 'branch_admin'];
+const ASSIGNABLE_SYSTEM_ROLES = ['member'];
 
 function safeUser(user: any) {
   const { password: _pw, ...rest } = user;
@@ -107,7 +106,7 @@ async function resolveAssignableRole(roleName: string, userId: string, role: str
 }
 
 function roleNeedsMinistryAdminId(roleRecord: { name: string; ministryAdminId?: string | null; isSystemRole?: boolean | null }) {
-  return SCOPED_SYSTEM_ROLES.includes(roleRecord.name) || (!!roleRecord.ministryAdminId && roleRecord.isSystemRole === false);
+  return !!roleRecord.ministryAdminId && roleRecord.isSystemRole === false;
 }
 
 // ─── GET /api/users ────────────────────────────────────────────────────────────
@@ -399,8 +398,6 @@ export async function createUser(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const role = req.user?.role ?? 'member';
   const permissions = req.user?.permissions ?? [];
-  const userDistricts = req.user?.districts ?? [];
-  const userTAs = req.user?.traditionalAuthorities ?? [];
   
   if (!userId) {
     res.status(401).json({ success: false, message: 'Not authenticated' });
@@ -419,7 +416,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, districts, traditionalAuthorities, regions, churchId, region, district, traditionalAuthority, village } = parsed.data;
+  const { email, password, firstName, lastName, phone, gender, dateOfBirth, maritalStatus, weddingDate, residentialNeighbourhood, membershipType, serviceInterest, baptizedByImmersion, roleName, districts, traditionalAuthorities, regions, churchId } = parsed.data;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
@@ -434,80 +431,28 @@ export async function createUser(req: Request, res: Response): Promise<void> {
   }
   const { roleRecord, ministryAdminId } = roleResolution;
 
-  // Determine churchId based on user's role and the new user's role
+  // Custom/admin roles use RoleScope for access. Only normal members need a
+  // direct churchId on their user row.
   let assignedChurchId: string | null = null;
-  
-  if (role === 'ministry_admin') {
-    if (roleName === 'member' && churchId) {
-      // National admin assigning member to specific church
-      assignedChurchId = churchId;
-    } else {
-      // Administrative roles don't need churchId initially
-      assignedChurchId = null;
-    }
-  } else if (role === 'district_admin') {
-    // District overseer creating users - find church based on location
-    if (district && traditionalAuthority) {
-      // Check if the selected location is within their scope
-      if (!userDistricts.includes('__all__') && !userDistricts.includes(district)) {
-        res.status(403).json({ success: false, message: 'You can only create users in your assigned districts' });
-        return;
-      }
-      
-      // Find church in that location
-      const church = await prisma.church.findFirst({
-        where: {
-          district,
-          traditionalAuthority,
-          village: village || undefined,
-        },
-      });
-      
-      if (church) {
-        assignedChurchId = church.id;
-      } else {
-        res.status(404).json({ success: false, message: 'No church found in the specified location' });
-        return;
-      }
-    } else {
-      res.status(400).json({ success: false, message: 'District and Traditional Authority required for user assignment' });
+
+  if (roleName === 'member') {
+    if (!churchId) {
+      res.status(400).json({ success: false, message: 'Church is required for members' });
       return;
     }
-  } else if (role === 'branch_admin') {
-    // Local admin creating users - find church based on location
-    if (traditionalAuthority) {
-      // Check if the selected location is within their scope
-      if (!userTAs.includes('__all__') && !userTAs.includes(traditionalAuthority)) {
-        res.status(403).json({ success: false, message: 'You can only create users in your assigned traditional authorities' });
-        return;
-      }
-      
-      // Find church in that location
-      const church = await prisma.church.findFirst({
-        where: {
-          traditionalAuthority,
-          village: village || undefined,
-        },
-      });
-      
-      if (church) {
-        assignedChurchId = church.id;
-      } else {
-        res.status(404).json({ success: false, message: 'No church found in the specified location' });
-        return;
-      }
-    } else {
-      res.status(400).json({ success: false, message: 'Traditional Authority required for user assignment' });
+    const accessibleChurchIds = await getAccessibleChurchIds(
+      role,
+      req.user?.churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId,
+    );
+    if (!accessibleChurchIds.includes(churchId)) {
+      res.status(403).json({ success: false, message: 'You can only create users in churches within your scope' });
       return;
     }
-  } else {
-    // Other roles (regional_admin, member) use their own church
-    const userChurchId = req.user?.churchId;
-    if (!userChurchId) {
-      res.status(400).json({ success: false, message: 'Church ID required for this role' });
-      return;
-    }
-    assignedChurchId = userChurchId;
+    assignedChurchId = churchId;
   }
 
   const hashed = await hashPassword(password);

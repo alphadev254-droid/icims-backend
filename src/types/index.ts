@@ -1,9 +1,6 @@
 export type UserRole =
   | 'system_admin'
   | 'ministry_admin'
-  | 'regional_admin'
-  | 'district_admin'
-  | 'branch_admin'
   | 'member';
 
 export type PackageTier = 'basic' | 'standard' | 'premium';
@@ -20,9 +17,9 @@ export interface JwtPayload {
   permissions: string[];
   accountCountry?: string;           // 'Malawi' | 'Kenya' — for currency + gateway routing
   // Geographic scope — determines which churches this user accesses
-  regions?: string[];                // regional_admin: ["Central","Northern"] or ["__all__"]
-  districts?: string[];              // district_admin: ["Lilongwe","Dedza"] or ["__all__"]
-  traditionalAuthorities?: string[]; // branch_admin: ["Kalumbu","Njewa"] or ["__all__"]
+  regions?: string[];
+  districts?: string[];
+  traditionalAuthorities?: string[];
 }
 
 // Extend Express Request to include authenticated user

@@ -89,9 +89,6 @@ const PERMISSIONS = [
 
 const ROLES = [
   { name: 'ministry_admin', displayName: 'Ministry Administrator' },
-  { name: 'regional_admin', displayName: 'Regional Administrator' },
-  { name: 'district_admin', displayName: 'District Administrator' },
-  { name: 'branch_admin', displayName: 'Branch Administrator' },
   { name: 'member', displayName: 'Member' },
 ];
 
@@ -120,86 +117,6 @@ const MEMBER_PERMISSIONS = [
   'pledges:create',
 ];
 
-// Default permissions for regional_admin, district_admin, branch_admin
-// These are the operational permissions — ministry admin can customise per-tenant
-// via the Roles Management page. System-level permissions (roles:manage, packages,
-// withdrawals, subaccounts) are intentionally excluded.
-const ADMIN_ROLE_PERMISSIONS = [
-  'dashboard:read',
-  // Members
-  'members:read',
-  'members:create',
-  'members:update',
-  'members:delete',
-  // Events
-  'events:read',
-  'events:create',
-  'events:update',
-  'events:delete',
-  // Giving / Campaigns
-  'giving:read',
-  'giving:create',
-  'giving:update',
-  'giving:delete',
-  'campaigns:read',
-  'campaigns:create',
-  'campaigns:update',
-  'campaigns:delete',
-  'donations:read',
-  'donations:create',
-  // Attendance
-  'attendance:read',
-  'attendance:create',
-  'attendance:update',
-  'attendance:delete',
-  // Churches
-  'churches:read',
-  'churches:create',
-  'churches:update',
-  'churches:invite',
-  // Communication
-  'communication:read',
-  'communication:create',
-  'communication:update',
-  'communication:delete',
-  // Resources
-  'resources:read',
-  'resources:create',
-  // Reports & Performance
-  'reports:read',
-  'reports:create',
-  'performance:read',
-  // Settings (read-only)
-  'settings:read',
-  // Users
-  'users:read',
-  'users:create',
-  'users:update',
-  // Transactions
-  'transactions:read',
-  // Tickets
-  'tickets:read',
-  'tickets:create',
-  'tickets:cancel',
-  // Teams
-  'teams:read',
-  'teams:create',
-  'teams:update',
-  'teams:delete',
-  'teams:assign',
-  // Reminders
-  'reminders:read',
-  // Cells
-  'cells:read',
-  'cells:create',
-  'cells:update',
-  'cells:delete',
-  // Pledges
-  'pledges:read',
-  'pledges:create',
-  // Packages (view only)
-  'packages:view',
-];
 
 async function main() {
   console.log('🌱 Starting database seed...\n');
@@ -313,38 +230,6 @@ async function main() {
     console.log(`✅ Linked ${memberLinked} permissions to member role\n`);
   }
 
-  // 6. Assign default permissions to regional_admin, district_admin, branch_admin (GLOBAL)
-  const subAdminRoles = ['regional_admin', 'district_admin', 'branch_admin'];
-  for (const roleName of subAdminRoles) {
-    const role = await prisma.role.findUnique({ where: { name: roleName } });
-    if (!role) continue;
-
-    console.log(`🔗 Assigning default permissions to ${roleName} role (global)...`);
-    const perms = await prisma.permission.findMany({
-      where: { name: { in: ADMIN_ROLE_PERMISSIONS } },
-    });
-
-    let count = 0;
-    for (const permission of perms) {
-      await prisma.rolePermission.upsert({
-        where: {
-          ministryAdminId_roleId_permissionId: {
-            ministryAdminId: 'GLOBAL',
-            roleId: role.id,
-            permissionId: permission.id,
-          },
-        },
-        update: {},
-        create: {
-          ministryAdminId: 'GLOBAL',
-          roleId: role.id,
-          permissionId: permission.id,
-        },
-      });
-      count++;
-    }
-    console.log(`✅ Linked ${count} permissions to ${roleName}\n`);
-  }
 
   console.log('🎉 Database seeded successfully!\n');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

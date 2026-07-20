@@ -26,8 +26,7 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
-    const isAdmin = user.role && adminRoles.includes(user.role.name);
+    const isAdmin = !!user.role && user.role.name !== 'member';
 
     let teamIds: string[] = [];
     let leaderTeamIds: string[] = [];
@@ -416,8 +415,7 @@ export const getPostableTeams = async (req: Request, res: Response) => {
     teams = [...leaderTeams];
 
     // If admin role, get teams in their scope
-    const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
-    if (user.role && adminRoles.includes(user.role.name)) {
+    if (user.role && user.role.name !== 'member') {
       const districts = user.districts ? JSON.parse(user.districts) : undefined;
       const tas = user.traditionalAuthorities ? JSON.parse(user.traditionalAuthorities) : undefined;
       const regions = user.regions ? JSON.parse(user.regions) : undefined;
@@ -476,8 +474,7 @@ async function canUserPostToTeam(userId: string, teamId: string): Promise<boolea
   if (isLeader) return true;
 
   // Admin roles can post to teams in their scope
-  const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
-  if (user.role && adminRoles.includes(user.role.name)) {
+  if (user.role && user.role.name !== 'member') {
     const team = await prisma.team.findUnique({
       where: { id: teamId },
       include: { church: true }
@@ -527,8 +524,7 @@ async function canUserEditOrDelete(userId: string, teamId: string, authorId: str
   if (isLeader) return true;
 
   // Admin with scope can edit/delete
-  const adminRoles = ['ministry_admin', 'regional_admin', 'district_admin', 'branch_admin'];
-  if (user.role && adminRoles.includes(user.role.name)) {
+  if (user.role && user.role.name !== 'member') {
     const team = await prisma.team.findUnique({
       where: { id: teamId },
       include: { church: true }

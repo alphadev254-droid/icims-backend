@@ -72,14 +72,10 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
     return;
   }
 
-  // Get ministryAdminId from user or church
-  let ministryAdminId = userId;
-  if (roleName === 'district_admin' || roleName === 'branch_admin') {
-    const userRecord = await prisma.user.findUnique({ where: { id: userId } });
-    if (userRecord?.ministryAdminId) {
-      ministryAdminId = userRecord.ministryAdminId;
-    }
-  }
+  // Get ministryAdminId from user or church. Custom roles inherit their ministry.
+  const ministryAdminId = roleName === 'ministry_admin'
+    ? userId
+    : user?.ministryAdminId ?? church.ministryAdminId ?? userId;
 
   try {
     // Create subaccount on Paystack

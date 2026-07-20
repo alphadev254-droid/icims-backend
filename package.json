@@ -18,6 +18,8 @@
     "recalculate:attendance:apply": "ts-node scripts/recalculate-attendance-summaries.ts --apply",
     "users:archive-cancelled-emails": "ts-node scripts/archive-cancelled-user-emails.ts",
     "users:archive-cancelled-emails:apply": "ts-node scripts/archive-cancelled-user-emails.ts --apply",
+    "roles:cleanup-legacy": "ts-node scripts/cleanup-legacy-system-roles.ts",
+    "roles:cleanup-legacy:apply": "ts-node scripts/cleanup-legacy-system-roles.ts --apply",
     "giving:merge-duplicates": "ts-node scripts/merge-duplicate-giving-campaigns.ts",
     "giving:merge-duplicates:apply": "ts-node scripts/merge-duplicate-giving-campaigns.ts --apply",
     "db:studio": "prisma studio",

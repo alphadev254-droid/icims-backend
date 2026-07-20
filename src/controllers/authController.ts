@@ -127,8 +127,6 @@ async function getUserPermissions(user: any): Promise<string[]> {
     });
     return permissions.map(rp => rp.permission.name);
   }
-  
-  // Tenant-specific roles: district_admin, branch_admin, regional_admin
   // Permissions are stored with ministryAdminId = <ministry_admin_id> (tenant-specific)
   // OR ministryAdminId = 'GLOBAL' (default permissions from seed)
   const effectiveMinistryAdminId = await getEffectiveMinistryAdminId(user);

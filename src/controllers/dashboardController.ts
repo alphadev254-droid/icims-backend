@@ -53,7 +53,6 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       userId
     );
   } else {
-    // For sub-admin roles (district_admin, branch_admin, regional_admin):
     // churchId in JWT is null — they oversee multiple churches.
     // Use getAccessibleChurchIds which resolves via ministryAdminId + scope fields.
     churchIds = await getAccessibleChurchIds(
