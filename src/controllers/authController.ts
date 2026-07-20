@@ -6,7 +6,7 @@ import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
 import { createSubdomain, toSlug } from '../lib/cloudflareDns';
 import { recordLoginAttempt } from '../middleware/metrics';
-import { displayName, maskEmail } from '../utils/logger';
+import { displayName, logger, maskEmail, maskToken } from '../utils/logger';
 import type { UserRole } from '../types';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -379,6 +379,7 @@ const memberRegisterSchema = z.object({
   serviceInterest: z.string().optional(),
   baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().min(1, 'A valid church invite link is required'),
+  expectedChurchId: z.string().optional(),
 });
 export async function register(req: Request, res: Response): Promise<void> {
   const parsed = registerSchema.safeParse(req.body);
@@ -401,8 +402,8 @@ export async function register(req: Request, res: Response): Promise<void> {
 
   // Check if registering via church invite link
   if (data.inviteToken) {
-    const church = await prisma.church.findUnique({ 
-      where: { inviteToken: data.inviteToken },
+    const church = await prisma.church.findFirst({
+      where: { inviteToken: data.inviteToken, status: 'active' },
       select: { id: true, ministryAdminId: true }
     });
     
@@ -568,12 +569,27 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   }
 
   const [church, memberRole] = await Promise.all([
-    prisma.church.findUnique({ where: { inviteToken: data.inviteToken }, select: { id: true, name: true } }),
+    prisma.church.findFirst({ where: { inviteToken: data.inviteToken, status: 'active' }, select: { id: true, name: true } }),
     prisma.role.findFirst({ where: { name: 'member' } }),
   ]);
 
   if (!church) {
     res.status(400).json({ success: false, message: 'Invalid or expired invite link' });
+    return;
+  }
+
+  if (data.expectedChurchId && data.expectedChurchId !== church.id) {
+    logger.warn('member_registration_invite_church_mismatch', {
+      requestId: req.requestId,
+      inviteToken: maskToken(data.inviteToken),
+      expectedChurchId: data.expectedChurchId,
+      resolvedChurchId: church.id,
+      email: maskEmail(data.email),
+    });
+    res.status(400).json({
+      success: false,
+      message: 'This registration link does not match the selected church. Please ask your church admin for a fresh invite link.',
+    });
     return;
   }
 
@@ -604,6 +620,15 @@ export async function registerMember(req: Request, res: Response): Promise<void>
       baptizedByImmersion: data.baptizedByImmersion,
     },
     include: USER_INCLUDE,
+  });
+
+  logger.info('member_registration_completed', {
+    requestId: req.requestId,
+    userId: user.id,
+    userName: displayName(user.firstName, user.lastName),
+    email: maskEmail(user.email),
+    churchId: church.id,
+    inviteToken: maskToken(data.inviteToken),
   });
 
   const permissions = await getUserPermissions(user);
