@@ -126,7 +126,13 @@ export async function getTransactions(req: Request, res: Response): Promise<void
 
   // Build where clause for admins
   const whereClause: any = { churchId: { in: churchIds } };
-  if (filterChurchId && churchIds.includes(filterChurchId)) whereClause.churchId = filterChurchId;
+  if (filterChurchId) {
+    if (!churchIds.includes(filterChurchId)) {
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+      return;
+    }
+    whereClause.churchId = filterChurchId;
+  }
   if (type) whereClause.type = type;
   if (status) whereClause.status = status;
   if (paymentMethod) whereClause.paymentMethod = paymentMethod;

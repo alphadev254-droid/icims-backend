@@ -53,6 +53,11 @@ function getRoleScopeLabel(scope: any): string | null {
   return null;
 }
 
+function addRoleScopeContainsFilter(filters: any[], scopeType: string, field: string, value?: string | null) {
+  if (!value) return;
+  filters.push({ scopeType, [field]: { contains: value } });
+}
+
 async function resolveCallerMinistryAdminId(userId: string, role: string): Promise<string | null> {
   if (role === 'ministry_admin') return userId;
 
@@ -182,12 +187,40 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   let whereClause: any;
 
   if (role === 'ministry_admin') {
-    whereClause = {
-      OR: [
-        { churchId: { in: scopedChurchIds } },
-        { ministryAdminId: userId },
-      ],
-    };
+    if (filterChurchId) {
+      const selectedChurch = await prisma.church.findFirst({
+        where: { id: filterChurchId, ministryAdminId: userId, status: 'active' },
+        select: { region: true, district: true, traditionalAuthority: true },
+      });
+
+      const roleScopeFilters: any[] = [{ scopeType: 'all_ministry' }];
+      addRoleScopeContainsFilter(roleScopeFilters, 'specific_churches', 'churchIds', filterChurchId);
+      addRoleScopeContainsFilter(roleScopeFilters, 'regions', 'regions', selectedChurch?.region);
+      addRoleScopeContainsFilter(roleScopeFilters, 'districts', 'districts', selectedChurch?.district);
+      addRoleScopeContainsFilter(roleScopeFilters, 'traditional_authorities', 'traditionalAuthorities', selectedChurch?.traditionalAuthority);
+
+      whereClause = {
+        OR: [
+          { churchId: filterChurchId },
+          {
+            ministryAdminId: userId,
+            role: {
+              scope: {
+                ministryAdminId: userId,
+                OR: roleScopeFilters,
+              },
+            },
+          },
+        ],
+      };
+    } else {
+      whereClause = {
+        OR: [
+          { churchId: { in: scopedChurchIds } },
+          { ministryAdminId: userId },
+        ],
+      };
+    }
   } else {
     whereClause = { churchId: { in: scopedChurchIds } };
   }

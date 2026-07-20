@@ -66,7 +66,11 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   const skip = (pageNum - 1) * limitNum;
 
   const churchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
-  const scopedChurchId = filterChurchId && churchIds.includes(filterChurchId) ? filterChurchId : undefined;
+  if (filterChurchId && !churchIds.includes(filterChurchId)) {
+    res.json({ success: true, data: [], pagination: { page: pageNum, limit: limitNum, total: 0, totalPages: 0 } });
+    return;
+  }
+  const scopedChurchId = filterChurchId || undefined;
 
   // Optionally scope to a single cell within accessible scope
   const dateFilter: any = {};
@@ -1276,6 +1280,10 @@ export async function getCellVisitors(req: Request, res: Response): Promise<void
   }
 
   // Narrow by filterChurchId if provided and in scope
+  if (filterChurchId && !accessibleChurchIds.includes(filterChurchId)) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
   const scopedChurchIds = filterChurchId && accessibleChurchIds.includes(filterChurchId)
     ? [filterChurchId]
     : accessibleChurchIds;
