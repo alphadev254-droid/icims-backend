@@ -618,6 +618,22 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   if (traditionalAuthorities !== undefined) updateData.traditionalAuthorities = JSON.stringify(traditionalAuthorities);
   if (regions !== undefined) updateData.regions = JSON.stringify(regions);
 
+  if (churchId) {
+    const accessibleChurchIds = await getAccessibleChurchIds(
+      role,
+      req.user?.churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId,
+    );
+
+    if (!accessibleChurchIds.includes(churchId)) {
+      res.status(403).json({ success: false, message: 'You can only assign users to churches within your scope' });
+      return;
+    }
+  }
+
   if (roleName) {
     const roleResolution = await resolveAssignableRole(roleName, userId, role);
     if ('errorMessage' in roleResolution) {
