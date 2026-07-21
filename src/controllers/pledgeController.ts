@@ -264,6 +264,8 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
   const filterChurchId = typeof req.query.churchId      === 'string' ? req.query.churchId      : undefined;
   const startDate      = typeof req.query.startDate     === 'string' ? req.query.startDate     : undefined;
   const endDate        = typeof req.query.endDate       === 'string' ? req.query.endDate       : undefined;
+  const dueStartDate   = typeof req.query.dueStartDate  === 'string' ? req.query.dueStartDate  : undefined;
+  const dueEndDate     = typeof req.query.dueEndDate    === 'string' ? req.query.dueEndDate    : undefined;
   const sortBy         = typeof req.query.sortBy        === 'string' ? req.query.sortBy        : 'newest';
   const isExport       = req.query.export === 'true';
   const page           = Math.max(parseInt(typeof req.query.page  === 'string' ? req.query.page  : '1',  10) || 1, 1);
@@ -287,11 +289,20 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
     dateFilter.lte = end;
   }
 
+  const dueDateFilter: any = {};
+  if (dueStartDate) dueDateFilter.gte = new Date(dueStartDate);
+  if (dueEndDate) {
+    const end = new Date(dueEndDate);
+    end.setHours(23, 59, 59, 999);
+    dueDateFilter.lte = end;
+  }
+
   const where: any = {
     churchId: { in: accessibleChurchIds },
     ...(campaignId && { campaignId }),
     ...(status && status !== 'all' && { status }),
     ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+    ...(Object.keys(dueDateFilter).length > 0 && { fulfillmentDeadline: dueDateFilter }),
   };
 
   // Apply church filter only if it's within the accessible scope
