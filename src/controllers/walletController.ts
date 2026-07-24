@@ -81,11 +81,11 @@ function getPaychanguMobileOperatorRefId(operators: any[], operator?: string | n
   return match?.ref_id || match?.mobile_money_operator_ref_id || match?.operator_ref_id || null;
 }
 
-function normalizeMsisdn(value?: string | null): string {
-  let msisdn = String(value || '').replace(/\D/g, '');
-  if (msisdn.startsWith('0')) msisdn = `265${msisdn.slice(1)}`;
-  else if (!msisdn.startsWith('265')) msisdn = `265${msisdn}`;
-  return msisdn;
+function normalizePaychanguMobilePayoutNumber(value?: string | null): string {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.startsWith('265')) return `0${digits.slice(3)}`;
+  if (digits.length === 9) return `0${digits}`;
+  return digits;
 }
 
 function normalizeGatewayPayoutStatus(payload: any): 'completed' | 'failed' | 'processing' {
@@ -899,7 +899,7 @@ async function processPaychanguPayout(withdrawal: any) {
 
       const chargeId = `PAYOUT-${withdrawal.id}`;
       const payoutPayload = {
-        mobile: normalizeMsisdn(withdrawal.mobileNumber),
+        mobile: normalizePaychanguMobilePayoutNumber(withdrawal.mobileNumber),
         mobile_money_operator_ref_id: operatorRefId,
         amount: String(withdrawal.payoutAmount ?? withdrawal.netAmount),
         charge_id: chargeId,
