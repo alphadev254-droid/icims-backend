@@ -48,6 +48,11 @@ function serializeScheduledReminder(reminder: any) {
   };
 }
 
+function serializeReminder(reminder: any) {
+  const { age, years, ...safeReminder } = reminder;
+  return safeReminder;
+}
+
 async function assertScheduledReminderAccess(req: Request, churchId: string): Promise<{ allowed: boolean; ministryAdminId?: string | null }> {
   if (req.user?.role === 'member') return { allowed: false };
   const scopedChurchIds = await getScopedChurchIds(req);
@@ -81,8 +86,9 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
   // Scope-based filtering (only if no specific church filter is applied)
   if (!filterChurchId) {
     if (roleName === 'member') {
-      // Members see only their own reminders
-      whereClause.userId = userId;
+      // Members see church-wide reminders for members in their own church.
+      if (churchId) whereClause.churchId = churchId;
+      else whereClause.userId = userId;
     } else if (roleName === 'ministry_admin') {
       // National admin sees reminders from their churches
       whereClause.ministryAdminId = userId;
@@ -106,7 +112,6 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
         res.status(403).json({ success: false, message: 'Access denied to this church' });
         return;
       }
-      whereClause.userId = userId;
     } else if (roleName === 'ministry_admin') {
       // Verify church belongs to this national admin
       const church = await prisma.church.findFirst({
@@ -179,11 +184,11 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
         seenEvents.add(reminder.eventId);
         // For event reminders, exclude user object and ministryAdminId
         const { user, ministryAdminId, ...eventReminderData } = reminder;
-        uniqueReminders.push(eventReminderData);
+        uniqueReminders.push(serializeReminder(eventReminderData));
       }
     } else {
       // For non-event reminders, always include the full reminder with user object
-      uniqueReminders.push(reminder);
+      uniqueReminders.push(serializeReminder(reminder));
     }
   }
 
@@ -214,7 +219,8 @@ export async function getTodayReminders(req: Request, res: Response): Promise<vo
 
   // Scope-based filtering
   if (roleName === 'member') {
-    whereClause.userId = userId;
+    if (churchId) whereClause.churchId = churchId;
+    else whereClause.userId = userId;
   } else if (roleName === 'ministry_admin') {
     whereClause.ministryAdminId = userId;
   } else {
@@ -252,7 +258,7 @@ export async function getTodayReminders(req: Request, res: Response): Promise<vo
     orderBy: { type: 'asc' },
   });
 
-  res.json({ success: true, data: reminders });
+  res.json({ success: true, data: reminders.map(serializeReminder) });
 }
 
 export async function getScheduledReminders(req: Request, res: Response): Promise<void> {

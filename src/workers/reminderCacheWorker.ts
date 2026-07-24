@@ -288,8 +288,6 @@ export async function refreshReminderCache() {
         userId: true,
         type: true,
         eventTitle: true,
-        age: true,
-        years: true,
         churchId: true,
       },
     });
@@ -314,12 +312,12 @@ export async function refreshReminderCache() {
       }
 
       // Group reminders by userId
-      const userRemindersMap = new Map<string, Array<{ type: string; eventTitle?: string | null; age?: number | null; years?: number | null }>>();
+      const userRemindersMap = new Map<string, Array<{ type: string; eventTitle?: string | null }>>();
       for (const r of todayReminders) {
         if (!userRemindersMap.has(r.userId)) {
           userRemindersMap.set(r.userId, []);
         }
-        userRemindersMap.get(r.userId)!.push({ type: r.type, eventTitle: r.eventTitle, age: r.age, years: r.years });
+        userRemindersMap.get(r.userId)!.push({ type: r.type, eventTitle: r.eventTitle });
       }
 
       for (const [uid, remindersList] of userRemindersMap) {
@@ -330,10 +328,10 @@ export async function refreshReminderCache() {
         // Compose a summary message for the user
         const lines = remindersList.map(r => {
           switch (r.type) {
-            case 'birthday': return `Birthday — Age ${r.age}`;
-            case 'wedding': return `Wedding Anniversary — ${r.years} year(s)`;
-            case 'member_anniversary': return `Member Anniversary — ${r.years} year(s)`;
-            case 'church_founded': return `Church Founded Anniversary — ${r.years} year(s)`;
+            case 'birthday': return 'Birthday today';
+            case 'wedding': return 'Wedding anniversary today';
+            case 'member_anniversary': return 'Member anniversary today';
+            case 'church_founded': return 'Church founded anniversary today';
             case 'event': return `Event Today: ${r.eventTitle || 'Upcoming event'}`;
             default: return `Reminder: ${r.type}`;
           }
