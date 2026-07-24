@@ -51,11 +51,11 @@ const startQrAttendanceSchema = z.object({
 });
 
 const guestCheckInSchema = z.object({
-  guestName: z.string().min(1, 'Name is required'),
-  guestEmail: z.string().email().optional().or(z.literal('')),
-  guestPhone: z.string().optional(),
-  guestGender: z.string().optional(),
-  guestAgeBracket: z.string().optional(),
+  guestName: z.string().trim().min(1, 'Name is required'),
+  guestEmail: z.string().trim().min(1, 'Email is required').email('Enter a valid email address'),
+  guestPhone: z.string().trim().min(1, 'Phone is required'),
+  guestGender: z.string().trim().min(1, 'Gender is required'),
+  guestAgeBracket: z.string().trim().min(1, 'Age is required'),
   guestFirstTime: z.boolean().optional(),
   invitedBy: z.string().optional(),
 });
