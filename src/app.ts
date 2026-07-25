@@ -38,6 +38,7 @@ import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/
 import { errorHandler } from './middleware/errorHandler';
 import { metricsHandler, metricsMiddleware } from './middleware/metrics';
 import { requestLogger } from './middleware/requestLogger';
+import { paymentAuditLogger } from './middleware/paymentAuditLogger';
 
 declare global {
   namespace Express {
@@ -98,6 +99,7 @@ app.use('/api/webhooks/paystack', express.raw({ type: 'application/json' }), (re
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+app.use(paymentAuditLogger);
 
 // ─── Serve uploaded files ──────────────────────────────────────────────────
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
