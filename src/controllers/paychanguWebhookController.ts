@@ -52,6 +52,39 @@ function paychanguPaymentLogMeta(traceId: string, pendingTx: any, metadata: any 
   };
 }
 
+function buildGatewayTrace(metadata: any, webhookPayload: any, verifyPayload?: any) {
+  return {
+    gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
+    gatewayResponse: JSON.stringify({
+      webhookPayload,
+      verifyResponse: verifyPayload ?? null,
+    }),
+  };
+}
+
+function getPaychanguCheckoutData(verifyPayload?: any, webhookPayload?: any) {
+  const data = verifyPayload?.data ?? {};
+  const channel = String(data.authorization?.channel || webhookPayload?.authorization?.channel || '').toLowerCase();
+  const paymentMethod = channel.includes('bank')
+    ? 'bank_transfer'
+    : channel.includes('card')
+      ? 'card'
+      : channel.includes('mobile')
+        ? 'mobile_money'
+        : 'mobile_money';
+
+  return {
+    paymentMethod,
+    channel: data.authorization?.channel || webhookPayload?.authorization?.channel || null,
+    gatewayCharge: data.charges != null ? Number(data.charges) : null,
+    customerEmail: data.customer?.email || null,
+    customerPhone: data.customer?.phone || data.authorization?.mobile_number || null,
+    authorizationCode: data.authorization?.authorization_code || null,
+    cardLast4: data.authorization?.card_number ? String(data.authorization.card_number).slice(-4) : null,
+    cardBank: data.authorization?.provider || data.authorization?.brand || null,
+  };
+}
+
 export async function paychanguWebhook(req: Request, res: Response): Promise<void> {
   const traceId = `PAYCHANGU-${Date.now()}`;
 
@@ -228,9 +261,9 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
     if (pendingTx.type === 'package_subscription') {
       await processPaychanguSubscription(pendingTx, metadata, payload, traceId, verifyResponse.data);
     } else if (pendingTx.type === 'event_ticket') {
-      await processPaychanguTicket(pendingTx, metadata, payload, traceId);
+      await processPaychanguTicket(pendingTx, metadata, payload, traceId, verifyResponse.data);
     } else if (pendingTx.type === 'donation') {
-      await processPaychanguDonation(pendingTx, metadata, payload, traceId);
+      await processPaychanguDonation(pendingTx, metadata, payload, traceId, verifyResponse.data);
     }
     recordPaymentEvent('paychangu', pendingTx.type, 'completed', paychanguPaymentLogMeta(traceId, pendingTx, metadata, payload, {
       verifiedStatus: verifyResponse.data.data?.status,
@@ -269,6 +302,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
     include: { features: { include: { feature: true } } },
   });
 
+  const checkoutData = getPaychanguCheckoutData(verifyPayload, payload);
   await prisma.payment.create({
     data: {
       ministryAdminId: metadata.ministryAdminId,
@@ -286,7 +320,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
       gateway: metadata.gateway,
       reference: pendingTx.reference,
       billingCycle: metadata.billingCycle,
-      paymentMethod: 'mobile_money',
+      paymentMethod: checkoutData.paymentMethod,
       paidAt: new Date(),
       systemGatewayFeeRate: metadata.gatewayFeeRate || 0,
       systemFeeRate: metadata.systemFeeRate || 0,
@@ -338,7 +372,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
   }
 }
 
-async function processPaychanguTicket(pendingTx: any, metadata: any, payload: any, traceId: string): Promise<void> {
+async function processPaychanguTicket(pendingTx: any, metadata: any, payload: any, traceId: string, verifyPayload?: any): Promise<void> {
   console.log(`[${traceId}] Processing ticket for ref: ${pendingTx.reference}`);
 
   const existing = await prisma.transaction.findFirst({ where: { reference: pendingTx.reference } });
@@ -347,6 +381,8 @@ async function processPaychanguTicket(pendingTx: any, metadata: any, payload: an
     return;
   }
 
+  const checkoutData = getPaychanguCheckoutData(verifyPayload, payload);
+  const gatewayTrace = buildGatewayTrace(metadata, payload, verifyPayload);
   const transaction = await prisma.transaction.create({
     data: {
       userId: metadata.isGuest ? null : pendingTx.userId,
@@ -364,8 +400,17 @@ async function processPaychanguTicket(pendingTx: any, metadata: any, payload: an
       gateway: metadata.gateway,
       gatewayCountry: metadata.gatewayCountry,
       reference: pendingTx.reference,
-      paymentMethod: 'mobile_money',
+      paymentMethod: checkoutData.paymentMethod,
+      channel: checkoutData.channel,
       paidAt: new Date(),
+      gatewayPayload: gatewayTrace.gatewayPayload,
+      gatewayResponse: gatewayTrace.gatewayResponse,
+      gatewayCharge: checkoutData.gatewayCharge,
+      customerEmail: checkoutData.customerEmail,
+      customerPhone: checkoutData.customerPhone,
+      authorizationCode: checkoutData.authorizationCode,
+      cardLast4: checkoutData.cardLast4,
+      cardBank: checkoutData.cardBank,
       isGuest: metadata.isGuest === true,
       guestName: metadata.isGuest ? metadata.guestName : null,
       guestEmail: metadata.isGuest ? metadata.guestEmail : null,
@@ -422,7 +467,7 @@ async function processPaychanguTicket(pendingTx: any, metadata: any, payload: an
         amount: metadata.baseAmount,
         currency: pendingTx.currency,
         paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-        paymentMethod: 'mobile_money',
+        paymentMethod: checkoutData.paymentMethod,
         description: `Event Ticket - ${event.title}`,
         itemDetails: [
           { label: 'Event', value: event.title },
@@ -461,7 +506,7 @@ async function processPaychanguTicket(pendingTx: any, metadata: any, payload: an
   console.log(`[${traceId}] ✅ Ticket processing complete`);
 }
 
-async function processPaychanguDonation(pendingTx: any, metadata: any, payload: any, traceId: string): Promise<void> {
+async function processPaychanguDonation(pendingTx: any, metadata: any, payload: any, traceId: string, verifyPayload?: any): Promise<void> {
   console.log(`[${traceId}] Processing donation for ref: ${pendingTx.reference}`);
 
   const existing = await prisma.transaction.findFirst({ where: { reference: pendingTx.reference } });
@@ -470,6 +515,8 @@ async function processPaychanguDonation(pendingTx: any, metadata: any, payload: 
     return;
   }
 
+  const checkoutData = getPaychanguCheckoutData(verifyPayload, payload);
+  const gatewayTrace = buildGatewayTrace(metadata, payload, verifyPayload);
   const transaction = await prisma.transaction.create({
     data: {
       userId: metadata.isGuest ? null : pendingTx.userId,
@@ -486,8 +533,17 @@ async function processPaychanguDonation(pendingTx: any, metadata: any, payload: 
       gateway: metadata.gateway,
       gatewayCountry: metadata.gatewayCountry,
       reference: pendingTx.reference,
-      paymentMethod: 'mobile_money',
+      paymentMethod: checkoutData.paymentMethod,
+      channel: checkoutData.channel,
       paidAt: new Date(),
+      gatewayPayload: gatewayTrace.gatewayPayload,
+      gatewayResponse: gatewayTrace.gatewayResponse,
+      gatewayCharge: checkoutData.gatewayCharge,
+      customerEmail: checkoutData.customerEmail,
+      customerPhone: checkoutData.customerPhone,
+      authorizationCode: checkoutData.authorizationCode,
+      cardLast4: checkoutData.cardLast4,
+      cardBank: checkoutData.cardBank,
       isGuest: metadata.isGuest === true,
       guestName: metadata.isGuest ? metadata.guestName : null,
       guestEmail: metadata.isGuest ? metadata.guestEmail : null,
@@ -502,7 +558,7 @@ async function processPaychanguDonation(pendingTx: any, metadata: any, payload: 
       transactionId: transaction.id,
       reference: pendingTx.reference,
       currency: pendingTx.currency,
-      paymentMethod: 'mobile_money',
+      paymentMethod: checkoutData.paymentMethod,
     });
     console.log(`[${traceId}] âœ… Multi-line donation processing complete`);
     return;

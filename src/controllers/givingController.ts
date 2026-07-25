@@ -1364,7 +1364,13 @@ async function initiatePaychanguDonation(
 
     await prisma.pendingTransaction.update({
       where: { id: pendingTx.id },
-      data: { reference: tx_ref },
+      data: {
+        reference: tx_ref,
+        metadata: JSON.stringify({
+          ...metadata,
+          gatewayPayload: paychanguPayload,
+        }),
+      },
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);

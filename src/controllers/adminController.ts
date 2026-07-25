@@ -1245,7 +1245,12 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
     cellName         = donationTx?.cell?.name ?? null;
   }
 
-  // Parse gatewayResponse so frontend gets a real object
+  // Parse gateway payload/response so frontend gets real objects
+  let gatewayPayloadParsed: any = null;
+  if (tx.gatewayPayload) {
+    try { gatewayPayloadParsed = JSON.parse(tx.gatewayPayload); } catch {}
+  }
+
   let gatewayResponseParsed: any = null;
   if (tx.gatewayResponse) {
     try { gatewayResponseParsed = JSON.parse(tx.gatewayResponse); } catch {}
@@ -1258,6 +1263,7 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
       campaignName,
       campaignCategory,
       cellName,
+      gatewayPayloadParsed,
       gatewayResponseParsed,
     },
   });

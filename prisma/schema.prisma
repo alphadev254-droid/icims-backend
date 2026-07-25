@@ -383,6 +383,7 @@ model Transaction {
   channel       String?  // mobile_money | card | bank
   ipAddress     String?
   paidAt        DateTime?
+  gatewayPayload String?  @db.LongText
   gatewayResponse String?  @db.LongText
   // Fee breakdown
   baseAmount      Float?   // Original amount (what church gets)

@@ -276,7 +276,13 @@ async function initiatePaychanguTicketPayment(
 
     await prisma.pendingTransaction.update({
       where: { id: pendingTx.id },
-      data: { reference: tx_ref },
+      data: {
+        reference: tx_ref,
+        metadata: JSON.stringify({
+          ...(pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {}),
+          gatewayPayload: paychanguPayload,
+        }),
+      },
     });
 
     console.log(`[${traceId}] Paychangu SUCCESS`);

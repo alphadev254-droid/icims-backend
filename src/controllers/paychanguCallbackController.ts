@@ -6,6 +6,39 @@ import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 
+function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
+  return {
+    gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
+    gatewayResponse: JSON.stringify({
+      callbackQuery,
+      verifyResponse,
+    }),
+  };
+}
+
+function getPaychanguCheckoutData(verifyResponse: any) {
+  const data = verifyResponse?.data ?? {};
+  const channel = String(data.authorization?.channel || '').toLowerCase();
+  const paymentMethod = channel.includes('bank')
+    ? 'bank_transfer'
+    : channel.includes('card')
+      ? 'card'
+      : channel.includes('mobile')
+        ? 'mobile_money'
+        : 'mobile_money';
+
+  return {
+    paymentMethod,
+    channel: data.authorization?.channel || null,
+    gatewayCharge: data.charges != null ? Number(data.charges) : null,
+    customerEmail: data.customer?.email || null,
+    customerPhone: data.customer?.phone || data.authorization?.mobile_number || null,
+    authorizationCode: data.authorization?.authorization_code || null,
+    cardLast4: data.authorization?.card_number ? String(data.authorization.card_number).slice(-4) : null,
+    cardBank: data.authorization?.provider || data.authorization?.brand || null,
+  };
+}
+
 export async function paychanguCallback(req: Request, res: Response): Promise<void> {
   const { tx_ref } = req.query;
   const traceId = `CALLBACK-${Date.now()}`;
@@ -72,6 +105,8 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
     }
 
     const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+    const gatewayTrace = buildGatewayTrace(metadata, req.query, verifyResponse.data);
+    const checkoutData = getPaychanguCheckoutData(verifyResponse.data);
     console.log(`[${traceId}] PendingTx type: ${pendingTx.type}, isGuest: ${metadata.isGuest}, metadata:`, metadata);
 
     // 4. Create records — webhook fallback
@@ -106,11 +141,8 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
           paidAt: new Date(),
           systemGatewayFeeRate: metadata.gatewayFeeRate || 0,
           systemFeeRate: metadata.systemFeeRate || 0,
-          gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
-          gatewayResponse: JSON.stringify({
-            callbackQuery: req.query,
-            verifyResponse: verifyResponse.data,
-          }),
+          gatewayPayload: gatewayTrace.gatewayPayload,
+          gatewayResponse: gatewayTrace.gatewayResponse,
           createdById: pendingTx.userId ?? metadata.ministryAdminId,
           expiresAt,
         },
@@ -142,7 +174,7 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
           amount: metadata.baseAmount,
           currency: pendingTx.currency,
           paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-          paymentMethod: 'mobile_money',
+          paymentMethod: checkoutData.paymentMethod,
           description: `${pkg.displayName} - ${metadata.billingCycle} subscription`,
           itemDetails: [
             { label: 'Package', value: pkg.displayName },
@@ -219,8 +251,17 @@ if (pendingTx.type === 'event_ticket') {
       gateway: metadata.gateway,
       gatewayCountry: metadata.gatewayCountry,
       reference: String(tx_ref),
-      paymentMethod: 'mobile_money',
-      paidAt: new Date(),
+          paymentMethod: checkoutData.paymentMethod,
+          channel: checkoutData.channel,
+          paidAt: new Date(),
+          gatewayPayload: gatewayTrace.gatewayPayload,
+          gatewayResponse: gatewayTrace.gatewayResponse,
+          gatewayCharge: checkoutData.gatewayCharge,
+          customerEmail: checkoutData.customerEmail,
+          customerPhone: checkoutData.customerPhone,
+          authorizationCode: checkoutData.authorizationCode,
+          cardLast4: checkoutData.cardLast4,
+          cardBank: checkoutData.cardBank,
       isGuest: metadata.isGuest === true,
       guestName: metadata.isGuest ? metadata.guestName : null,
       guestEmail: metadata.isGuest ? metadata.guestEmail : null,
@@ -278,7 +319,7 @@ if (pendingTx.type === 'event_ticket') {
         amount: metadata.baseAmount,
         currency: pendingTx.currency,
         paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-        paymentMethod: 'mobile_money',
+        paymentMethod: checkoutData.paymentMethod,
         description: `Event Ticket - ${event.title}`,
         itemDetails: [
           { label: 'Event', value: event.title },
@@ -374,8 +415,17 @@ if (pendingTx.type === 'donation') {
       gateway: metadata.gateway,
       gatewayCountry: metadata.gatewayCountry,
       reference: String(tx_ref),
-      paymentMethod: 'mobile_money',
+      paymentMethod: checkoutData.paymentMethod,
+      channel: checkoutData.channel,
       paidAt: new Date(),
+      gatewayPayload: gatewayTrace.gatewayPayload,
+      gatewayResponse: gatewayTrace.gatewayResponse,
+      gatewayCharge: checkoutData.gatewayCharge,
+      customerEmail: checkoutData.customerEmail,
+      customerPhone: checkoutData.customerPhone,
+      authorizationCode: checkoutData.authorizationCode,
+      cardLast4: checkoutData.cardLast4,
+      cardBank: checkoutData.cardBank,
       isGuest: metadata.isGuest === true,
       guestName: metadata.isGuest ? metadata.guestName : null,
       guestEmail: metadata.isGuest ? metadata.guestEmail : null,
@@ -390,7 +440,7 @@ if (pendingTx.type === 'donation') {
       transactionId: transaction.id,
       reference: String(tx_ref),
       currency: pendingTx.currency,
-      paymentMethod: 'mobile_money',
+      paymentMethod: checkoutData.paymentMethod,
     });
     console.log(`[${traceId}] Multi-line donation processed successfully`);
     await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } }).catch(() => {});
@@ -468,7 +518,7 @@ if (pendingTx.type === 'donation') {
         amount: metadata.baseAmount,
         currency: pendingTx.currency,
         paidAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-        paymentMethod: 'mobile_money',
+        paymentMethod: checkoutData.paymentMethod,
         description: `Donation to ${campaign.name}`,
         itemDetails: [
           { label: 'Campaign', value: campaign.name },
