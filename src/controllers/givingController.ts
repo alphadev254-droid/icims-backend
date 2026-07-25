@@ -1718,6 +1718,7 @@ const recordCashDonationSchema = z.object({
   reference: z.string().optional(),
   notes: z.string().optional(),
   cellId: z.string().optional(),
+  pledgeId: z.string().optional(),
 });
 
 export async function recordCashDonation(req: Request, res: Response): Promise<void> {
@@ -1730,7 +1731,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { campaignId, churchId: selectedChurchId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes, cellId } = parsed.data;
+  const { campaignId, churchId: selectedChurchId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes, cellId, pledgeId } = parsed.data;
 
   // Validate required fields per donor type
   if (donorType === 'member' && !memberId) {
@@ -1795,6 +1796,37 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     return;
   }
 
+  let resolvedPledgeId: string | null = null;
+  if (donorType === 'member' && resolvedUserId) {
+    if (pledgeId) {
+      const pledge = await prisma.pledge.findFirst({
+        where: {
+          id: pledgeId,
+          userId: resolvedUserId,
+          campaignId,
+          status: { in: ['pending', 'partial', 'overdue'] },
+        },
+        select: { id: true },
+      });
+      if (!pledge) {
+        res.status(400).json({ success: false, message: 'Selected pledge is not active for this member and campaign' });
+        return;
+      }
+      resolvedPledgeId = pledge.id;
+    } else {
+      const activePledge = await prisma.pledge.findFirst({
+        where: {
+          userId: resolvedUserId,
+          campaignId,
+          status: { in: ['pending', 'partial', 'overdue'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      resolvedPledgeId = activePledge?.id ?? null;
+    }
+  }
+
   // Create Transaction record for consistency (cash type)
   const transaction = await prisma.transaction.create({
     data: {
@@ -1839,6 +1871,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
       guestEmail: donorType === 'guest' ? (guestEmail || undefined) : undefined,
       guestPhone: donorType === 'guest' ? (guestPhone || undefined) : undefined,
       cellId: cellId || undefined,
+      pledgeId: resolvedPledgeId || undefined,
     },
     include: {
       campaign: { select: { name: true, category: true } },
@@ -1846,6 +1879,11 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
       church: { select: { name: true } },
     },
   });
+
+  if (resolvedPledgeId) {
+    const { recalculatePledgeStatus } = await import('./pledgeController');
+    await recalculatePledgeStatus(resolvedPledgeId);
+  }
 
   res.status(201).json({ success: true, data: donation });
 }
