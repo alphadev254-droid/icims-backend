@@ -2,6 +2,40 @@ import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
+function groupDonationDetails(rows: any[]) {
+  const grouped = new Map<string, any[]>();
+
+  for (const row of rows) {
+    if (!row.transactionId) continue;
+    if (!grouped.has(row.transactionId)) grouped.set(row.transactionId, []);
+    grouped.get(row.transactionId)!.push({
+      campaignId: row.campaignId,
+      campaignName: row.campaign?.name ?? null,
+      campaignCategory: row.campaign?.category ?? null,
+      amount: row.amount,
+      currency: row.currency,
+      cellName: row.cell?.name ?? null,
+    });
+  }
+
+  return grouped;
+}
+
+function enrichDonationTransaction(transaction: any, donationLinesByTx: Map<string, any[]>) {
+  const donationLines = donationLinesByTx.get(transaction.id) ?? [];
+  const firstLine = donationLines[0];
+  const isMultiLine = donationLines.length > 1;
+
+  return {
+    ...transaction,
+    campaignName: isMultiLine ? 'Multiple giving items' : firstLine?.campaignName ?? null,
+    campaignCategory: isMultiLine ? 'multiple' : firstLine?.campaignCategory ?? null,
+    cellName: isMultiLine ? null : firstLine?.cellName ?? null,
+    donationLines,
+    isMultiDonation: isMultiLine,
+  };
+}
+
 export async function getTransactions(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
@@ -84,10 +118,10 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     const donationDetails = donationTxIds.length > 0
       ? await prisma.donationTransaction.findMany({
           where: { transactionId: { in: donationTxIds } },
-          select: { transactionId: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+          select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
         })
       : [];
-    const donationMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+    const donationLinesByTx = groupDonationDetails(donationDetails);
     const eventTxIds = txList.filter(t => t.type === 'event_ticket').map((t: any) => t.id);
     const eventDetails = eventTxIds.length > 0
       ? await prisma.eventTicket.findMany({
@@ -97,10 +131,7 @@ export async function getTransactions(req: Request, res: Response): Promise<void
       : [];
     const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
     const enriched = txList.map(t => ({
-      ...t,
-      campaignName: (donationMap.get(t.id) as any)?.campaign?.name ?? null,
-      campaignCategory: (donationMap.get(t.id) as any)?.campaign?.category ?? null,
-      cellName: (donationMap.get(t.id) as any)?.cell?.name ?? null,
+      ...enrichDonationTransaction(t, donationLinesByTx),
       eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
     }));
 
@@ -195,10 +226,10 @@ export async function getTransactions(req: Request, res: Response): Promise<void
   const donationDetails = donationTxIds.length > 0
     ? await prisma.donationTransaction.findMany({
         where: { transactionId: { in: donationTxIds } },
-        select: { transactionId: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+        select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
       })
     : [];
-  const donationMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+  const donationLinesByTx = groupDonationDetails(donationDetails);
   const eventTxIds = txList.filter(t => t.type === 'event_ticket').map((t: any) => t.id);
   const eventDetails = eventTxIds.length > 0
     ? await prisma.eventTicket.findMany({
@@ -208,10 +239,7 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     : [];
   const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
   const enriched = txList.map(t => ({
-    ...t,
-    campaignName: (donationMap.get(t.id) as any)?.campaign?.name ?? null,
-    campaignCategory: (donationMap.get(t.id) as any)?.campaign?.category ?? null,
-    cellName: (donationMap.get(t.id) as any)?.cell?.name ?? null,
+    ...enrichDonationTransaction(t, donationLinesByTx),
     eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
   }));
 
@@ -219,8 +247,9 @@ export async function getTransactions(req: Request, res: Response): Promise<void
 }
 
 export async function getTransaction(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
   const transaction = await prisma.transaction.findUnique({ 
-    where: { id: String(req.params.id) },
+    where: { id },
     include: { 
       user: { select: { firstName: true, lastName: true, email: true } },
       church: { select: { name: true } },
@@ -228,7 +257,26 @@ export async function getTransaction(req: Request, res: Response): Promise<void>
     }
   });
   if (!transaction) { res.status(404).json({ success: false, message: 'Transaction not found' }); return; }
-  res.json({ success: true, data: transaction });
+
+  if (transaction.type !== 'donation') {
+    res.json({ success: true, data: transaction });
+    return;
+  }
+
+  const donationRows = await prisma.donationTransaction.findMany({
+    where: { transactionId: id },
+    select: {
+      transactionId: true,
+      campaignId: true,
+      amount: true,
+      currency: true,
+      campaign: { select: { name: true, category: true } },
+      cell: { select: { name: true } },
+    },
+  });
+
+  const donationLinesByTx = groupDonationDetails(donationRows);
+  res.json({ success: true, data: enrichDonationTransaction(transaction, donationLinesByTx) });
 }
 
 export async function updateTransactionStatus(req: Request, res: Response): Promise<void> {
@@ -315,10 +363,10 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
   const donationDetails = donationTxIds.length > 0
     ? await prisma.donationTransaction.findMany({
         where: { transactionId: { in: donationTxIds } },
-        select: { transactionId: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+        select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
       })
     : [];
-  const donationDetailMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+  const donationLinesByTx = groupDonationDetails(donationDetails);
 
   // Enrich event-ticket transactions with event title
   const eventTxIds = transactions.filter(t => t.type === 'event_ticket').map(t => t.id);
@@ -331,10 +379,7 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
   const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
 
   const enriched = transactions.map(t => ({
-    ...t,
-    campaignName: (donationDetailMap.get(t.id) as any)?.campaign?.name ?? null,
-    campaignCategory: (donationDetailMap.get(t.id) as any)?.campaign?.category ?? null,
-    cellName: (donationDetailMap.get(t.id) as any)?.cell?.name ?? null,
+    ...enrichDonationTransaction(t, donationLinesByTx),
     eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
   }));
 

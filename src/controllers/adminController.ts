@@ -4,6 +4,40 @@ import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { cancelUserAccount } from '../lib/userCancellation';
 
+function groupDonationDetails(rows: any[]) {
+  const grouped = new Map<string, any[]>();
+
+  for (const row of rows) {
+    if (!row.transactionId) continue;
+    if (!grouped.has(row.transactionId)) grouped.set(row.transactionId, []);
+    grouped.get(row.transactionId)!.push({
+      campaignId: row.campaignId,
+      campaignName: row.campaign?.name ?? null,
+      campaignCategory: row.campaign?.category ?? null,
+      amount: row.amount,
+      currency: row.currency,
+      cellName: row.cell?.name ?? null,
+    });
+  }
+
+  return grouped;
+}
+
+function enrichDonationTransaction(transaction: any, donationLinesByTx: Map<string, any[]>) {
+  const donationLines = donationLinesByTx.get(transaction.id) ?? [];
+  const firstLine = donationLines[0];
+  const isMultiLine = donationLines.length > 1;
+
+  return {
+    ...transaction,
+    campaignName: isMultiLine ? 'Multiple giving items' : firstLine?.campaignName ?? null,
+    campaignCategory: isMultiLine ? 'multiple' : firstLine?.campaignCategory ?? null,
+    cellName: isMultiLine ? null : firstLine?.cellName ?? null,
+    donationLines,
+    isMultiDonation: isMultiLine,
+  };
+}
+
 function safeUser(user: any) {
   const { password: _pw, ...rest } = user;
   return {
@@ -1158,10 +1192,10 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   const donationDetails = donationTxIds.length > 0
     ? await prisma.donationTransaction.findMany({
         where: { transactionId: { in: donationTxIds } },
-        select: { transactionId: true, campaign: { select: { name: true, category: true } } },
+        select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
       })
     : [];
-  const donationMap = new Map(donationDetails.map((d: any) => [d.transactionId, d]));
+  const donationLinesByTx = groupDonationDetails(donationDetails);
 
   const eventTxIds = txList.filter(t => t.type === 'event_ticket').map((t: any) => t.id);
   const eventDetails = eventTxIds.length > 0
@@ -1173,9 +1207,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
 
   const enriched = txList.map(t => ({
-    ...t,
-    campaignName: (donationMap.get(t.id) as any)?.campaign?.name ?? null,
-    campaignCategory: (donationMap.get(t.id) as any)?.campaign?.category ?? null,
+    ...enrichDonationTransaction(t, donationLinesByTx),
     eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
   }));
 
@@ -1231,18 +1263,23 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
 
   if (!tx) { res.status(404).json({ success: false, message: 'Transaction not found' }); return; }
 
-  // Enrich with campaign name for donations
+  // Enrich with campaign names for donations. A single checkout can contain multiple giving lines.
   let campaignName: string | null = null;
   let campaignCategory: string | null = null;
   let cellName: string | null = null;
+  let donationLines: any[] = [];
+  let isMultiDonation = false;
   if (tx.type === 'donation') {
-    const donationTx = await prisma.donationTransaction.findFirst({
+    const donationRows = await prisma.donationTransaction.findMany({
       where: { transactionId: id },
-      select: { campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+      select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
     });
-    campaignName     = donationTx?.campaign?.name ?? null;
-    campaignCategory = donationTx?.campaign?.category ?? null;
-    cellName         = donationTx?.cell?.name ?? null;
+    donationLines = groupDonationDetails(donationRows).get(id) ?? [];
+    isMultiDonation = donationLines.length > 1;
+    const firstLine = donationLines[0];
+    campaignName = isMultiDonation ? 'Multiple giving items' : firstLine?.campaignName ?? null;
+    campaignCategory = isMultiDonation ? 'multiple' : firstLine?.campaignCategory ?? null;
+    cellName = isMultiDonation ? null : firstLine?.cellName ?? null;
   }
 
   // Parse gateway payload/response so frontend gets real objects
@@ -1263,6 +1300,8 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
       campaignName,
       campaignCategory,
       cellName,
+      donationLines,
+      isMultiDonation,
       gatewayPayloadParsed,
       gatewayResponseParsed,
     },
