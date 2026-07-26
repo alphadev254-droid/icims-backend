@@ -7,6 +7,7 @@ import { creditChurchWallet } from '../utils/walletOperations';
 type DonationLine = {
   campaignId: string;
   campaignName?: string;
+  churchId?: string | null;
   amount: number;
   cellId?: string | null;
   pledgeId?: string | null;
@@ -17,6 +18,7 @@ function getDonationLines(metadata: any): DonationLine[] {
     return metadata.items.map((item: any) => ({
       campaignId: item.campaignId,
       campaignName: item.campaignName,
+      churchId: item.churchId ?? null,
       amount: Number(item.amount),
       cellId: item.cellId ?? null,
       pledgeId: item.pledgeId ?? null,
@@ -26,6 +28,7 @@ function getDonationLines(metadata: any): DonationLine[] {
   return [{
     campaignId: metadata.campaignId,
     campaignName: metadata.campaignName,
+    churchId: metadata.churchId ?? null,
     amount: Number(metadata.baseAmount),
     cellId: metadata.cellId ?? null,
     pledgeId: metadata.pledgeId ?? null,
@@ -52,11 +55,12 @@ export async function createDonationRecordsForTransaction(args: {
   const created: any[] = [];
 
   for (const line of lines) {
+    const lineChurchId = line.churchId || pendingTx.churchId;
     const donationTx = await prisma.donationTransaction.create({
       data: {
         campaignId: line.campaignId,
         userId: isGuest ? null : pendingTx.userId,
-        churchId: pendingTx.churchId,
+        churchId: lineChurchId,
         amount: line.amount,
         currency,
         transactionId,
@@ -98,7 +102,7 @@ export async function createDonationRecordsForTransaction(args: {
     }
 
     await creditChurchWallet(
-      pendingTx.churchId,
+      lineChurchId,
       line.amount,
       'donation',
       transactionId,

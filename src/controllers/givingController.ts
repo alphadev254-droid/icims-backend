@@ -930,6 +930,7 @@ const createDonationSchema = z.object({
 
 const donationItemSchema = z.object({
   campaignId: z.string().min(1),
+  churchId: z.string().optional(),
   amount: z.number().positive(),
   cellId: z.string().optional(),
   pledgeId: z.string().optional(),
@@ -954,7 +955,7 @@ const createGuestMultipleDonationSchema = z.object({
 });
 
 async function resolveDonationCampaigns(
-  items: Array<{ campaignId: string; amount: number; cellId?: string }>,
+  items: Array<{ campaignId: string; churchId?: string; amount: number; cellId?: string }>,
   requirePublic: boolean,
   options: { selectedChurchId?: string | null; userChurchId?: string | null } = {},
 ) {
@@ -1012,14 +1013,25 @@ async function resolveDonationCampaigns(
   }
 
   const campaignMap = new Map(campaigns.map(campaign => [campaign.id, campaign]));
+  const itemChurchIds = new Map<string, string>();
+
   for (const item of items) {
     const campaign = campaignMap.get(item.campaignId);
-    if (campaign?.category === 'fellowship_offering' && !item.cellId) {
+    if (!campaign) continue;
+
+    const campaignChurchIds = getCampaignChurchIds(campaign);
+    const itemChurchId = item.churchId || resolvedChurchId;
+    if (!itemChurchId || !campaignChurchIds.includes(itemChurchId)) {
+      return { error: `${campaign.name} is not available for the selected church` };
+    }
+    itemChurchIds.set(item.campaignId, itemChurchId);
+
+    if (campaign.category === 'fellowship_offering' && !item.cellId) {
       return { error: `Please select a cell/fellowship for ${campaign.name}` };
     }
-    if (campaign?.category === 'fellowship_offering' && item.cellId) {
+    if (campaign.category === 'fellowship_offering' && item.cellId) {
       const cell = await prisma.cell.findFirst({
-        where: { id: item.cellId, churchId: resolvedChurchId, status: 'active' },
+        where: { id: item.cellId, churchId: itemChurchId, status: 'active' },
         select: { id: true },
       });
       if (!cell) {
@@ -1028,7 +1040,7 @@ async function resolveDonationCampaigns(
     }
   }
 
-  return { campaigns, campaignMap, churchId: resolvedChurchId as string, currency: currencies[0], availableChurchIds: commonChurchIds };
+  return { campaigns, campaignMap, churchId: resolvedChurchId as string, itemChurchIds, currency: currencies[0], availableChurchIds: commonChurchIds };
 }
 
 export async function createDonation(req: Request, res: Response): Promise<void> {
@@ -1187,6 +1199,7 @@ export async function createMultipleDonation(req: Request, res: Response): Promi
         items: items.map(item => ({
           campaignId: item.campaignId,
           campaignName: resolved.campaignMap.get(item.campaignId)?.name,
+          churchId: resolved.itemChurchIds.get(item.campaignId) || resolved.churchId,
           amount: item.amount,
           cellId: item.cellId || null,
           pledgeId: item.pledgeId || null,
@@ -1604,6 +1617,7 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
         items: items.map(item => ({
           campaignId: item.campaignId,
           campaignName: resolved.campaignMap.get(item.campaignId)?.name,
+          churchId: resolved.itemChurchIds.get(item.campaignId) || resolved.churchId,
           amount: item.amount,
           cellId: item.cellId || null,
         })),

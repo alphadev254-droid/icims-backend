@@ -16,6 +16,8 @@ function groupDonationDetails(rows: any[]) {
       campaignCategory: row.campaign?.category ?? null,
       amount: row.amount,
       currency: row.currency,
+      churchId: row.churchId ?? null,
+      churchName: row.church?.name ?? null,
       cellName: row.cell?.name ?? null,
     });
   }
@@ -1192,7 +1194,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   const donationDetails = donationTxIds.length > 0
     ? await prisma.donationTransaction.findMany({
         where: { transactionId: { in: donationTxIds } },
-        select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+        select: { transactionId: true, campaignId: true, churchId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, church: { select: { name: true } }, cell: { select: { name: true } } },
       })
     : [];
   const donationLinesByTx = groupDonationDetails(donationDetails);
@@ -1272,7 +1274,7 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
   if (tx.type === 'donation') {
     const donationRows = await prisma.donationTransaction.findMany({
       where: { transactionId: id },
-      select: { transactionId: true, campaignId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, cell: { select: { name: true } } },
+      select: { transactionId: true, campaignId: true, churchId: true, amount: true, currency: true, campaign: { select: { name: true, category: true } }, church: { select: { name: true } }, cell: { select: { name: true } } },
     });
     donationLines = groupDonationDetails(donationRows).get(id) ?? [];
     isMultiDonation = donationLines.length > 1;
