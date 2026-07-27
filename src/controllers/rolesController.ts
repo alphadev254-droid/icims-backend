@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { getAccessibleChurchIds } from '../lib/churchScope';
 
 const GLOBAL_ROLES = ['ministry_admin', 'member', 'system_admin'];
 const LOCKED_ROLES = ['system_admin'];
@@ -31,6 +32,15 @@ const assignRoleSchema = z.object({
   roleId: z.string().optional(),
 });
 
+const roleFiltersSchema = z.object({
+  search: z.string().optional(),
+  scopeType: z.enum(['all_ministry', 'specific_churches', 'regions', 'districts', 'traditional_authorities', 'own_church']).optional(),
+  churchIds: z.string().optional(),
+  regions: z.string().optional(),
+  districts: z.string().optional(),
+  traditionalAuthorities: z.string().optional(),
+});
+
 function parseList(value?: string | null): string[] {
   if (!value) return [];
   try {
@@ -43,6 +53,15 @@ function parseList(value?: string | null): string[] {
 
 function serializeList(value?: string[]): string | null {
   return value && value.length > 0 ? JSON.stringify(value) : null;
+}
+
+function parseQueryList(value?: string): string[] {
+  if (!value) return [];
+  return value.split(',').map(item => item.trim()).filter(Boolean);
+}
+
+function listContainsAny(field: string, values: string[]) {
+  return values.map(value => ({ [field]: { contains: `"${value.replace(/"/g, '\\"')}"` } }));
 }
 
 function safeSlug(value: string): string {
@@ -117,6 +136,11 @@ async function upsertRoleScope(roleId: string, ministryAdminId: string, scope: z
 }
 
 async function replaceRolePermissions(roleId: string, ministryAdminId: string, permNames: string[]) {
+  const blockedNames = permNames.filter(isSystemPermission);
+  if (blockedNames.length > 0) {
+    throw new Error(`These permissions cannot be assigned to custom roles: ${blockedNames.join(', ')}`);
+  }
+
   const allowedNames = await expandWithReadPermissions(permNames);
   const permRecords = await prisma.permission.findMany({ where: { name: { in: allowedNames } } });
 
@@ -153,18 +177,133 @@ async function countUsersForRoleInMinistry(roleId: string, ministryAdminId: stri
 
 export async function getRoles(req: Request, res: Response): Promise<void> {
   const ministryAdminId = await resolveMinistryAdminId(req);
-  const role = req.user?.role;
+  const role = req.user?.role ?? 'member';
+  const userId = req.user?.userId;
+  const parsedFilters = roleFiltersSchema.safeParse(req.query);
+  if (!parsedFilters.success) {
+    res.status(400).json({ success: false, message: parsedFilters.error.errors[0].message });
+    return;
+  }
+
+  const filters = parsedFilters.data;
+  const search = filters.search?.trim();
+  const scopeOr: any[] = [];
+  const churchIds = parseQueryList(filters.churchIds);
+  const regions = parseQueryList(filters.regions);
+  const districts = parseQueryList(filters.districts);
+  const traditionalAuthorities = parseQueryList(filters.traditionalAuthorities);
+  let accessibleChurchIds: string[] | null = null;
+  if (role !== 'system_admin') {
+    accessibleChurchIds = await getAccessibleChurchIds(
+      role,
+      req.user?.churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      userId,
+    );
+  }
+
+  const requestedScopedFilters = churchIds.length > 0 || regions.length > 0 || districts.length > 0 || traditionalAuthorities.length > 0;
+  if (requestedScopedFilters && accessibleChurchIds && accessibleChurchIds.length === 0) {
+    res.json({ success: true, data: [], total: 0 });
+    return;
+  }
+
+  const accessibleChurchWhere = accessibleChurchIds
+    ? { id: { in: accessibleChurchIds } }
+    : {};
+  const accessibleChurches = requestedScopedFilters
+    ? await prisma.church.findMany({
+        where: accessibleChurchWhere,
+        select: { id: true, region: true, district: true, traditionalAuthority: true },
+      })
+    : [];
+  const accessibleChurchIdSet = new Set(accessibleChurches.map(church => church.id));
+  const accessibleRegions = new Set(accessibleChurches.map(church => church.region).filter(Boolean) as string[]);
+  const accessibleDistricts = new Set(accessibleChurches.map(church => church.district).filter(Boolean) as string[]);
+  const accessibleTraditionalAuthorities = new Set(accessibleChurches.map(church => church.traditionalAuthority).filter(Boolean) as string[]);
+  const scopedChurchIds = accessibleChurchIds ? churchIds.filter(id => accessibleChurchIdSet.has(id)) : churchIds;
+  const scopedRegions = accessibleChurchIds ? regions.filter(value => accessibleRegions.has(value)) : regions;
+  const scopedDistricts = accessibleChurchIds ? districts.filter(value => accessibleDistricts.has(value)) : districts;
+  const scopedTraditionalAuthorities = accessibleChurchIds
+    ? traditionalAuthorities.filter(value => accessibleTraditionalAuthorities.has(value))
+    : traditionalAuthorities;
+
+  if (
+    (churchIds.length > 0 && scopedChurchIds.length === 0) ||
+    (regions.length > 0 && scopedRegions.length === 0) ||
+    (districts.length > 0 && scopedDistricts.length === 0) ||
+    (traditionalAuthorities.length > 0 && scopedTraditionalAuthorities.length === 0)
+  ) {
+    res.json({ success: true, data: [], total: 0 });
+    return;
+  }
+
+  if (scopedChurchIds.length > 0) {
+    const selectedChurches = await prisma.church.findMany({
+      where: { id: { in: scopedChurchIds } },
+      select: { region: true, district: true, traditionalAuthority: true },
+    });
+    const churchRegions = Array.from(new Set(selectedChurches.map(church => church.region).filter(Boolean))) as string[];
+    const churchDistricts = Array.from(new Set(selectedChurches.map(church => church.district).filter(Boolean))) as string[];
+    const churchTraditionalAuthorities = Array.from(new Set(selectedChurches.map(church => church.traditionalAuthority).filter(Boolean))) as string[];
+
+    scopeOr.push(
+      { scopeType: 'all_ministry' },
+      { scopeType: 'own_church' },
+      ...listContainsAny('churchIds', scopedChurchIds),
+      ...listContainsAny('regions', churchRegions),
+      ...listContainsAny('districts', churchDistricts),
+      ...listContainsAny('traditionalAuthorities', churchTraditionalAuthorities),
+    );
+  }
+  if (scopedRegions.length > 0) {
+    scopeOr.push({ scopeType: 'all_ministry' }, ...listContainsAny('regions', scopedRegions));
+  }
+  if (scopedDistricts.length > 0) {
+    scopeOr.push({ scopeType: 'all_ministry' }, ...listContainsAny('districts', scopedDistricts));
+  }
+  if (scopedTraditionalAuthorities.length > 0) {
+    scopeOr.push({ scopeType: 'all_ministry' }, ...listContainsAny('traditionalAuthorities', scopedTraditionalAuthorities));
+  }
+
+  const where: any = role === 'system_admin'
+    ? { name: { notIn: ['system_admin', 'ministry_admin'] } }
+    : {
+        name: { notIn: ['system_admin', 'ministry_admin'] },
+        OR: [
+          { ministryAdminId: null },
+          ...(ministryAdminId ? [{ ministryAdminId }] : []),
+        ],
+      };
+
+  const andFilters: any[] = [];
+  if (search) {
+    andFilters.push({
+      OR: [
+        { displayName: { contains: search } },
+        { name: { contains: search } },
+        { description: { contains: search } },
+      ],
+    });
+  }
+  if (filters.scopeType || scopeOr.length > 0) {
+    andFilters.push({
+      scope: {
+        is: {
+          ...(filters.scopeType ? { scopeType: filters.scopeType } : {}),
+          ...(scopeOr.length > 0 ? { OR: scopeOr } : {}),
+        },
+      },
+    });
+  }
+  if (andFilters.length > 0) {
+    where.AND = andFilters;
+  }
 
   const roles = await prisma.role.findMany({
-    where: role === 'system_admin'
-      ? {}
-      : {
-          name: { not: 'system_admin' },
-          OR: [
-            { ministryAdminId: null },
-            ...(ministryAdminId ? [{ ministryAdminId }] : []),
-          ],
-        },
+    where,
     include: { scope: true },
     orderBy: [{ isSystemRole: 'desc' }, { displayName: 'asc' }],
   });
@@ -196,7 +335,7 @@ export async function getRoles(req: Request, res: Response): Promise<void> {
     };
   }));
 
-  res.json({ success: true, data });
+  res.json({ success: true, data, total: data.length });
 }
 
 export async function getAllPermissions(_req: Request, res: Response): Promise<void> {
@@ -230,8 +369,14 @@ export async function createRole(req: Request, res: Response): Promise<void> {
     },
   });
 
-  await replaceRolePermissions(role.id, ministryAdminId, parsed.data.permissions);
-  await upsertRoleScope(role.id, ministryAdminId, parsed.data.scope ?? { scopeType: 'specific_churches', churchIds: [], regions: [], districts: [], traditionalAuthorities: [] });
+  try {
+    await replaceRolePermissions(role.id, ministryAdminId, parsed.data.permissions);
+    await upsertRoleScope(role.id, ministryAdminId, parsed.data.scope ?? { scopeType: 'specific_churches', churchIds: [], regions: [], districts: [], traditionalAuthorities: [] });
+  } catch (error: any) {
+    await prisma.role.delete({ where: { id: role.id } });
+    res.status(400).json({ success: false, message: error.message || 'Invalid role permissions' });
+    return;
+  }
 
   res.status(201).json({ success: true, data: role });
 }
@@ -264,8 +409,13 @@ export async function updateRole(req: Request, res: Response): Promise<void> {
     },
   });
 
-  if (parsed.data.permissions) await replaceRolePermissions(roleId, ministryAdminId, parsed.data.permissions);
-  if (parsed.data.scope) await upsertRoleScope(roleId, ministryAdminId, parsed.data.scope);
+  try {
+    if (parsed.data.permissions) await replaceRolePermissions(roleId, ministryAdminId, parsed.data.permissions);
+    if (parsed.data.scope) await upsertRoleScope(roleId, ministryAdminId, parsed.data.scope);
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message || 'Invalid role permissions' });
+    return;
+  }
 
   res.json({ success: true, data: updated });
 }
@@ -328,7 +478,12 @@ export async function updateRolePermissions(req: Request, res: Response): Promis
     return;
   }
 
-  await replaceRolePermissions(roleId, ministryAdminId, parsed.data.permissions);
+  try {
+    await replaceRolePermissions(roleId, ministryAdminId, parsed.data.permissions);
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message || 'Invalid role permissions' });
+    return;
+  }
   res.json({ success: true, message: 'Permissions updated' });
 }
 
