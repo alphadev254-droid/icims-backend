@@ -224,6 +224,35 @@ function normalizePhoneValue(value?: string | null) {
   return String(value || '').replace(/\D/g, '');
 }
 
+function phoneLookupKeys(value?: string | null) {
+  const raw = String(value || '').trim();
+  const digits = normalizePhoneValue(value);
+  const keys = new Set<string>();
+  if (raw) keys.add(raw.toLowerCase());
+  if (digits) keys.add(digits);
+
+  if (digits.startsWith('265') && digits.length === 12) {
+    const localNine = digits.slice(3);
+    keys.add(localNine);
+    keys.add(`0${localNine}`);
+    keys.add(`265${localNine}`);
+    keys.add(`+265${localNine}`);
+  } else if (digits.startsWith('0') && digits.length === 10) {
+    const localNine = digits.slice(1);
+    keys.add(localNine);
+    keys.add(`0${localNine}`);
+    keys.add(`265${localNine}`);
+    keys.add(`+265${localNine}`);
+  } else if (digits.length === 9) {
+    keys.add(digits);
+    keys.add(`0${digits}`);
+    keys.add(`265${digits}`);
+    keys.add(`+265${digits}`);
+  }
+
+  return Array.from(keys).filter(Boolean);
+}
+
 async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
   if (!records.length) return records;
 
@@ -250,8 +279,7 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
   const guestPhones: string[] = Array.from(new Set(
     participants
       .filter((participant: any) => !participant.userId)
-      .map((participant: any) => String(participant.guestPhone || '').trim())
-      .filter((value: string): value is string => Boolean(value))
+      .flatMap((participant: any) => phoneLookupKeys(participant.guestPhone))
   ));
 
   const matchedMembers = (guestEmails.length || guestPhones.length)
@@ -277,9 +305,11 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
   const membersByPhone = new Map<string, any[]>();
   for (const member of matchedMembers) {
     const email = normalizeContactValue(member.email);
-    const phone = normalizePhoneValue(member.phone);
+    const phoneKeys = phoneLookupKeys(member.phone);
     if (email) membersByEmail.set(email, [...(membersByEmail.get(email) || []), member]);
-    if (phone) membersByPhone.set(phone, [...(membersByPhone.get(phone) || []), member]);
+    for (const phone of phoneKeys) {
+      membersByPhone.set(phone, [...(membersByPhone.get(phone) || []), member]);
+    }
   }
 
   const counts = new Map<string, { trueVisitors: number; ministryMemberGuests: number; checkedInParticipants: number }>();
@@ -302,7 +332,7 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
 
     const ministryAdminId = record.church?.ministryAdminId || null;
     const emailMatches = membersByEmail.get(normalizeContactValue(participant.guestEmail)) || [];
-    const phoneMatches = membersByPhone.get(normalizePhoneValue(participant.guestPhone)) || [];
+    const phoneMatches = phoneLookupKeys(participant.guestPhone).flatMap(phone => membersByPhone.get(phone) || []);
     const matchedMinistryMember = [...emailMatches, ...phoneMatches].some(member => {
       const memberMinistryId = member.ministryAdminId || member.church?.ministryAdminId || null;
       return ministryAdminId && memberMinistryId === ministryAdminId;
