@@ -87,7 +87,7 @@ const attendanceListSelect: any = {
   qrActiveFrom: true,
   qrActiveUntil: true,
   qrRegeneratedAt: true,
-  church: { select: { id: true, name: true } },
+  church: { select: { id: true, name: true, ministryAdminId: true } },
   _count: { select: { visitors: true, participants: true } },
 };
 
@@ -224,6 +224,102 @@ function normalizePhoneValue(value?: string | null) {
   return String(value || '').replace(/\D/g, '');
 }
 
+async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
+  if (!records.length) return records;
+
+  const attendanceIds = records.map(record => record.id).filter(Boolean);
+  const recordById = new Map(records.map(record => [record.id, record]));
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const participants = await participantDelegate.findMany({
+    where: { attendanceId: { in: attendanceIds } },
+    select: {
+      attendanceId: true,
+      userId: true,
+      guestEmail: true,
+      guestPhone: true,
+      user: { select: { churchId: true } },
+    },
+  });
+
+  const guestEmails: string[] = Array.from(new Set(
+    participants
+      .filter((participant: any) => !participant.userId)
+      .map((participant: any) => normalizeContactValue(participant.guestEmail))
+      .filter((value: string): value is string => Boolean(value))
+  ));
+  const guestPhones: string[] = Array.from(new Set(
+    participants
+      .filter((participant: any) => !participant.userId)
+      .map((participant: any) => String(participant.guestPhone || '').trim())
+      .filter((value: string): value is string => Boolean(value))
+  ));
+
+  const matchedMembers = (guestEmails.length || guestPhones.length)
+    ? await prisma.user.findMany({
+        where: {
+          status: 'active',
+          OR: [
+            ...(guestEmails.length ? [{ email: { in: guestEmails } }] : []),
+            ...(guestPhones.length ? [{ phone: { in: guestPhones } }] : []),
+          ],
+        },
+        select: {
+          id: true,
+          email: true,
+          phone: true,
+          ministryAdminId: true,
+          church: { select: { id: true, ministryAdminId: true } },
+        },
+      })
+    : [];
+
+  const membersByEmail = new Map<string, any[]>();
+  const membersByPhone = new Map<string, any[]>();
+  for (const member of matchedMembers) {
+    const email = normalizeContactValue(member.email);
+    const phone = normalizePhoneValue(member.phone);
+    if (email) membersByEmail.set(email, [...(membersByEmail.get(email) || []), member]);
+    if (phone) membersByPhone.set(phone, [...(membersByPhone.get(phone) || []), member]);
+  }
+
+  const counts = new Map<string, { trueVisitors: number; ministryMemberGuests: number; checkedInParticipants: number }>();
+  for (const id of attendanceIds) {
+    counts.set(id, { trueVisitors: 0, ministryMemberGuests: 0, checkedInParticipants: 0 });
+  }
+
+  for (const participant of participants) {
+    const record = recordById.get(participant.attendanceId);
+    const rowCounts = counts.get(participant.attendanceId);
+    if (!record || !rowCounts) continue;
+    rowCounts.checkedInParticipants += 1;
+
+    if (participant.userId) {
+      if (participant.user?.churchId && participant.user.churchId !== record.churchId) {
+        rowCounts.ministryMemberGuests += 1;
+      }
+      continue;
+    }
+
+    const ministryAdminId = record.church?.ministryAdminId || null;
+    const emailMatches = membersByEmail.get(normalizeContactValue(participant.guestEmail)) || [];
+    const phoneMatches = membersByPhone.get(normalizePhoneValue(participant.guestPhone)) || [];
+    const matchedMinistryMember = [...emailMatches, ...phoneMatches].some(member => {
+      const memberMinistryId = member.ministryAdminId || member.church?.ministryAdminId || null;
+      return ministryAdminId && memberMinistryId === ministryAdminId;
+    });
+
+    if (matchedMinistryMember) rowCounts.ministryMemberGuests += 1;
+    else rowCounts.trueVisitors += 1;
+  }
+
+  return records.map(record => ({
+    ...record,
+    checkedInParticipants: counts.get(record.id)?.checkedInParticipants ?? 0,
+    trueVisitors: counts.get(record.id)?.trueVisitors ?? 0,
+    ministryMemberGuests: counts.get(record.id)?.ministryMemberGuests ?? 0,
+  }));
+}
+
 export async function getAttendance(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
@@ -294,7 +390,8 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
       }),
       prisma.attendance.count({ where: whereClause }),
     ]);
-    res.json({ success: true, data: records, pagination: { page, limit: exportLimit, total, totalPages: Math.ceil(total / exportLimit) } });
+    const enrichedRecords = await enrichAttendanceRecordsWithParticipantCounts(records);
+    res.json({ success: true, data: enrichedRecords, pagination: { page, limit: exportLimit, total, totalPages: Math.ceil(total / exportLimit) } });
     return;
   }
 
@@ -309,7 +406,8 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
     prisma.attendance.count({ where: whereClause }),
   ]);
   
-  res.json({ success: true, data: records, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  const enrichedRecords = await enrichAttendanceRecordsWithParticipantCounts(records);
+  res.json({ success: true, data: enrichedRecords, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function createAttendance(req: Request, res: Response): Promise<void> {
@@ -679,7 +777,7 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
   }
 
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
-  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 1000);
   const skip = (page - 1) * limit;
 
   const participantDelegate = (prisma as any).attendanceParticipant;
