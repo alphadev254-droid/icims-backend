@@ -843,8 +843,7 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
     .filter((value: string): value is string => Boolean(value));
   const guestPhones = participants
     .filter((participant: any) => !participant.userId)
-    .map((participant: any) => normalizeContactValue(participant.guestPhone))
-    .filter((value: string): value is string => Boolean(value));
+    .flatMap((participant: any) => phoneLookupKeys(participant.guestPhone));
 
   let matchedMembers: any[] = [];
   if (attendanceMinistryId && (guestEmails.length > 0 || guestPhones.length > 0)) {
@@ -882,16 +881,18 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
   const memberByPhone = new Map<string, any>();
   for (const member of matchedMembers) {
     const email = normalizeContactValue(member.email);
-    const phone = normalizePhoneValue(member.phone);
+    const phoneKeys = phoneLookupKeys(member.phone);
     if (email) memberByEmail.set(email, member);
-    if (phone) memberByPhone.set(phone, member);
+    for (const phone of phoneKeys) {
+      memberByPhone.set(phone, member);
+    }
   }
 
   const enrichedParticipants = participants.map((participant: any) => {
     if (participant.userId) return participant;
     const matchedMember =
       memberByEmail.get(normalizeContactValue(participant.guestEmail)) ||
-      memberByPhone.get(normalizePhoneValue(participant.guestPhone));
+      phoneLookupKeys(participant.guestPhone).map(phone => memberByPhone.get(phone)).find(Boolean);
     if (!matchedMember) return participant;
     return {
       ...participant,
