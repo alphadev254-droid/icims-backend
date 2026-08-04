@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
@@ -9,6 +10,61 @@ import { groupByDateRanges } from '../lib/dateGrouping';
 import { queueChurchPush } from '../lib/notificationQueue';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { eventCreatedTemplate } from '../lib/emailTemplates';
+
+const TICKET_NUMBER_RETRY_LIMIT = 5;
+
+function buildTicketNumber(event: { title: string; date: Date | string }, sequence: number): string {
+  const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
+  const eventPrefix = event.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
+  return `${eventPrefix}-${eventDate}-${String(sequence).padStart(4, '0')}`;
+}
+
+function isUniqueTicketNumberError(error: unknown): boolean {
+  const target = (error as { meta?: { target?: unknown } }).meta?.target;
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: string }).code === 'P2002'
+    && (
+      (Array.isArray(target) && target.includes('ticketNumber'))
+      || (typeof target === 'string' && target.includes('ticketNumber'))
+    );
+}
+
+async function createEventTicketWithUniqueNumber(
+  event: { id: string; title: string; date: Date | string },
+  data: Omit<Prisma.EventTicketUncheckedCreateInput, 'id' | 'ticketNumber' | 'eventId' | 'createdAt' | 'updatedAt'>,
+  include?: Parameters<typeof prisma.eventTicket.create>[0]['include'],
+) {
+  const latestTicket = await prisma.eventTicket.findFirst({
+    where: { eventId: event.id },
+    orderBy: { createdAt: 'desc' },
+    select: { ticketNumber: true },
+  });
+
+  const latestSequence = Number(latestTicket?.ticketNumber.match(/-(\d+)$/)?.[1] ?? 0);
+  const countSequence = await prisma.eventTicket.count({ where: { eventId: event.id } });
+  let nextSequence = Math.max(latestSequence, countSequence) + 1;
+
+  for (let attempt = 0; attempt < TICKET_NUMBER_RETRY_LIMIT; attempt += 1) {
+    try {
+      return await prisma.eventTicket.create({
+        data: {
+          ...data,
+          eventId: event.id,
+          ticketNumber: buildTicketNumber(event, nextSequence + attempt),
+        },
+        ...(include ? { include } : {}),
+      });
+    } catch (error) {
+      if (!isUniqueTicketNumberError(error) || attempt === TICKET_NUMBER_RETRY_LIMIT - 1) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error('Unable to generate a unique ticket number');
+}
 
 const baseEventSchema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -475,11 +531,6 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     res.status(400).json({ success: false, message: 'Event is sold out' }); return;
   }
 
-  const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
-  const ticketCount = await prisma.eventTicket.count({ where: { eventId } });
-  const eventPrefix = event.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-  const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + 1).padStart(4, '0')}`;
-
   let transactionId = null;
   if (!event.isFree && event.ticketPrice) {
     const transaction = await prisma.transaction.create({
@@ -497,8 +548,10 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     transactionId = transaction.id;
   }
 
-  const ticket = await prisma.eventTicket.create({
-    data: { ticketNumber, eventId, userId: targetUserId, transactionId, status: 'confirmed' },
+  const ticket = await createEventTicketWithUniqueNumber(event, {
+    userId: targetUserId,
+    transactionId,
+    status: 'confirmed',
   });
 
   await prisma.event.update({
@@ -609,11 +662,6 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
   if (!member) { res.status(404).json({ success: false, message: 'Member not found' }); return; }
   if (member.role?.name !== 'member') { res.status(400).json({ success: false, message: 'Selected user is not a member' }); return; }
 
-  const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
-  const ticketCount = await prisma.eventTicket.count({ where: { eventId } });
-  const eventPrefix = event.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-  const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + 1).padStart(4, '0')}`;
-
   let transactionId = null;
 
   if (useExistingTransaction && existingTransactionId) {
@@ -643,17 +691,12 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
     }
   }
 
-  const ticket = await prisma.eventTicket.create({
-    data: { 
-      ticketNumber, 
-      eventId, 
+  const ticket = await createEventTicketWithUniqueNumber(event, {
       userId: memberId, 
       transactionId, 
       status: ticketStatus || 'confirmed',
       isManual: true,
-    },
-    include: { user: { select: { firstName: true, lastName: true, email: true } }, transaction: true },
-  });
+    }, { user: { select: { firstName: true, lastName: true, email: true } }, transaction: true });
 
   await prisma.event.update({
     where: { id: eventId },
