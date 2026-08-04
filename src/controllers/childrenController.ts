@@ -166,6 +166,23 @@ async function setPrimaryIfNeeded(childId: string, guardianId: string, isPrimary
   });
 }
 
+function emptyChildrenSummary() {
+  return { total: 0, gender: { male: 0, female: 0, other: 0, unknown: 0 } };
+}
+
+function buildChildrenSummary(total: number, genderCounts: Array<{ gender: string | null; _count: { _all: number } }>) {
+  const summary = emptyChildrenSummary();
+  summary.total = total;
+  for (const row of genderCounts) {
+    const count = row._count._all;
+    if (row.gender === 'male') summary.gender.male = count;
+    else if (row.gender === 'female') summary.gender.female = count;
+    else if (row.gender === 'other') summary.gender.other = count;
+    else summary.gender.unknown += count;
+  }
+  return summary;
+}
+
 export async function getChildren(req: Request, res: Response): Promise<void> {
   const churchIds = await getScope(req);
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
@@ -179,7 +196,7 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
   let scopedChurchIds = churchIds;
   if (filterChurchId) {
     if (!churchIds.includes(filterChurchId)) {
-      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 }, summary: emptyChildrenSummary() });
       return;
     }
     scopedChurchIds = [filterChurchId];
@@ -204,7 +221,7 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
     delete where.unlinked;
   }
 
-  const [children, total] = await Promise.all([
+  const [children, total, genderCounts] = await Promise.all([
     prisma.child.findMany({
       where,
       include: childInclude(),
@@ -213,9 +230,19 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
       take: limit,
     }),
     prisma.child.count({ where }),
+    prisma.child.groupBy({
+      by: ['gender'],
+      where,
+      _count: { _all: true },
+    }),
   ]);
 
-  res.json({ success: true, data: children.map(withComputedAge), pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  res.json({
+    success: true,
+    data: children.map(withComputedAge),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    summary: buildChildrenSummary(total, genderCounts),
+  });
 }
 
 export async function getChild(req: Request, res: Response): Promise<void> {

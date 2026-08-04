@@ -141,6 +141,19 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const filterTeamId  = req.query.teamId    as string | undefined;
   const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
+  const emptyUsersSummary = () => ({ total: 0, gender: { male: 0, female: 0, other: 0, unknown: 0 } });
+  const buildUsersSummary = (total: number, genderCounts: Array<{ gender: string | null; _count: { _all: number } }>) => {
+    const summary = emptyUsersSummary();
+    summary.total = total;
+    for (const row of genderCounts) {
+      const count = row._count._all;
+      if (row.gender === 'male') summary.gender.male = count;
+      else if (row.gender === 'female') summary.gender.female = count;
+      else if (row.gender === 'other') summary.gender.other = count;
+      else summary.gender.unknown += count;
+    }
+    return summary;
+  };
 
   // ── Scope: get all church IDs this user is allowed to see ──────────────────
   // getAccessibleChurchIds already handles all role variants correctly and
@@ -164,7 +177,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
 
   // If no accessible churches found (e.g. admin with no churches yet), return empty
   if (accessibleChurchIds.length === 0 && role !== 'ministry_admin') {
-    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 }, summary: emptyUsersSummary() });
     return;
   }
 
@@ -175,7 +188,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     if (!accessibleChurchIds.includes(filterChurchId)) {
       // Requested church is outside this user's scope — return empty, not 403
       // (avoids leaking whether the church exists)
-      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+      res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 }, summary: emptyUsersSummary() });
       return;
     }
     scopedChurchIds = [filterChurchId];
@@ -274,7 +287,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   }
 
   // ── Query ───────────────────────────────────────────────────────────────────
-  const [users, total] = await Promise.all([
+  const [users, total, genderCounts] = await Promise.all([
     prisma.user.findMany({
       where: whereClause,
       include: {
@@ -304,6 +317,11 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       take: limit,
     }),
     prisma.user.count({ where: whereClause }),
+    prisma.user.groupBy({
+      by: ['gender'],
+      where: whereClause,
+      _count: { _all: true },
+    }),
   ]);
 
   const roleScopeChurchIds = new Set<string>();
@@ -353,6 +371,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       };
     }),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    summary: buildUsersSummary(total, genderCounts),
   });
 }
 

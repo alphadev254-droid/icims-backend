@@ -456,6 +456,21 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
   if (event.ticketSalesCutoff && new Date(event.ticketSalesCutoff) < new Date()) {
     res.status(400).json({ success: false, message: 'Ticket sales have ended' }); return;
   }
+
+  const existingTicket = await prisma.eventTicket.findFirst({
+    where: {
+      eventId,
+      userId: targetUserId,
+      status: { not: 'cancelled' },
+    },
+    select: { id: true, ticketNumber: true, eventId: true, userId: true, transactionId: true, status: true, createdAt: true, updatedAt: true },
+  });
+
+  if (existingTicket) {
+    res.status(200).json({ success: true, data: existingTicket });
+    return;
+  }
+
   if (event.totalTickets && event.ticketsSold >= event.totalTickets) {
     res.status(400).json({ success: false, message: 'Event is sold out' }); return;
   }

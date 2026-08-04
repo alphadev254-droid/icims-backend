@@ -1,7 +1,30 @@
 // Ticket PDF generation using Puppeteer
 // Install: npm install puppeteer
 
-import puppeteer from 'puppeteer';
+import puppeteer, { type Browser } from 'puppeteer';
+
+let browserPromise: Promise<Browser> | null = null;
+
+async function getBrowser(): Promise<Browser> {
+  if (!browserPromise) {
+    browserPromise = puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+  }
+
+  try {
+    const browser = await browserPromise;
+    if (!browser.isConnected()) {
+      browserPromise = null;
+      return getBrowser();
+    }
+    return browser;
+  } catch (error) {
+    browserPromise = null;
+    throw error;
+  }
+}
 
 export async function generateTicketPDF(ticketData: {
   ticketNumber: string;
@@ -83,11 +106,13 @@ export async function generateTicketPDF(ticketData: {
 </html>
   `;
 
-  const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+  const browser = await getBrowser();
   const page = await browser.newPage();
-  await page.setContent(html);
-  const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
-  await browser.close();
-  
-  return Buffer.from(pdfBuffer);
+  try {
+    await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+    return Buffer.from(pdfBuffer);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
 }
