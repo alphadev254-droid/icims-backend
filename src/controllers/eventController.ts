@@ -16,7 +16,7 @@ const TICKET_NUMBER_RETRY_LIMIT = 5;
 function buildTicketNumber(event: { title: string; date: Date | string }, sequence: number): string {
   const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
   const eventPrefix = event.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-  return `${eventPrefix}-${eventDate}-${String(sequence).padStart(4, '0')}`;
+  return `${eventPrefix}-${eventDate}-${String(sequence).padStart(6, '0')}`;
 }
 
 function isUniqueTicketNumberError(error: unknown): boolean {
