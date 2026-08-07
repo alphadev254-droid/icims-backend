@@ -782,8 +782,21 @@ export async function getMyTickets(req: Request, res: Response): Promise<void> {
 
 export async function getEventTickets(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
+  const churchId = typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+
+  const where: any = { eventId };
+  if (churchId && churchId !== 'all') {
+    where.churchId = churchId;
+  }
+  if (type === 'guest') {
+    where.isGuest = true;
+  } else if (type === 'member') {
+    where.isGuest = false;
+  }
+
   const tickets = await prisma.eventTicket.findMany({
-    where: { eventId },
+    where,
     select: {
       id: true,
       ticketNumber: true,
