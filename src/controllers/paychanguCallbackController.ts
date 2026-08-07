@@ -5,6 +5,7 @@ import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
+import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 
 function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
   return {
@@ -275,24 +276,17 @@ if (pendingTx.type === 'event_ticket') {
   const isGuestTicket = metadata.isGuest === true;
 
   for (let i = 0; i < quantity; i++) {
-    const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
-    const ticketCount = await prisma.eventTicket.count({ where: { eventId: metadata.eventId } });
-    const eventPrefix = event!.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-    const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
-
-    await prisma.eventTicket.create({
-      data: {
-        ticketNumber,
-        eventId: metadata.eventId,
-        userId: isGuestTicket ? null : pendingTx.userId,
-        transactionId: transaction.id,
-        status: 'confirmed',
-        isGuest: isGuestTicket,
-        guestName: isGuestTicket ? metadata.guestName : null,
-        guestEmail: isGuestTicket ? metadata.guestEmail : null,
-        guestPhone: isGuestTicket ? metadata.guestPhone : null,
-      },
+    const ticket = await createEventTicketWithUniqueNumber(event!, {
+      churchId: pendingTx.churchId || metadata.churchId || event!.churchId,
+      userId: isGuestTicket ? null : pendingTx.userId,
+      transactionId: transaction.id,
+      status: 'confirmed',
+      isGuest: isGuestTicket,
+      guestName: isGuestTicket ? metadata.guestName : null,
+      guestEmail: isGuestTicket ? metadata.guestEmail : null,
+      guestPhone: isGuestTicket ? metadata.guestPhone : null,
     });
+    const ticketNumber = ticket.ticketNumber;
 
     const attendeeName = isGuestTicket ? metadata.guestName : `${user!.firstName} ${user!.lastName}`;
     const emailTo = isGuestTicket ? metadata.guestEmail : user!.email;

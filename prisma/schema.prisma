@@ -206,10 +206,13 @@ model Church {
   ministryAdmin User?          @relation("MinistryAdminChurches", fields: [ministryAdminId], references: [id])
   users         User[]
   events        Event[]
+  eventLinks    EventChurch[]
+  eventTickets  EventTicket[]
   givingCampaigns GivingCampaign[]
   givingCampaignLinks GivingCampaignChurch[]
   donationTransactions DonationTransaction[]
   attendance    Attendance[]
+  attendanceParticipants AttendanceParticipant[]
   meetings      Meeting[]
   announcements Announcement[]
   resources     Resource[]
@@ -325,24 +328,42 @@ model Event {
   allowPublicTicketing Boolean @default(false)
   imageUrl      String?
   churchId      String
+  scopeType     String   @default("one_church") // one_church | selected_churches | all_churches
   createdById   String
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   church        Church       @relation(fields: [churchId], references: [id])
+  linkedChurches EventChurch[]
   tickets       EventTicket[]
   reminders     ReminderCache[]
 
   @@index([churchId, date])
+  @@index([scopeType])
   @@map("events")
 }
 
 // ─── Event Tickets ────────────────────────────────────────────────────────────
 
+model EventChurch {
+  id        String   @id @default(cuid())
+  eventId   String
+  churchId  String
+  createdAt DateTime @default(now())
+
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, churchId])
+  @@index([churchId])
+  @@map("event_churches")
+}
+
 model EventTicket {
   id            String   @id @default(cuid())
   ticketNumber  String   @unique
   eventId       String
+  churchId      String?
   userId        String?  // null for guest tickets
   transactionId String?
   status        String   @default("confirmed") // reserved | confirmed | cancelled | used
@@ -357,10 +378,13 @@ model EventTicket {
   updatedAt     DateTime @updatedAt
 
   event         Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  church        Church?      @relation(fields: [churchId], references: [id], onDelete: SetNull)
   user          User?        @relation(fields: [userId], references: [id])
   transaction   Transaction? @relation(fields: [transactionId], references: [id])
+  attendanceParticipants AttendanceParticipant[]
 
   @@index([eventId, userId])
+  @@index([churchId])
   @@index([isGuest])
   @@map("event_tickets")
 }
@@ -619,6 +643,8 @@ model Attendance {
 model AttendanceParticipant {
   id             String   @id @default(cuid())
   attendanceId   String
+  sourceChurchId String?
+  eventTicketId  String?  @unique
   userId         String?
   guestName      String?
   guestEmail     String?
@@ -634,10 +660,13 @@ model AttendanceParticipant {
   updatedAt      DateTime @updatedAt
 
   attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  sourceChurch Church?   @relation(fields: [sourceChurchId], references: [id], onDelete: SetNull)
+  eventTicket EventTicket? @relation(fields: [eventTicketId], references: [id], onDelete: SetNull)
   user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@unique([attendanceId, userId])
   @@index([attendanceId])
+  @@index([sourceChurchId])
   @@index([userId])
   @@index([guestPhone])
   @@index([guestGender])

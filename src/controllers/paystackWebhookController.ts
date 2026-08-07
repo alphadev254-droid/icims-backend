@@ -7,6 +7,7 @@ import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
+import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -270,24 +271,17 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
       const isGuest = pendingMetadata.isGuest === true;
 
       for (let i = 0; i < quantity; i++) {
-        const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
-        const ticketCount = await prisma.eventTicket.count({ where: { eventId: pendingMetadata.eventId } });
-        const eventPrefix = event!.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-        const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
-
-        await prisma.eventTicket.create({
-          data: {
-            ticketNumber,
-            eventId: pendingMetadata.eventId,
-            userId: isGuest ? null : pendingTx.userId,
-            transactionId: transaction.id,
-            status: 'confirmed',
-            isGuest,
-            guestName: isGuest ? pendingMetadata.guestName : null,
-            guestEmail: isGuest ? pendingMetadata.guestEmail : null,
-            guestPhone: isGuest ? pendingMetadata.guestPhone : null,
-          }
+        const ticket = await createEventTicketWithUniqueNumber(event!, {
+          churchId: pendingTx.churchId || pendingMetadata.churchId || event!.churchId,
+          userId: isGuest ? null : pendingTx.userId,
+          transactionId: transaction.id,
+          status: 'confirmed',
+          isGuest,
+          guestName: isGuest ? pendingMetadata.guestName : null,
+          guestEmail: isGuest ? pendingMetadata.guestEmail : null,
+          guestPhone: isGuest ? pendingMetadata.guestPhone : null,
         });
+        const ticketNumber = ticket.ticketNumber;
 
         const attendeeName = isGuest
           ? pendingMetadata.guestName

@@ -479,19 +479,29 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
   // Public events — upcoming, allowPublicTicketing
   const events = await prisma.event.findMany({
     where: {
-      churchId: { in: churchIds },
+      AND: [
+        {
+          OR: [
+            { churchId: { in: churchIds } },
+            { linkedChurches: { some: { churchId: { in: churchIds } } } },
+          ],
+        },
+        {
+          OR: [
+            { allowPublicTicketing: true },
+            { requiresTicket: false },
+          ],
+        },
+      ],
       status: 'upcoming',
       date: { gte: new Date() },
-      OR: [
-        { allowPublicTicketing: true },
-        { requiresTicket: false },
-      ],
     },
     select: {
       id: true, title: true, description: true, date: true, endDate: true,
       time: true, location: true, imageUrl: true, isFree: true,
-      ticketPrice: true, currency: true, requiresTicket: true,
-      church: { select: { name: true } },
+      ticketPrice: true, currency: true, requiresTicket: true, scopeType: true,
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
     orderBy: { date: 'asc' },
     take: 100,
@@ -516,6 +526,14 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
     orderBy: { createdAt: 'desc' },
     take: 100,
   });
+  const publicEvents = events.map(event => {
+    const availableChurches = event.linkedChurches.length > 0
+      ? event.linkedChurches
+          .filter(link => churchIds.includes(link.churchId))
+          .map(link => ({ id: link.churchId, name: link.church.name }))
+      : [{ id: event.church.id, name: event.church.name }];
+    return { ...event, availableChurches };
+  });
   const publicCampaigns = campaigns.map(campaign => ({
     ...campaign,
     availableChurches: campaign.linkedChurches.length > 0
@@ -529,7 +547,7 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
       profile,
       ministryName: user.ministryName ?? `${user.firstName} ${user.lastName}`,
       churches,
-      events,
+      events: publicEvents,
       campaigns: publicCampaigns,
       sermons,
       ministries,

@@ -15,11 +15,72 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
 
 const guestTicketSchema = z.object({
   eventId: z.string().min(1, 'Event ID required'),
+  churchId: z.string().optional(),
   guestName: z.string().min(1, 'Full name required'),
   guestEmail: z.string().email('Valid email required'),
   guestPhone: z.string().optional(),
   quantity: z.number().int().positive().default(1),
 });
+
+function eventChurchIds(event: { churchId: string; linkedChurches?: Array<{ churchId: string }> }): string[] {
+  const ids = event.linkedChurches?.map(link => link.churchId) ?? [];
+  return [...new Set(ids.length > 0 ? ids : [event.churchId])];
+}
+
+function resolveTicketChurchId(event: { churchId: string; linkedChurches?: Array<{ churchId: string }> }, requestedChurchId?: string | null) {
+  const ids = eventChurchIds(event);
+  if (requestedChurchId) {
+    return ids.includes(requestedChurchId)
+      ? { churchId: requestedChurchId }
+      : { error: 'This event is not available for the selected church' };
+  }
+  return { churchId: event.churchId };
+}
+
+function buildTicketNumber(event: { title: string; date: Date | string }, sequence: number): string {
+  const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
+  const eventPrefix = event.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
+  return `${eventPrefix}-${eventDate}-${String(sequence).padStart(6, '0')}`;
+}
+
+function isUniqueTicketNumberError(error: unknown): boolean {
+  const target = (error as { meta?: { target?: unknown } }).meta?.target;
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: string }).code === 'P2002'
+    && (
+      (Array.isArray(target) && target.includes('ticketNumber'))
+      || (typeof target === 'string' && target.includes('ticketNumber'))
+    );
+}
+
+async function createGuestTicketWithUniqueNumber(event: any, data: any) {
+  const latestTicket = await prisma.eventTicket.findFirst({
+    where: { eventId: event.id },
+    orderBy: { createdAt: 'desc' },
+    select: { ticketNumber: true },
+  });
+  const latestSequence = Number(latestTicket?.ticketNumber.match(/-(\d+)$/)?.[1] ?? 0);
+  const countSequence = await prisma.eventTicket.count({ where: { eventId: event.id } });
+  const nextSequence = Math.max(latestSequence, countSequence) + 1;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await prisma.eventTicket.create({
+        data: {
+          ...data,
+          eventId: event.id,
+          ticketNumber: buildTicketNumber(event, nextSequence + attempt),
+        },
+      });
+    } catch (error) {
+      if (!isUniqueTicketNumberError(error) || attempt === 4) throw error;
+    }
+  }
+
+  throw new Error('Unable to generate a unique ticket number');
+}
 
 export async function getTransactionByReference(req: Request, res: Response): Promise<void> {
   const { reference } = req.params;
@@ -94,13 +155,16 @@ export async function getTransactionByReference(req: Request, res: Response): Pr
 }
 
 export async function getGuestTicketFees(req: Request, res: Response): Promise<void> {
-  const { eventId } = req.query as { eventId: string };
+  const { eventId, churchId } = req.query as { eventId: string; churchId?: string };
   if (!eventId) {
     res.status(400).json({ success: false, message: 'eventId required' });
     return;
   }
 
-  const event = await prisma.event.findUnique({ where: { id: eventId } });
+  const event = await prisma.event.findUnique({
+    where: { id: eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
   if (!event) {
     res.status(404).json({ success: false, message: 'Event not found' });
     return;
@@ -110,7 +174,13 @@ export async function getGuestTicketFees(req: Request, res: Response): Promise<v
     return;
   }
 
-  const gateway = await getPaymentGatewayByChurch(event.churchId);
+  const resolved = resolveTicketChurchId(event, churchId);
+  if (resolved.error || !resolved.churchId) {
+    res.status(400).json({ success: false, message: resolved.error || 'Invalid event church' });
+    return;
+  }
+
+  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   const fees = calculatePaymentFees(event.ticketPrice, gatewayCountry);
@@ -138,11 +208,14 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
     return;
   }
 
-  const { eventId, guestName, guestEmail, guestPhone, quantity } = parsed.data;
+  const { eventId, churchId: requestedChurchId, guestName, guestEmail, guestPhone, quantity } = parsed.data;
 
   const event = await prisma.event.findUnique({
     where: { id: eventId },
-    include: { church: true },
+    include: {
+      church: true,
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+    },
   });
 
   if (!event) {
@@ -171,12 +244,19 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
   }
 
   // ── Free event: create ticket directly, no payment gateway ──────────────────
+  const resolved = resolveTicketChurchId(event, requestedChurchId);
+  if (resolved.error || !resolved.churchId) {
+    res.status(400).json({ success: false, message: resolved.error || 'Invalid event church' });
+    return;
+  }
+  const selectedChurch = event.linkedChurches.find(link => link.churchId === resolved.churchId)?.church || event.church;
+
   if (event.isFree) {
-    await handleFreeGuestTicket({ event, guestName, guestEmail, guestPhone: guestPhone || null, quantity, traceId, res });
+    await handleFreeGuestTicket({ event, selectedChurch, guestName, guestEmail, guestPhone: guestPhone || null, quantity, traceId, res });
     return;
   }
 
-  const gateway = await getPaymentGatewayByChurch(event.churchId);
+  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   const baseAmount = event.ticketPrice! * quantity;
@@ -192,13 +272,15 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
       amount: fees.totalAmount,
       currency,
       userId: null,
-      churchId: event.churchId,
+      churchId: resolved.churchId,
       eventId,
       type: 'event_ticket',
       expiresAt,
       metadata: JSON.stringify({
         traceId,
         eventId,
+        churchId: resolved.churchId,
+        churchName: selectedChurch?.name,
         eventTitle: event.title,
         quantity,
         baseAmount: fees.baseAmount,
@@ -219,16 +301,17 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
   console.log(`[${traceId}] PendingTransaction created: ${pendingTx.id}`);
 
   if (gateway === 'paychangu') {
-    await initiatePaychanguGuestPayment(pendingTx, event, fees, guestEmail, guestName, traceId, res);
+    await initiatePaychanguGuestPayment(pendingTx, event, fees, guestEmail, guestName, resolved.churchId, traceId, res);
   } else {
-    await initiatePaystackGuestPayment(pendingTx, event, fees, guestEmail, traceId, res);
+    await initiatePaystackGuestPayment(pendingTx, event, fees, guestEmail, resolved.churchId, traceId, res);
   }
 }
 
 async function handleFreeGuestTicket({
-  event, guestName, guestEmail, guestPhone, quantity, traceId, res,
+  event, selectedChurch, guestName, guestEmail, guestPhone, quantity, traceId, res,
 }: {
   event: any;
+  selectedChurch: { id?: string; name: string } | null;
   guestName: string;
   guestEmail: string;
   guestPhone: string | null;
@@ -248,24 +331,17 @@ async function handleFreeGuestTicket({
     return;
   }
   for (let i = 0; i < quantity; i++) {
-    const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
-    const ticketCount = await prisma.eventTicket.count({ where: { eventId: event.id } });
-    const eventPrefix = event.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-    const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
-
-    await prisma.eventTicket.create({
-      data: {
-        ticketNumber,
-        eventId: event.id,
-        userId: null,
-        transactionId: null,
-        status: 'confirmed',
-        isGuest: true,
-        guestName,
-        guestEmail,
-        guestPhone,
-      },
+    const ticket = await createGuestTicketWithUniqueNumber(event, {
+      churchId: selectedChurch?.id || event.churchId,
+      userId: null,
+      transactionId: null,
+      status: 'confirmed',
+      isGuest: true,
+      guestName,
+      guestEmail,
+      guestPhone,
     });
+    const ticketNumber = ticket.ticketNumber;
 
     ticketNumbers.push(ticketNumber);
 
@@ -279,7 +355,7 @@ async function handleFreeGuestTicket({
       eventEndDate: eventEndDateStr,
       eventLocation: event.location,
       attendeeName: guestName,
-      churchName: event.church.name,
+      churchName: selectedChurch?.name || event.church.name,
       amount: 0,
       currency: 'FREE',
     });
@@ -298,7 +374,7 @@ async function handleFreeGuestTicket({
         eventDate: eventDateStr,
         eventEndDate: eventEndDateStr,
         eventLocation: event.location,
-        churchName: event.church.name,
+        churchName: selectedChurch?.name || event.church.name,
         viewUrl,
       }),
       [{ filename: `ticket-${ticketNumber}.pdf`, content: ticketPDF }]
@@ -328,6 +404,7 @@ async function initiatePaystackGuestPayment(
   event: any,
   fees: any,
   guestEmail: string,
+  churchId: string,
   traceId: string,
   res: Response
 ): Promise<void> {
@@ -335,7 +412,7 @@ async function initiatePaystackGuestPayment(
     const metadata = JSON.parse(pendingTx.metadata);
     const amountInKobo = Math.round(fees.totalAmount * 100);
 
-    const subaccount = await prisma.subaccount.findUnique({ where: { churchId: event.churchId } });
+    const subaccount = await prisma.subaccount.findUnique({ where: { churchId } });
 
     const paystackPayload: any = {
       email: guestEmail,
@@ -394,6 +471,7 @@ async function initiatePaychanguGuestPayment(
   fees: any,
   guestEmail: string,
   guestName: string,
+  churchId: string,
   traceId: string,
   res: Response
 ): Promise<void> {
@@ -409,7 +487,7 @@ async function initiatePaychanguGuestPayment(
       last_name: guestName.split(' ').slice(1).join(' ') || guestName.split(' ')[0],
       tx_ref,
       callback_url: `${BACKEND_URL}/api/webhooks/paychangu/callback`,
-      return_url: `${FRONTEND_URL}/events/${event.id}?status=cancelled`,
+      return_url: `${FRONTEND_URL}/events/${event.id}?churchId=${encodeURIComponent(churchId)}&status=cancelled`,
       customization: {
         title: `Ticket: ${event.title}`,
         description: 'Event ticket purchase',

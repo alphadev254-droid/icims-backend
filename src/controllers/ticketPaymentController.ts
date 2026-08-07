@@ -68,7 +68,7 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
 
   const event = await prisma.event.findUnique({
     where: { id: eventId },
-    include: { church: true }
+    include: { church: true, linkedChurches: { select: { churchId: true } } }
   });
 
   if (!event) {
@@ -88,6 +88,13 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
 
   if (event.totalTickets && event.ticketsSold + quantity > event.totalTickets) {
     res.status(400).json({ success: false, message: 'Not enough tickets available' });
+    return;
+  }
+
+  const allowedChurchIds = event.linkedChurches?.length ? event.linkedChurches.map(link => link.churchId) : [event.churchId];
+  const ticketChurchId = user.churchId || event.churchId;
+  if (!allowedChurchIds.includes(ticketChurchId)) {
+    res.status(403).json({ success: false, message: 'This event is not available for your church' });
     return;
   }
 
@@ -114,13 +121,14 @@ export async function initiateTicketPurchase(req: Request, res: Response): Promi
       amount: fees.totalAmount,
       currency,
       userId,
-      churchId: event.churchId,
+      churchId: ticketChurchId,
       eventId,
       type: 'event_ticket',
       expiresAt,
       metadata: JSON.stringify({
         traceId,
         eventId,
+        churchId: ticketChurchId,
         eventTitle: event.title,
         userId,
         userName: displayName(user.firstName, user.lastName),
@@ -162,7 +170,7 @@ async function initiatePaystackTicketPayment(
     
     // Get church subaccount
     const subaccount = await prisma.subaccount.findUnique({
-      where: { churchId: event.churchId }
+      where: { churchId: pendingTx.churchId }
     });
 
     console.log(`[${traceId}] Subaccount found: ${subaccount ? subaccount.subaccountCode : 'NONE'}`);

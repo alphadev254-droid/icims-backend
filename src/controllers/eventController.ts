@@ -87,6 +87,8 @@ const baseEventSchema = z.object({
   ticketSalesCutoff: z.string().optional(),
   allowPublicTicketing: z.boolean().optional().default(false),
   imageUrl: z.string().nullable().optional(),
+  scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
+  churchIds: z.array(z.string().min(1)).optional(),
 });
 
 const eventSchema = baseEventSchema.refine(data => new Date(data.endDate) >= new Date(data.date), {
@@ -107,6 +109,77 @@ const bookTicketSchema = z.object({
   useExistingTransaction: z.boolean().optional(),
   existingTransactionId: z.string().optional(),
 });
+
+type EventWithChurchLinks = {
+  id: string;
+  churchId: string;
+  scopeType?: string | null;
+  linkedChurches?: Array<{ churchId: string; church?: { id?: string; name: string } | null }>;
+  church?: { id?: string; name: string } | null;
+};
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function intersection(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return left.filter(value => rightSet.has(value));
+}
+
+function getEventChurchIds(event: EventWithChurchLinks): string[] {
+  const linkedIds = event.linkedChurches?.map(link => link.churchId) ?? [];
+  return uniqueStrings(linkedIds.length > 0 ? linkedIds : [event.churchId]);
+}
+
+function decorateEventAvailability<T extends EventWithChurchLinks>(event: T, scopedChurchIds?: string[]) {
+  const linkedChurches = event.linkedChurches ?? [];
+  const allAvailableChurchIds = getEventChurchIds(event);
+  const availableChurchIds = scopedChurchIds?.length
+    ? intersection(allAvailableChurchIds, scopedChurchIds)
+    : allAvailableChurchIds;
+  const availableChurches = (linkedChurches.length > 0
+    ? linkedChurches.map(link => ({ id: link.churchId, name: link.church?.name ?? 'Church' }))
+    : [{ id: event.churchId, name: event.church?.name ?? 'Church' }])
+    .filter(church => availableChurchIds.includes(church.id));
+
+  return { ...event, availableChurchIds, availableChurches };
+}
+
+function eventAccessWhere(churchIds: string[]): Prisma.EventWhereInput {
+  return {
+    OR: [
+      { churchId: { in: churchIds } },
+      { linkedChurches: { some: { churchId: { in: churchIds } } } },
+    ],
+  };
+}
+
+function resolveRequestedEventChurchIds(params: {
+  scopeType?: string;
+  primaryChurchId?: string | null;
+  requestedChurchIds?: string[];
+  accessibleChurchIds: string[];
+}): { churchIds?: string[]; error?: string } {
+  const scopeType = params.scopeType || 'one_church';
+  let churchIds: string[] = [];
+
+  if (scopeType === 'all_churches') {
+    churchIds = params.accessibleChurchIds;
+  } else if (scopeType === 'selected_churches') {
+    churchIds = uniqueStrings(params.requestedChurchIds ?? []);
+    if (churchIds.length === 0 && params.primaryChurchId) churchIds = [params.primaryChurchId];
+  } else {
+    churchIds = params.primaryChurchId ? [params.primaryChurchId] : [];
+  }
+
+  if (churchIds.length === 0) return { error: 'Select at least one church for this event' };
+
+  const inaccessible = churchIds.filter(id => !params.accessibleChurchIds.includes(id));
+  if (inaccessible.length > 0) return { error: 'Access denied to one or more selected churches' };
+
+  return { churchIds };
+}
 
 export async function getEventSelect(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -146,21 +219,31 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
     return;
   }
 
+  const where: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
+  if (filterStatus === 'current') {
+    (where.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
+  } else if (filterStatus !== 'all') {
+    (where.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
+  }
+
   const events = await prisma.event.findMany({
-    where: {
-      churchId: { in: scopedChurchIds },
-      status: filterStatus === 'all'
-        ? undefined
-        : filterStatus === 'current'
-        ? { not: 'cancelled' }
-        : filterStatus,
+    where,
+    select: {
+      id: true,
+      title: true,
+      date: true,
+      time: true,
+      churchId: true,
+      scopeType: true,
+      requiresTicket: true,
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+      church: { select: { id: true, name: true } },
     },
-    select: { id: true, title: true, date: true, time: true, churchId: true, requiresTicket: true },
     orderBy: { date: 'desc' },
     take: 500,
   });
 
-  res.json({ success: true, data: events });
+  res.json({ success: true, data: events.map(event => decorateEventAvailability(event, scopedChurchIds)) });
 }
 
 export async function getEvents(req: Request, res: Response): Promise<void> {
@@ -211,16 +294,16 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
     scopedChurchIds = [filterChurchId];
   }
 
-  const whereClause: any = { churchId: { in: scopedChurchIds } };
+  const whereClause: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
   if (filterStatus === 'current') {
-    whereClause.status = { not: 'cancelled' };
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
-    whereClause.status = filterStatus;
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
   }
 
   // Apply date filters
   if (startDate) {
-    whereClause.date = { ...whereClause.date, gte: new Date(startDate) };
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ date: { gte: new Date(startDate) } });
   }
 
   if (isSimple) {
@@ -228,17 +311,27 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
     // No pagination, no grouping, no ticket lookup
     const events = await prisma.event.findMany({
       where: whereClause,
-      select: { id: true, title: true, date: true, time: true, churchId: true, requiresTicket: true },
+      select: {
+        id: true,
+        title: true,
+        date: true,
+        time: true,
+        churchId: true,
+        scopeType: true,
+        requiresTicket: true,
+        linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+        church: { select: { id: true, name: true } },
+      },
       orderBy: { date: 'desc' },
       take: 500,
     });
-    res.json({ success: true, data: events });
+    res.json({ success: true, data: events.map(event => decorateEventAvailability(event, scopedChurchIds)) });
     return;
   }
   if (endDate) {
     const endDateTime = new Date(endDate);
     endDateTime.setHours(23, 59, 59, 999);
-    whereClause.date = { ...whereClause.date, lte: endDateTime };
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ date: { lte: endDateTime } });
   }
 
   const [events, total] = await Promise.all([
@@ -265,11 +358,14 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         allowPublicTicketing: true,
         imageUrl: true,
         churchId: true,
+        scopeType: true,
         createdById: true,
         createdAt: true,
         updatedAt: true,
         contactEmail: true,
         contactPhone: true,
+        linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+        church: { select: { id: true, name: true } },
       },
       orderBy: { date: 'asc' },
       skip,
@@ -292,7 +388,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const eventsWithTicketStatus = events.map(event => {
     const ticket = ticketMap.get(event.id);
     return {
-      ...event,
+      ...decorateEventAvailability(event, scopedChurchIds),
       userHasTicket: !!ticket,
       userTicketId: ticket?.id,
       userTicketNumber: ticket?.ticketNumber,
@@ -310,7 +406,8 @@ export async function getPublicEvent(req: Request, res: Response): Promise<void>
   const event = await prisma.event.findUnique({ 
     where: { id: eventId },
     include: {
-      church: { select: { name: true } }
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     }
   });
   
@@ -319,13 +416,19 @@ export async function getPublicEvent(req: Request, res: Response): Promise<void>
     return; 
   }
   
-  res.json({ success: true, data: event });
+  res.json({ success: true, data: decorateEventAvailability(event) });
 }
 
 export async function getEvent(req: Request, res: Response): Promise<void> {
-  const event = await prisma.event.findUnique({ where: { id: String(req.params.id) } });
+  const event = await prisma.event.findUnique({
+    where: { id: String(req.params.id) },
+    include: {
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+    },
+  });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
-  res.json({ success: true, data: event });
+  res.json({ success: true, data: decorateEventAvailability(event) });
 }
 
 export async function createEvent(req: Request, res: Response): Promise<void> {
@@ -352,21 +455,42 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const parsed = eventSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, ...eventData } = parsed.data;
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    req.user?.role ?? 'member',
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+  const resolvedScope = resolveRequestedEventChurchIds({
+    scopeType,
+    primaryChurchId: targetChurchId,
+    requestedChurchIds,
+    accessibleChurchIds,
+  });
+  if (resolvedScope.error || !resolvedScope.churchIds) {
+    res.status(403).json({ success: false, message: resolvedScope.error || 'Invalid event church availability' });
+    return;
+  }
+  const eventChurchIds = resolvedScope.churchIds;
+  const primaryChurchId = eventChurchIds[0];
+
   // Check if event requires payment and if Kenya account has subaccount
-  if (!parsed.data.isFree && parsed.data.requiresTicket) {
+  if (!eventData.isFree && eventData.requiresTicket) {
     const { getPaymentGateway } = await import('../utils/gatewayRouter');
     const gateway = await getPaymentGateway(userId);
     
     if (gateway === 'paystack') {
-      // Kenya account - check for subaccount
-      const subaccount = await prisma.subaccount.findUnique({
-        where: { churchId: parsed.data.churchId }
+      const subaccountCount = await prisma.subaccount.count({
+        where: { churchId: { in: eventChurchIds } }
       });
       
-      if (!subaccount) {
+      if (subaccountCount !== eventChurchIds.length) {
         res.status(400).json({ 
           success: false, 
-          message: 'To create giving campaigns, you need to set up a Paystack subaccount first. Please go to Branches > Finance account management to create your finance account..' 
+          message: 'To create paid ticket events, every selected church needs a Paystack subaccount first. Please go to Branches > Finance account management.' 
         });
         return;
       }
@@ -375,29 +499,38 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
 
   const event = await prisma.event.create({
     data: {
-      ...parsed.data,
-      date: new Date(parsed.data.date),
-      endDate: new Date(parsed.data.endDate),
-      ticketSalesCutoff: parsed.data.ticketSalesCutoff && parsed.data.ticketSalesCutoff !== '' 
-        ? new Date(parsed.data.ticketSalesCutoff) 
+      ...eventData,
+      churchId: primaryChurchId,
+      scopeType,
+      date: new Date(eventData.date),
+      endDate: new Date(eventData.endDate),
+      ticketSalesCutoff: eventData.ticketSalesCutoff && eventData.ticketSalesCutoff !== '' 
+        ? new Date(eventData.ticketSalesCutoff) 
         : null,
       createdById: req.user!.userId,
+      linkedChurches: {
+        create: eventChurchIds.map(churchId => ({ churchId })),
+      },
+    },
+    include: {
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
 
-  res.status(201).json({ success: true, data: event });
+  res.status(201).json({ success: true, data: decorateEventAvailability(event) });
 
   // Fire-and-forget: worker resolves members and sends push off the request cycle
-  const church = await prisma.church.findUnique({ where: { id: parsed.data.churchId }, select: { name: true } });
+  const church = await prisma.church.findUnique({ where: { id: primaryChurchId }, select: { name: true } });
   queueChurchPush(
-    parsed.data.churchId,
+    primaryChurchId,
     `${church?.name || 'Your Church'} · New Event`,
     `${event.title} on ${new Date(event.date).toLocaleDateString()}`,
-    { type: 'event_created', eventId: event.id, churchId: parsed.data.churchId }
+    { type: 'event_created', eventId: event.id, churchId: primaryChurchId }
   ).catch(err => console.error('[Event] Failed to queue push:', err));
 
   queueChurchMemberEmails({
-    churchId: parsed.data.churchId,
+    churchId: primaryChurchId,
     subject: `${church?.name || 'Your Church'} - New Event: ${event.title}`,
     buildHtml: member => eventCreatedTemplate({
       firstName: member.firstName,
@@ -419,9 +552,38 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
 
   const eventId = String(req.params.id);
   const oldEvent = await prisma.event.findUnique({ where: { id: eventId } });
+  if (!oldEvent) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, ...eventData } = parsed.data;
+  const hasBodyKey = (key: string) => Object.prototype.hasOwnProperty.call(req.body, key);
+  const shouldUpdateScope = hasBodyKey('scopeType') || hasBodyKey('churchId') || hasBodyKey('churchIds');
+  let nextEventChurchIds: string[] | undefined;
+  let nextPrimaryChurchId: string | undefined;
+
+  if (shouldUpdateScope) {
+    const accessibleChurchIds = await getAccessibleChurchIds(
+      req.user?.role ?? 'member',
+      req.user?.churchId,
+      req.user?.districts,
+      req.user?.traditionalAuthorities,
+      req.user?.regions,
+      req.user!.userId,
+    );
+    const resolvedScope = resolveRequestedEventChurchIds({
+      scopeType: scopeType ?? oldEvent.scopeType,
+      primaryChurchId: targetChurchId ?? oldEvent.churchId,
+      requestedChurchIds,
+      accessibleChurchIds,
+    });
+    if (resolvedScope.error || !resolvedScope.churchIds) {
+      res.status(403).json({ success: false, message: resolvedScope.error || 'Invalid event church availability' });
+      return;
+    }
+    nextEventChurchIds = resolvedScope.churchIds;
+    nextPrimaryChurchId = nextEventChurchIds[0];
+  }
   
   // Delete old image if exists and new imageUrl is different
-  if (oldEvent?.imageUrl && parsed.data.imageUrl !== oldEvent.imageUrl) {
+  if (oldEvent.imageUrl && eventData.imageUrl !== undefined && eventData.imageUrl !== oldEvent.imageUrl) {
     const oldPath = path.join(process.cwd(), oldEvent.imageUrl);
     if (fs.existsSync(oldPath)) {
       fs.unlinkSync(oldPath);
@@ -431,21 +593,33 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const event = await prisma.event.update({
     where: { id: eventId },
     data: {
-      ...parsed.data,
-      date: parsed.data.date ? new Date(parsed.data.date) : undefined,
-      endDate: parsed.data.endDate ? new Date(parsed.data.endDate) : undefined,
-      ticketSalesCutoff: parsed.data.ticketSalesCutoff !== undefined
-        ? (parsed.data.ticketSalesCutoff === '' ? null : new Date(parsed.data.ticketSalesCutoff))
+      ...eventData,
+      ...(nextPrimaryChurchId ? { churchId: nextPrimaryChurchId } : {}),
+      ...(hasBodyKey('scopeType') ? { scopeType } : {}),
+      date: eventData.date ? new Date(eventData.date) : undefined,
+      endDate: eventData.endDate ? new Date(eventData.endDate) : undefined,
+      ticketSalesCutoff: eventData.ticketSalesCutoff !== undefined
+        ? (eventData.ticketSalesCutoff === '' ? null : new Date(eventData.ticketSalesCutoff))
         : undefined,
-      totalTickets: parsed.data.totalTickets !== undefined
-        ? (parsed.data.totalTickets === 0 ? null : parsed.data.totalTickets)
+      totalTickets: eventData.totalTickets !== undefined
+        ? (eventData.totalTickets === 0 ? null : eventData.totalTickets)
         : undefined,
-      ticketPrice: parsed.data.ticketPrice !== undefined
-        ? (parsed.data.ticketPrice === null ? null : parsed.data.ticketPrice)
+      ticketPrice: eventData.ticketPrice !== undefined
+        ? (eventData.ticketPrice === null ? null : eventData.ticketPrice)
         : undefined,
+      ...(nextEventChurchIds ? {
+        linkedChurches: {
+          deleteMany: {},
+          create: nextEventChurchIds.map(churchId => ({ churchId })),
+        },
+      } : {}),
+    },
+    include: {
+      church: { select: { id: true, name: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
-  res.json({ success: true, data: event });
+  res.json({ success: true, data: decorateEventAvailability(event) });
 }
 
 export async function deleteEvent(req: Request, res: Response): Promise<void> {
@@ -456,7 +630,10 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const event = await prisma.event.findUnique({ where: { id: String(req.params.id) } });
+  const event = await prisma.event.findUnique({
+    where: { id: String(req.params.id) },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
   if (!event) {
     res.status(404).json({ success: false, message: 'Event not found' });
     return;
@@ -470,7 +647,8 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
     req.user?.regions,
     userId,
   );
-  if (!churchIds.includes(event.churchId)) {
+  const eventChurchIds = getEventChurchIds(event);
+  if (!eventChurchIds.some(churchId => churchIds.includes(churchId))) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
@@ -503,7 +681,10 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const event = await prisma.event.findUnique({ where: { id: eventId } });
+  const event = await (prisma.event as any).findUnique({
+    where: { id: eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
   if (!event.requiresTicket) { res.status(400).json({ success: false, message: 'Event does not require tickets' }); return; }
   if (event.status === 'completed' || event.status === 'cancelled') {
@@ -531,6 +712,17 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     res.status(400).json({ success: false, message: 'Event is sold out' }); return;
   }
 
+  const targetMember = await prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true, churchId: true, status: true } });
+  if (!targetMember || targetMember.status !== 'active') {
+    res.status(404).json({ success: false, message: 'Member not found or inactive' });
+    return;
+  }
+  const allowedChurchIds = event.linkedChurches?.length ? event.linkedChurches.map((link: any) => link.churchId) : [event.churchId];
+  if (!targetMember.churchId || !allowedChurchIds.includes(targetMember.churchId)) {
+    res.status(403).json({ success: false, message: 'This event is not available for this member church' });
+    return;
+  }
+
   let transactionId = null;
   if (!event.isFree && event.ticketPrice) {
     const transaction = await prisma.transaction.create({
@@ -541,7 +733,7 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
         paymentMethod,
         reference,
         userId,
-        churchId: churchId!,
+        churchId: targetMember.churchId,
         type: 'event_ticket',
       },
     });
@@ -549,6 +741,7 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
   }
 
   const ticket = await createEventTicketWithUniqueNumber(event, {
+    churchId: targetMember.churchId,
     userId: targetUserId,
     transactionId,
     status: 'confirmed',
@@ -602,6 +795,7 @@ export async function getEventTickets(req: Request, res: Response): Promise<void
       guestName: true,
       guestEmail: true,
       guestPhone: true,
+      church: { select: { id: true, name: true } },
       user: { select: { id: true, firstName: true, lastName: true, email: true } },
       transaction: { select: { amount: true, baseAmount: true, currency: true, paymentMethod: true } },
     },
@@ -642,7 +836,10 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
     return;
   }
 
-  const event = await prisma.event.findUnique({ where: { id: eventId } });
+  const event = await (prisma.event as any).findUnique({
+    where: { id: eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
   if (!event.requiresTicket) { res.status(400).json({ success: false, message: 'Event does not require tickets' }); return; }
   if (event.status === 'completed' || event.status === 'cancelled') {
@@ -661,6 +858,11 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
   });
   if (!member) { res.status(404).json({ success: false, message: 'Member not found' }); return; }
   if (member.role?.name !== 'member') { res.status(400).json({ success: false, message: 'Selected user is not a member' }); return; }
+  const allowedChurchIds = event.linkedChurches?.length ? event.linkedChurches.map((link: any) => link.churchId) : [event.churchId];
+  if (!member.churchId || !allowedChurchIds.includes(member.churchId)) {
+    res.status(403).json({ success: false, message: 'This event is not available for this member church' });
+    return;
+  }
 
   let transactionId = null;
 
@@ -692,6 +894,7 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
   }
 
   const ticket = await createEventTicketWithUniqueNumber(event, {
+      churchId: member.churchId,
       userId: memberId, 
       transactionId, 
       status: ticketStatus || 'confirmed',
@@ -780,8 +983,12 @@ export async function getTicketTransaction(req: Request, res: Response): Promise
 export async function getUnallocatedTransactions(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
   
-  const event = await prisma.event.findUnique({ where: { id: eventId } });
+  const event = await (prisma.event as any).findUnique({
+    where: { id: eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  const eventChurchIds = event.linkedChurches?.length ? event.linkedChurches.map((link: any) => link.churchId) : [event.churchId];
 
   const allocatedTransactionIds = await prisma.eventTicket.findMany({
     where: { eventId, transactionId: { not: null } },
@@ -791,7 +998,7 @@ export async function getUnallocatedTransactions(req: Request, res: Response): P
   const transactions = await prisma.transaction.findMany({
     where: {
       type: 'event_ticket',
-      churchId: event.churchId,
+      churchId: { in: eventChurchIds },
       id: { notIn: allocatedTransactionIds.map(t => t.transactionId!).filter(Boolean) },
     },
     include: { user: { select: { firstName: true, lastName: true } } },
@@ -812,6 +1019,7 @@ export async function downloadTicket(req: Request, res: Response): Promise<void>
     where: whereClause,
     include: {
       event: { include: { church: true } },
+      church: { select: { id: true, name: true } },
       user: { select: { firstName: true, lastName: true } },
       transaction: { select: { amount: true, currency: true } },
     },

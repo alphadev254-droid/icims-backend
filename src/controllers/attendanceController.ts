@@ -29,7 +29,7 @@ const schema = z.object({
   serviceType: z.string().default('Sunday Service'),
   notes: z.string().optional(),
   eventId: z.string().optional(),
-  churchId: z.string().min(1, 'Church ID required'),
+  churchId: z.string().optional(),
   visitors: z.array(visitorSchema).optional(),
 });
 
@@ -41,7 +41,7 @@ const qrSettingsSchema = z.object({
 });
 
 const startQrAttendanceSchema = z.object({
-  churchId: z.string().min(1, 'Church ID required'),
+  churchId: z.string().optional(),
   date: z.string().min(1, 'Date required'),
   serviceType: z.string().default('Sunday Service'),
   eventId: z.string().optional(),
@@ -62,6 +62,10 @@ const guestCheckInSchema = z.object({
 
 const manualMembersSchema = z.object({
   userIds: z.array(z.string().min(1)).min(1, 'Select at least one member'),
+});
+
+const ticketScanSchema = z.object({
+  ticket: z.string().trim().min(1, 'Ticket number or QR value is required'),
 });
 
 const attendanceListSelect: any = {
@@ -168,6 +172,22 @@ function extractQrToken(value: string) {
   return decodeURIComponent(match?.[1] || trimmed);
 }
 
+function extractTicketNumber(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const patterns = [
+    /\/ticket\/([^/?#]+)/i,
+    /[?&]ticket=([^&#]+)/i,
+    /[?&]ticketNumber=([^&#]+)/i,
+    /^event-ticket:(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match?.[1]) return decodeURIComponent(match[1]).trim();
+  }
+  return trimmed;
+}
+
 function parseRequiredDate(value: string, label: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -193,6 +213,134 @@ function isQrOpen(attendance: any) {
   return true;
 }
 
+function eventChurchIds(event: any): string[] {
+  const ids = new Set<string>();
+  if (event?.churchId) ids.add(event.churchId);
+  for (const link of event?.linkedChurches || []) {
+    if (link.churchId) ids.add(link.churchId);
+  }
+  return Array.from(ids);
+}
+
+async function resolveAttendanceTargetChurch(
+  eventId: string | undefined,
+  requestedChurchId: string | undefined,
+  accessibleChurchIds: string[],
+) {
+  if (!eventId) {
+    if (!requestedChurchId) return { ok: false as const, status: 400, message: 'Church ID required' };
+    if (!accessibleChurchIds.includes(requestedChurchId)) return { ok: false as const, status: 403, message: 'Access denied to this church' };
+    return { ok: true as const, churchId: requestedChurchId, event: null };
+  }
+
+  const event = await (prisma.event as any).findUnique({
+    where: { id: eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
+  if (!event) return { ok: false as const, status: 404, message: 'Event not found' };
+
+  const allowedEventChurchIds = eventChurchIds(event);
+  const canAccessEvent = allowedEventChurchIds.some(id => accessibleChurchIds.includes(id));
+  if (!canAccessEvent) return { ok: false as const, status: 403, message: 'Access denied to this event' };
+
+  return { ok: true as const, churchId: event.churchId, event };
+}
+
+async function canAccessAttendanceRecord(record: any, accessibleChurchIds: string[]) {
+  if (accessibleChurchIds.includes(record.churchId)) return true;
+  if (!record.eventId) return false;
+  const event = await (prisma.event as any).findUnique({
+    where: { id: record.eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
+  if (!event) return false;
+  return eventChurchIds(event).some(id => accessibleChurchIds.includes(id));
+}
+
+async function attendanceAcceptsChurch(attendance: any, churchId?: string | null) {
+  if (!churchId) return false;
+  if (!attendance.eventId) return churchId === attendance.churchId;
+  const event = await (prisma.event as any).findUnique({
+    where: { id: attendance.eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
+  if (!event) return false;
+  return eventChurchIds(event).includes(churchId);
+}
+
+async function getAttendanceLinkedChurchIds(attendance: any) {
+  if (!attendance.eventId) return [attendance.churchId].filter(Boolean);
+  const event = await (prisma.event as any).findUnique({
+    where: { id: attendance.eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
+  return event ? eventChurchIds(event) : [attendance.churchId].filter(Boolean);
+}
+
+async function findLinkedMemberByContact(attendance: any, email?: string | null, phone?: string | null) {
+  const linkedChurchIds = await getAttendanceLinkedChurchIds(attendance);
+  if (!linkedChurchIds.length) return null;
+
+  const normalizedEmail = normalizeContactValue(email);
+  const phoneKeys = phoneLookupKeys(phone);
+  const contactWhere = [
+    ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+    ...(phoneKeys.length ? [{ phone: { in: phoneKeys } }] : []),
+  ];
+  if (!contactWhere.length) return null;
+
+  return prisma.user.findFirst({
+    where: {
+      churchId: { in: linkedChurchIds },
+      status: 'active',
+      OR: contactWhere,
+    },
+    select: {
+      id: true,
+      churchId: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      memberType: true,
+      gender: true,
+      dateOfBirth: true,
+      church: { select: { id: true, name: true } },
+    },
+  });
+}
+
+async function createMatchedMemberParticipant(tx: any, attendanceId: string, member: any, checkInMethod: string) {
+  const created = await tx.attendanceParticipant.create({
+    data: {
+      attendanceId,
+      sourceChurchId: member.churchId,
+      userId: member.id,
+      checkInMethod,
+    },
+    include: {
+      user: {
+        select: {
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          memberType: true,
+          gender: true,
+          dateOfBirth: true,
+          church: { select: { id: true, name: true } },
+        },
+      },
+      sourceChurch: { select: { id: true, name: true } },
+    },
+  });
+  await tx.attendance.update({
+    where: { id: attendanceId },
+    data: attendanceIncrementData(member.gender, ageBucketForMember(member)),
+  });
+  return created;
+}
+
 async function assertAttendanceAccess(req: Request, attendanceId: string) {
   const record = await (prisma.attendance as any).findUnique({
     where: { id: attendanceId },
@@ -209,7 +357,7 @@ async function assertAttendanceAccess(req: Request, attendanceId: string) {
     req.user?.userId
   );
 
-  if (!accessibleChurchIds.includes(record.churchId)) {
+  if (!(await canAccessAttendanceRecord(record, accessibleChurchIds))) {
     return { ok: false as const, status: 403, message: 'Access denied' };
   }
 
@@ -261,12 +409,13 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
   const participantDelegate = (prisma as any).attendanceParticipant;
   const participants = await participantDelegate.findMany({
     where: { attendanceId: { in: attendanceIds } },
-    select: {
-      attendanceId: true,
-      userId: true,
-      guestEmail: true,
-      guestPhone: true,
-      user: { select: { churchId: true } },
+      select: {
+        attendanceId: true,
+        sourceChurchId: true,
+        userId: true,
+        guestEmail: true,
+        guestPhone: true,
+        user: { select: { churchId: true } },
     },
   });
 
@@ -324,7 +473,8 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
     rowCounts.checkedInParticipants += 1;
 
     if (participant.userId) {
-      if (participant.user?.churchId && participant.user.churchId !== record.churchId) {
+      const sourceChurchId = participant.sourceChurchId || participant.user?.churchId;
+      if (sourceChurchId && sourceChurchId !== record.churchId) {
         rowCounts.ministryMemberGuests += 1;
       }
       continue;
@@ -376,19 +526,39 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const whereClause: any = { churchId: { in: accessibleChurchIds } };
+  async function buildAttendanceScopeWhere(scopedChurchIds: string[]) {
+    const accessibleEvents = await (prisma.event as any).findMany({
+      where: {
+        OR: [
+          { churchId: { in: scopedChurchIds } },
+          { linkedChurches: { some: { churchId: { in: scopedChurchIds } } } },
+        ],
+      },
+      select: { id: true },
+    });
+    const eventIds = accessibleEvents.map((event: any) => event.id);
+    return {
+      OR: [
+        { churchId: { in: scopedChurchIds }, eventId: null },
+        ...(eventIds.length ? [{ eventId: { in: eventIds } }] : []),
+      ],
+    };
+  }
+
+  let scopedChurchIds = accessibleChurchIds;
   
   // Apply filters
   if (filterChurchId && typeof filterChurchId === 'string') {
     // Ensure the filtered church is in accessible churches
     if (accessibleChurchIds.includes(filterChurchId)) {
-      whereClause.churchId = filterChurchId;
+      scopedChurchIds = [filterChurchId];
     } else {
       // User doesn't have access to this church
       res.json({ success: true, data: [] });
       return;
     }
   }
+  const whereClause: any = await buildAttendanceScopeWhere(scopedChurchIds);
   if (serviceType && typeof serviceType === 'string') {
     whereClause.serviceType = serviceType;
   }
@@ -458,7 +628,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { churchId: targetChurchId, eventId, visitors, ...data } = parsed.data;
+  const { churchId: requestedChurchId, eventId, visitors, ...data } = parsed.data;
 
   // Verify user has access to this church
   const accessibleChurchIds = await getAccessibleChurchIds(
@@ -470,10 +640,12 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     userId
   );
 
-  if (!accessibleChurchIds.includes(targetChurchId)) {
-    res.status(403).json({ success: false, message: 'Access denied to this church' });
+  const target = await resolveAttendanceTargetChurch(eventId, requestedChurchId, accessibleChurchIds);
+  if (!target.ok) {
+    res.status(target.status).json({ success: false, message: target.message });
     return;
   }
+  const targetChurchId = target.churchId;
 
   const parsedAttendanceDate = parseRequiredDate(data.date, 'attendance date');
   if (!parsedAttendanceDate.ok) {
@@ -489,14 +661,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   // For event attendance, check if record exists for same event and date
   if (eventId) {
     const existing = await prisma.attendance.findFirst({
-      where: {
-        eventId,
-        churchId: targetChurchId,
-        date: {
-          gte: dateOnly,
-          lt: new Date(dateOnly.getTime() + 24 * 60 * 60 * 1000),
-        },
-      },
+      where: { eventId },
     });
 
     if (existing) {
@@ -512,6 +677,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
           adults: data.adults,
           seniors: data.seniors,
           newVisitors: newVisitorsCount,
+          serviceType: data.serviceType || existing.serviceType,
           notes: data.notes,
         },
       });
@@ -567,10 +733,12 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     userId
   );
 
-  if (!accessibleChurchIds.includes(parsed.data.churchId)) {
-    res.status(403).json({ success: false, message: 'Access denied to this church' });
+  const target = await resolveAttendanceTargetChurch(parsed.data.eventId, parsed.data.churchId, accessibleChurchIds);
+  if (!target.ok) {
+    res.status(target.status).json({ success: false, message: target.message });
     return;
   }
+  const targetChurchId = target.churchId;
 
   const parsedAttendanceDate = parseRequiredDate(parsed.data.date, 'attendance date');
   if (!parsedAttendanceDate.ok) {
@@ -594,15 +762,16 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     return;
   }
   const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
-  const existingWhere: any = {
-    churchId: parsed.data.churchId,
-    serviceType: parsed.data.serviceType,
-    date: {
-      gte: dateOnly,
-      lt: new Date(dateOnly.getTime() + 24 * 60 * 60 * 1000),
-    },
-  };
-  if (parsed.data.eventId) existingWhere.eventId = parsed.data.eventId;
+  const existingWhere: any = parsed.data.eventId
+    ? { eventId: parsed.data.eventId }
+    : {
+        churchId: targetChurchId,
+        serviceType: parsed.data.serviceType,
+        date: {
+          gte: dateOnly,
+          lt: new Date(dateOnly.getTime() + 24 * 60 * 60 * 1000),
+        },
+      };
 
   const existing = await (prisma.attendance as any).findFirst({ where: existingWhere });
   if (existing) {
@@ -623,7 +792,7 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
 
   const record = await (prisma.attendance as any).create({
     data: {
-      churchId: parsed.data.churchId,
+      churchId: targetChurchId,
       eventId: parsed.data.eventId,
       date: attendanceDate,
       totalAttendees: 0,
@@ -702,7 +871,7 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
-  if (!accessibleChurchIds.includes(targetChurchId)) {
+  if (targetChurchId && !accessibleChurchIds.includes(targetChurchId)) {
     res.status(403).json({ success: false, message: 'Cannot move attendance to a church outside your scope' });
     return;
   }
@@ -828,6 +997,17 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
             church: { select: { id: true, name: true } },
           },
         },
+        sourceChurch: { select: { id: true, name: true } },
+        eventTicket: {
+          select: {
+            id: true,
+            ticketNumber: true,
+            status: true,
+            attended: true,
+            attendedAt: true,
+            church: { select: { id: true, name: true } },
+          },
+        },
       },
       orderBy: { checkedInAt: 'desc' },
       skip,
@@ -929,9 +1109,10 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
     return;
   }
 
+  const linkedChurchIds = await getAttendanceLinkedChurchIds(access.record);
   const terms = q.split(/\s+/).filter(Boolean);
   const where: any = {
-    churchId: access.record.churchId,
+    churchId: { in: linkedChurchIds },
     status: 'active',
     OR: [
       { firstName: { contains: q } },
@@ -965,6 +1146,7 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
         memberType: true,
         gender: true,
         dateOfBirth: true,
+        church: { select: { id: true, name: true } },
       },
       orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       skip,
@@ -1004,8 +1186,9 @@ export async function addManualAttendanceMembers(req: Request, res: Response): P
   }
 
   const userIds = Array.from(new Set(parsed.data.userIds));
+  const linkedChurchIds = await getAttendanceLinkedChurchIds(access.record);
   const members = await prisma.user.findMany({
-    where: { id: { in: userIds }, churchId: access.record.churchId, status: 'active' },
+    where: { id: { in: userIds }, churchId: { in: linkedChurchIds }, status: 'active' },
     select: {
       id: true,
       firstName: true,
@@ -1013,13 +1196,15 @@ export async function addManualAttendanceMembers(req: Request, res: Response): P
       email: true,
       phone: true,
       memberType: true,
+      churchId: true,
       gender: true,
       dateOfBirth: true,
+      church: { select: { id: true, name: true } },
     },
   });
 
   if (!members.length) {
-    res.status(400).json({ success: false, message: 'No valid members found for this church' });
+    res.status(400).json({ success: false, message: 'No valid members found for this attendance' });
     return;
   }
 
@@ -1039,6 +1224,7 @@ export async function addManualAttendanceMembers(req: Request, res: Response): P
       rows.push(await (tx as any).attendanceParticipant.create({
         data: {
           attendanceId,
+          sourceChurchId: member.churchId,
           userId: member.id,
           checkInMethod: 'manual_member',
         },
@@ -1090,6 +1276,23 @@ export async function addManualAttendanceVisitor(req: Request, res: Response): P
 
   if (existing) {
     res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const matchedMember = await findLinkedMemberByContact(access.record, data.guestEmail, data.guestPhone);
+  if (matchedMember) {
+    const existingMember = await participantDelegate.findUnique({
+      where: { attendanceId_userId: { attendanceId, userId: matchedMember.id } },
+    });
+    if (existingMember) {
+      res.json({ success: true, data: existingMember, alreadyCheckedIn: true, matchedMember: true });
+      return;
+    }
+
+    const participant = await prisma.$transaction((tx) =>
+      createMatchedMemberParticipant(tx, attendanceId, matchedMember, 'manual_visitor_matched_member')
+    );
+    res.status(201).json({ success: true, data: participant, matchedMember: true });
     return;
   }
 
@@ -1285,8 +1488,8 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
   }
 
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } });
-  if (!user || user.churchId !== attendance.churchId) {
-    res.status(403).json({ success: false, message: 'This check-in is only for members of this church' });
+  if (!user || !(await attendanceAcceptsChurch(attendance, user.churchId))) {
+    res.status(403).json({ success: false, message: 'This check-in is only for members of churches linked to this attendance' });
     return;
   }
 
@@ -1304,6 +1507,7 @@ export async function checkInMemberByQr(req: Request, res: Response): Promise<vo
     const created = await (tx as any).attendanceParticipant.create({
       data: {
         attendanceId: attendance.id,
+        sourceChurchId: user.churchId,
         userId,
         checkInMethod: 'qr_member',
       },
@@ -1348,6 +1552,23 @@ export async function checkInGuestByQr(req: Request, res: Response): Promise<voi
 
   if (existing) {
     res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const matchedMember = await findLinkedMemberByContact(attendance, data.guestEmail, data.guestPhone);
+  if (matchedMember) {
+    const existingMember = await participantDelegate.findUnique({
+      where: { attendanceId_userId: { attendanceId: attendance.id, userId: matchedMember.id } },
+    });
+    if (existingMember) {
+      res.json({ success: true, data: existingMember, alreadyCheckedIn: true, matchedMember: true });
+      return;
+    }
+
+    const participant = await prisma.$transaction((tx) =>
+      createMatchedMemberParticipant(tx, attendance.id, matchedMember, 'qr_guest_matched_member')
+    );
+    res.status(201).json({ success: true, data: participant, matchedMember: true });
     return;
   }
 
@@ -1416,8 +1637,8 @@ export async function scanMemberAttendanceQr(req: Request, res: Response): Promi
     res.status(404).json({ success: false, message: 'Member QR not found or inactive' });
     return;
   }
-  if (member.churchId !== attendance.churchId) {
-    res.status(403).json({ success: false, message: 'This member belongs to a different church' });
+  if (!(await attendanceAcceptsChurch(attendance, member.churchId))) {
+    res.status(403).json({ success: false, message: 'This member belongs to a church not linked to this attendance' });
     return;
   }
 
@@ -1436,6 +1657,7 @@ export async function scanMemberAttendanceQr(req: Request, res: Response): Promi
     const created = await (tx as any).attendanceParticipant.create({
       data: {
         attendanceId,
+        sourceChurchId: member.churchId,
         userId: member.id,
         checkInMethod: 'admin_scan',
       },
@@ -1444,6 +1666,171 @@ export async function scanMemberAttendanceQr(req: Request, res: Response): Promi
     await (tx.attendance as any).update({
       where: { id: attendanceId },
       data: attendanceIncrementData(member.gender, ageBucketForMember(member)),
+    });
+    return created;
+  });
+
+  res.status(201).json({ success: true, data: participant });
+}
+
+export async function scanEventTicketAttendance(req: Request, res: Response): Promise<void> {
+  const attendanceId = String(req.params.id);
+  const parsed = ticketScanSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const access = await assertAttendanceAccess(req, attendanceId);
+  if (!access.ok) {
+    res.status(access.status).json({ success: false, message: access.message });
+    return;
+  }
+
+  const attendance = access.record;
+  if (!attendance.eventId) {
+    res.status(400).json({ success: false, message: 'Ticket scanning is only available for event attendance' });
+    return;
+  }
+  if (!isQrOpen(attendance)) {
+    res.status(400).json({ success: false, message: 'This attendance QR session is not active' });
+    return;
+  }
+
+  const ticketNumber = extractTicketNumber(parsed.data.ticket);
+  const ticket = await (prisma.eventTicket as any).findUnique({
+    where: { ticketNumber },
+    include: {
+      user: {
+        select: {
+          id: true,
+          churchId: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          memberType: true,
+          gender: true,
+          dateOfBirth: true,
+          status: true,
+          church: { select: { id: true, name: true } },
+        },
+      },
+      church: { select: { id: true, name: true } },
+    },
+  });
+
+  if (!ticket) {
+    res.status(404).json({ success: false, message: 'Ticket not found' });
+    return;
+  }
+  if (ticket.eventId !== attendance.eventId) {
+    res.status(400).json({ success: false, message: 'This ticket belongs to a different event' });
+    return;
+  }
+  if (ticket.status === 'cancelled') {
+    res.status(400).json({ success: false, message: 'This ticket has been cancelled' });
+    return;
+  }
+  if (ticket.churchId && !(await attendanceAcceptsChurch(attendance, ticket.churchId))) {
+    res.status(403).json({ success: false, message: 'This ticket belongs to a church not linked to this attendance' });
+    return;
+  }
+
+  const participantDelegate = (prisma as any).attendanceParticipant;
+  const existingByTicket = await participantDelegate.findUnique({
+    where: { eventTicketId: ticket.id },
+    include: {
+      user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } },
+      sourceChurch: { select: { id: true, name: true } },
+      eventTicket: { select: { id: true, ticketNumber: true, church: { select: { id: true, name: true } } } },
+    },
+  });
+  if (existingByTicket) {
+    res.json({ success: true, data: existingByTicket, alreadyCheckedIn: true });
+    return;
+  }
+
+  const matchedMember = ticket.userId
+    ? ticket.user
+    : await findLinkedMemberByContact(attendance, ticket.guestEmail, ticket.guestPhone);
+
+  if (matchedMember?.id) {
+    if (!(await attendanceAcceptsChurch(attendance, matchedMember.churchId))) {
+      res.status(403).json({ success: false, message: 'Matched member belongs to a church not linked to this attendance' });
+      return;
+    }
+
+    const existingMember = await participantDelegate.findUnique({
+      where: { attendanceId_userId: { attendanceId, userId: matchedMember.id } },
+      include: {
+        user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } },
+        sourceChurch: { select: { id: true, name: true } },
+        eventTicket: { select: { id: true, ticketNumber: true, church: { select: { id: true, name: true } } } },
+      },
+    });
+    if (existingMember) {
+      await (prisma.eventTicket as any).update({
+        where: { id: ticket.id },
+        data: { attended: true, attendedAt: ticket.attendedAt || new Date() },
+      }).catch(() => {});
+      res.json({ success: true, data: existingMember, alreadyCheckedIn: true });
+      return;
+    }
+
+    const participant = await prisma.$transaction(async (tx) => {
+      const created = await (tx as any).attendanceParticipant.create({
+        data: {
+          attendanceId,
+          eventTicketId: ticket.id,
+          sourceChurchId: matchedMember.churchId,
+          userId: matchedMember.id,
+          checkInMethod: ticket.userId ? 'ticket_scan' : 'ticket_scan_matched_member',
+        },
+        include: {
+          user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } },
+          sourceChurch: { select: { id: true, name: true } },
+          eventTicket: { select: { id: true, ticketNumber: true, church: { select: { id: true, name: true } } } },
+        },
+      });
+      await (tx as any).eventTicket.update({
+        where: { id: ticket.id },
+        data: { attended: true, attendedAt: new Date() },
+      });
+      await (tx.attendance as any).update({
+        where: { id: attendanceId },
+        data: attendanceIncrementData(matchedMember.gender, ageBucketForMember(matchedMember)),
+      });
+      return created;
+    });
+
+    res.status(201).json({ success: true, data: participant });
+    return;
+  }
+
+  const participant = await prisma.$transaction(async (tx) => {
+    const created = await (tx as any).attendanceParticipant.create({
+      data: {
+        attendanceId,
+        eventTicketId: ticket.id,
+        sourceChurchId: ticket.churchId || attendance.churchId,
+        guestName: ticket.guestName,
+        guestEmail: ticket.guestEmail,
+        guestPhone: ticket.guestPhone,
+        checkInMethod: 'ticket_scan_guest',
+      },
+      include: {
+        sourceChurch: { select: { id: true, name: true } },
+        eventTicket: { select: { id: true, ticketNumber: true, church: { select: { id: true, name: true } } } },
+      },
+    });
+    await (tx as any).eventTicket.update({
+      where: { id: ticket.id },
+      data: { attended: true, attendedAt: new Date() },
+    });
+    await (tx.attendance as any).update({
+      where: { id: attendanceId },
+      data: attendanceIncrementData(null, null, true),
     });
     return created;
   });
@@ -1481,6 +1868,23 @@ export async function scanVisitorAttendance(req: Request, res: Response): Promis
 
   if (existing) {
     res.json({ success: true, data: existing, alreadyCheckedIn: true });
+    return;
+  }
+
+  const matchedMember = await findLinkedMemberByContact(access.record, data.guestEmail, data.guestPhone);
+  if (matchedMember) {
+    const existingMember = await participantDelegate.findUnique({
+      where: { attendanceId_userId: { attendanceId, userId: matchedMember.id } },
+    });
+    if (existingMember) {
+      res.json({ success: true, data: existingMember, alreadyCheckedIn: true, matchedMember: true });
+      return;
+    }
+
+    const participant = await prisma.$transaction((tx) =>
+      createMatchedMemberParticipant(tx, attendanceId, matchedMember, 'admin_visitor_matched_member')
+    );
+    res.status(201).json({ success: true, data: participant, matchedMember: true });
     return;
   }
 

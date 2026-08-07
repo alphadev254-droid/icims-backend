@@ -11,6 +11,7 @@ import { refundWithdrawal } from '../utils/walletOperations';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
+import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 
 function safeJsonParse(value: string): any {
   try {
@@ -425,24 +426,17 @@ async function processPaychanguTicket(pendingTx: any, metadata: any, payload: an
   const isGuest = metadata.isGuest === true;
 
   for (let i = 0; i < quantity; i++) {
-    const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
-    const ticketCount = await prisma.eventTicket.count({ where: { eventId: metadata.eventId } });
-    const eventPrefix = event!.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-    const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
-
-    await prisma.eventTicket.create({
-      data: {
-        ticketNumber,
-        eventId: metadata.eventId,
-        userId: isGuest ? null : pendingTx.userId,
-        transactionId: transaction.id,
-        status: 'confirmed',
-        isGuest,
-        guestName: isGuest ? metadata.guestName : null,
-        guestEmail: isGuest ? metadata.guestEmail : null,
-        guestPhone: isGuest ? metadata.guestPhone : null,
-      },
+    const ticket = await createEventTicketWithUniqueNumber(event!, {
+      churchId: pendingTx.churchId || metadata.churchId || event!.churchId,
+      userId: isGuest ? null : pendingTx.userId,
+      transactionId: transaction.id,
+      status: 'confirmed',
+      isGuest,
+      guestName: isGuest ? metadata.guestName : null,
+      guestEmail: isGuest ? metadata.guestEmail : null,
+      guestPhone: isGuest ? metadata.guestPhone : null,
     });
+    const ticketNumber = ticket.ticketNumber;
 
     const attendeeName = isGuest ? metadata.guestName : `${user!.firstName} ${user!.lastName}`;
     const emailTo = isGuest ? metadata.guestEmail : user!.email;

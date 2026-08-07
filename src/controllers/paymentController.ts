@@ -12,6 +12,7 @@ import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { displayName, maskEmail, maskPhone } from '../utils/logger';
+import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -740,24 +741,17 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const user = isGuestTicket ? null : await prisma.user.findUnique({ where: { id: pendingTx.userId! } });
         
         for (let i = 0; i < quantity; i++) {
-          const eventDate = new Date(event!.date).toISOString().slice(0, 10).replace(/-/g, '');
-          const ticketCount = await prisma.eventTicket.count({ where: { eventId: pendingMetadata.eventId } });
-          const eventPrefix = event!.title.replace(/\s+/g, '').substring(0, 6).toUpperCase();
-          const ticketNumber = `${eventPrefix}-${eventDate}-${String(ticketCount + i + 1).padStart(4, '0')}`;
-          
-          await prisma.eventTicket.create({
-            data: {
-              ticketNumber,
-              eventId: pendingMetadata.eventId,
-              userId: isGuestTicket ? null : pendingTx.userId,
-              transactionId: transaction.id,
-              status: 'confirmed',
-              isGuest: isGuestTicket,
-              guestName: isGuestTicket ? pendingMetadata.guestName : null,
-              guestEmail: isGuestTicket ? pendingMetadata.guestEmail : null,
-              guestPhone: isGuestTicket ? pendingMetadata.guestPhone : null,
-            }
+          const ticket = await createEventTicketWithUniqueNumber(event!, {
+            churchId: pendingTx.churchId || pendingMetadata.churchId || event!.churchId,
+            userId: isGuestTicket ? null : pendingTx.userId,
+            transactionId: transaction.id,
+            status: 'confirmed',
+            isGuest: isGuestTicket,
+            guestName: isGuestTicket ? pendingMetadata.guestName : null,
+            guestEmail: isGuestTicket ? pendingMetadata.guestEmail : null,
+            guestPhone: isGuestTicket ? pendingMetadata.guestPhone : null,
           });
+          const ticketNumber = ticket.ticketNumber;
           
           // Send email — guest path
           if (isGuestTicket && event) {
