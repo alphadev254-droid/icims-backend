@@ -702,20 +702,6 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     res.status(400).json({ success: false, message: 'Ticket sales have ended' }); return;
   }
 
-  const existingTicket = await prisma.eventTicket.findFirst({
-    where: {
-      eventId,
-      userId: targetUserId,
-      status: { not: 'cancelled' },
-    },
-    select: { id: true, ticketNumber: true, eventId: true, userId: true, transactionId: true, status: true, createdAt: true, updatedAt: true },
-  });
-
-  if (existingTicket) {
-    res.status(200).json({ success: true, data: existingTicket });
-    return;
-  }
-
   if (event.totalTickets && event.ticketsSold >= event.totalTickets) {
     res.status(400).json({ success: false, message: 'Event is sold out' }); return;
   }
@@ -843,6 +829,89 @@ export async function markAttendance(req: Request, res: Response): Promise<void>
   });
 
   res.json({ success: true, data: ticket });
+}
+
+export async function cancelTicket(req: Request, res: Response): Promise<void> {
+  const ticketId = String(req.params.ticketId);
+  const userId = req.user?.userId;
+  const roleName = req.user?.role ?? 'member';
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const ticket = await prisma.eventTicket.findUnique({
+    where: { id: ticketId },
+    select: {
+      id: true,
+      eventId: true,
+      ticketNumber: true,
+      status: true,
+      attended: true,
+      event: {
+        select: {
+          id: true,
+          churchId: true,
+          linkedChurches: { select: { churchId: true } },
+        },
+      },
+      attendanceParticipants: { select: { id: true }, take: 1 },
+    },
+  });
+
+  if (!ticket) {
+    res.status(404).json({ success: false, message: 'Ticket not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+  const eventChurchIds = getEventChurchIds(ticket.event);
+  if (!eventChurchIds.some(churchId => accessibleChurchIds.includes(churchId))) {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  if (ticket.status === 'cancelled') {
+    res.json({ success: true, message: 'Ticket is already cancelled', data: ticket });
+    return;
+  }
+
+  if (ticket.attended || ticket.status === 'used' || ticket.attendanceParticipants.length > 0) {
+    res.status(400).json({
+      success: false,
+      message: 'This ticket has already been checked in. Remove the attendance record before cancelling it.',
+    });
+    return;
+  }
+
+  const [updatedTicket] = await prisma.$transaction([
+    prisma.eventTicket.update({
+      where: { id: ticketId },
+      data: {
+        status: 'cancelled',
+        attended: false,
+        attendedAt: null,
+      },
+      include: {
+        church: { select: { id: true, name: true } },
+        user: { select: { id: true, firstName: true, lastName: true, email: true } },
+        transaction: { select: { amount: true, baseAmount: true, currency: true, paymentMethod: true } },
+      },
+    }),
+    prisma.event.updateMany({
+      where: { id: ticket.eventId, ticketsSold: { gt: 0 } },
+      data: { ticketsSold: { decrement: 1 } },
+    }),
+  ]);
+
+  res.json({ success: true, message: 'Ticket cancelled', data: updatedTicket });
 }
 
 export async function createManualTicket(req: Request, res: Response): Promise<void> {

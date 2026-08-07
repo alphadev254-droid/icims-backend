@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getEvents, getEvent, getEventSelect, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, getPublicEvent } from '../controllers/eventController';
+import { getEvents, getEvent, getEventSelect, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, cancelTicket, getPublicEvent } from '../controllers/eventController';
 import { authenticate, authorizeAnyPermission, authorizePermission } from '../middleware/auth';
 
 const router = Router();
@@ -14,6 +14,7 @@ router.get('/my-tickets', authorizePermission('tickets:read'), getMyTickets);
 router.post('/book-ticket', bookTicket); // No permission check for free tickets
 router.get('/tickets/:ticketId/transaction', authorizePermission('tickets:read'), getTicketTransaction);
 router.get('/tickets/:ticketId/download', authorizePermission('tickets:read'), downloadTicket);
+router.delete('/tickets/:ticketId', authorizePermission('tickets:create'), cancelTicket);
 router.get('/select', authorizeAnyPermission([
   'events:read',
   'events:create',
