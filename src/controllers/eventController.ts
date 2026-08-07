@@ -110,6 +110,14 @@ const bookTicketSchema = z.object({
   existingTransactionId: z.string().optional(),
 });
 
+const manualTicketSchema = bookTicketSchema.extend({
+  attendeeType: z.enum(['member', 'guest']).optional().default('member'),
+  churchId: z.string().optional(),
+  guestName: z.string().optional(),
+  guestEmail: z.string().email('Valid guest email required').optional(),
+  guestPhone: z.string().optional(),
+});
+
 type EventWithChurchLinks = {
   id: string;
   churchId: string;
@@ -839,13 +847,17 @@ export async function markAttendance(req: Request, res: Response): Promise<void>
 
 export async function createManualTicket(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
-  const parsed = bookTicketSchema.safeParse(req.body);
+  const parsed = manualTicketSchema.safeParse({ ...req.body, eventId });
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const { memberId, paymentMethod, reference, amount, currency, transactionStatus, ticketStatus, notes, useExistingTransaction, existingTransactionId } = parsed.data;
+  const { attendeeType, memberId, churchId, guestName, guestEmail, guestPhone, paymentMethod, reference, amount, currency, transactionStatus, ticketStatus, notes, useExistingTransaction, existingTransactionId } = parsed.data;
   
-  if (!memberId) {
+  if (attendeeType === 'member' && !memberId) {
     res.status(400).json({ success: false, message: 'memberId is required for manual ticket creation' });
+    return;
+  }
+  if (attendeeType === 'guest' && (!guestName || !guestEmail)) {
+    res.status(400).json({ success: false, message: 'Guest name and email are required for manual guest tickets' });
     return;
   }
 
@@ -865,16 +877,32 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
     res.status(400).json({ success: false, message: 'Event is sold out' }); return;
   }
 
-  const member = await prisma.user.findUnique({ 
-    where: { id: memberId },
-    include: { role: true }
-  });
-  if (!member) { res.status(404).json({ success: false, message: 'Member not found' }); return; }
-  if (member.role?.name !== 'member') { res.status(400).json({ success: false, message: 'Selected user is not a member' }); return; }
   const allowedChurchIds = event.linkedChurches?.length ? event.linkedChurches.map((link: any) => link.churchId) : [event.churchId];
-  if (!member.churchId || !allowedChurchIds.includes(member.churchId)) {
-    res.status(403).json({ success: false, message: 'This event is not available for this member church' });
-    return;
+  let resolvedChurchId: string | null = null;
+  let member: Awaited<ReturnType<typeof prisma.user.findUnique>> & { role?: { name: string } | null } | null = null;
+
+  if (attendeeType === 'member') {
+    member = await prisma.user.findUnique({
+      where: { id: memberId },
+      include: { role: true }
+    }) as any;
+    if (!member) { res.status(404).json({ success: false, message: 'Member not found' }); return; }
+    if (member.role?.name !== 'member') { res.status(400).json({ success: false, message: 'Selected user is not a member' }); return; }
+    resolvedChurchId = (member as any).churchId;
+    if (!resolvedChurchId || !allowedChurchIds.includes(resolvedChurchId)) {
+      res.status(403).json({ success: false, message: 'This event is not available for this member church' });
+      return;
+    }
+  } else {
+    resolvedChurchId = churchId || (allowedChurchIds.length === 1 ? allowedChurchIds[0] : null);
+    if (!resolvedChurchId) {
+      res.status(400).json({ success: false, message: 'Church is required for guest tickets on multi-church events' });
+      return;
+    }
+    if (!allowedChurchIds.includes(resolvedChurchId)) {
+      res.status(403).json({ success: false, message: 'This event is not available for the selected church' });
+      return;
+    }
   }
 
   let transactionId = null;
@@ -895,11 +923,15 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
           status: transactionStatus || 'completed',
           paymentMethod,
           reference: reference || `MANUAL-${Date.now()}`,
-          userId: memberId,
-          churchId: member.churchId!,
+          userId: attendeeType === 'member' ? memberId : null,
+          churchId: resolvedChurchId,
           type: 'event_ticket',
           notes,
           isManual: true,
+          isGuest: attendeeType === 'guest',
+          guestName: attendeeType === 'guest' ? guestName : null,
+          guestEmail: attendeeType === 'guest' ? guestEmail : null,
+          guestPhone: attendeeType === 'guest' ? guestPhone || null : null,
         },
       });
       transactionId = transaction.id;
@@ -907,12 +939,16 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
   }
 
   const ticket = await createEventTicketWithUniqueNumber(event, {
-      churchId: member.churchId,
-      userId: memberId, 
+      churchId: resolvedChurchId,
+      userId: attendeeType === 'member' ? memberId : null,
       transactionId, 
       status: ticketStatus || 'confirmed',
       isManual: true,
-    }, { user: { select: { firstName: true, lastName: true, email: true } }, transaction: true });
+      isGuest: attendeeType === 'guest',
+      guestName: attendeeType === 'guest' ? guestName : null,
+      guestEmail: attendeeType === 'guest' ? guestEmail : null,
+      guestPhone: attendeeType === 'guest' ? guestPhone || null : null,
+    }, { user: { select: { firstName: true, lastName: true, email: true } }, church: { select: { id: true, name: true } }, transaction: true });
 
   await prisma.event.update({
     where: { id: eventId },
