@@ -297,6 +297,16 @@ export async function login(req: Request, res: Response): Promise<void> {
 }
 
 const TITLES = ['Rev', 'Dr', 'Prof', 'Pastor', 'Prophet', 'Seer', 'Sister', 'Brother', 'Father', 'Other'] as const;
+const TERMS_VERSION = '2026-08-11';
+const PRIVACY_VERSION = '2026-08-11';
+
+const termsAcceptanceSchema = {
+  acceptedTerms: z.literal(true, {
+    errorMap: () => ({ message: 'You must accept the Terms and Conditions and Privacy Policy to create an account' }),
+  }),
+  termsVersion: z.string().optional(),
+  privacyVersion: z.string().optional(),
+};
 
 const registerSchema = z.object({
   firstName: z.string().min(2, 'First name must be at least 2 characters'),
@@ -323,6 +333,7 @@ const registerSchema = z.object({
   baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().optional(),
   registrationType: z.enum(['ministry_admin', 'member']).optional(),
+  ...termsAcceptanceSchema,
 }).superRefine((data, ctx) => {
   const hasMemberOnlyFields = Boolean(
     data.registrationType === 'member' ||
@@ -378,7 +389,17 @@ const memberRegisterSchema = z.object({
   baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().min(1, 'A valid church invite link is required'),
   expectedChurchId: z.string().optional(),
+  ...termsAcceptanceSchema,
 });
+
+const acceptTermsSchema = z.object({
+  acceptedTerms: z.literal(true, {
+    errorMap: () => ({ message: 'You must accept the Terms and Conditions and Privacy Policy to continue' }),
+  }),
+  termsVersion: z.string().optional(),
+  privacyVersion: z.string().optional(),
+});
+
 export async function register(req: Request, res: Response): Promise<void> {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -462,6 +483,12 @@ export async function register(req: Request, res: Response): Promise<void> {
         membershipType: data.membershipType,
         serviceInterest: data.serviceInterest,
         baptizedByImmersion: data.baptizedByImmersion,
+        acceptedTerms: true,
+        termsAcceptedAt: new Date(),
+        termsVersion: data.termsVersion || TERMS_VERSION,
+        privacyVersion: data.privacyVersion || PRIVACY_VERSION,
+        termsAcceptedIp: req.ip,
+        termsAcceptedUserAgent: req.get('user-agent') ?? null,
       },
       include: USER_INCLUDE,
     });
@@ -616,6 +643,12 @@ export async function registerMember(req: Request, res: Response): Promise<void>
       membershipType: data.membershipType,
       serviceInterest: data.serviceInterest,
       baptizedByImmersion: data.baptizedByImmersion,
+      acceptedTerms: true,
+      termsAcceptedAt: new Date(),
+      termsVersion: data.termsVersion || TERMS_VERSION,
+      privacyVersion: data.privacyVersion || PRIVACY_VERSION,
+      termsAcceptedIp: req.ip,
+      termsAcceptedUserAgent: req.get('user-agent') ?? null,
     },
     include: USER_INCLUDE,
   });
@@ -660,6 +693,45 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   res.cookie('icims_token', token, COOKIE_OPTIONS);
   res.status(201).json({ success: true, user: safeUser(user, permissions) });
 }
+
+export async function acceptTerms(req: Request, res: Response): Promise<void> {
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const parsed = acceptTermsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const data = parsed.data;
+  const updated = await prisma.user.update({
+    where: { id: req.user.userId },
+    data: {
+      acceptedTerms: true,
+      termsAcceptedAt: new Date(),
+      termsVersion: data.termsVersion || TERMS_VERSION,
+      privacyVersion: data.privacyVersion || PRIVACY_VERSION,
+      termsAcceptedIp: req.ip,
+      termsAcceptedUserAgent: req.get('user-agent') ?? null,
+    },
+    include: USER_INCLUDE,
+  });
+
+  logger.info('terms_accepted', {
+    requestId: req.requestId,
+    userId: updated.id,
+    userName: displayName(updated.firstName, updated.lastName),
+    email: maskEmail(updated.email),
+    termsVersion: data.termsVersion || TERMS_VERSION,
+    privacyVersion: data.privacyVersion || PRIVACY_VERSION,
+  });
+
+  res.json({ success: true, user: safeUser(updated, await getUserPermissions(updated)) });
+}
+
 export function logout(_req: Request, res: Response): void {
   res.clearCookie('icims_token');
   res.json({ success: true, message: 'Signed out successfully' });

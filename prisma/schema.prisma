@@ -121,6 +121,12 @@ model User {
   loginEnabled           Boolean  @default(true)
   baptizedByImmersion    Boolean?
   status                 String   @default("active")
+  acceptedTerms          Boolean  @default(false)
+  termsAcceptedAt        DateTime?
+  termsVersion           String?
+  privacyVersion         String?
+  termsAcceptedIp        String?
+  termsAcceptedUserAgent String?  @db.Text
   subdomain              String?  @unique  // e.g. grace-church (without domain)
   memberId               String?  @unique
   attendanceQrToken      String?  @unique
