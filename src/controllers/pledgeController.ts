@@ -231,11 +231,6 @@ export async function getMyPledges(req: Request, res: Response): Promise<void> {
       include: {
         campaign: { select: { id: true, name: true, category: true, currency: true, status: true } },
         church: { select: { name: true } },
-        payments: {
-          where: { status: 'completed' },
-          select: { id: true, amount: true, currency: true, createdAt: true, paymentMethod: true },
-          orderBy: { createdAt: 'desc' },
-        },
       },
     }),
     prisma.pledge.count({ where }),
@@ -326,17 +321,7 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
         user: {
           select: {
             firstName: true, lastName: true, email: true, phone: true,
-            cellMemberships: {
-              where: { status: { not: 'inactive' } },
-              select: { cell: { select: { name: true } } },
-              take: 1,
-            },
           },
-        },
-        payments: {
-          where: { status: 'completed' },
-          select: { id: true, amount: true, currency: true, createdAt: true, paymentMethod: true },
-          orderBy: { createdAt: 'desc' },
         },
       },
     }),

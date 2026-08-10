@@ -565,6 +565,7 @@ model DonationTransaction {
   @@index([reference])
   @@index([status])
   @@index([churchId, status, createdAt])
+  @@index([pledgeId, status, createdAt])
   @@map("donation_transactions")
 }
 
@@ -599,6 +600,11 @@ model Pledge {
   @@index([churchId])
   @@index([status])
   @@index([churchId, status])
+  @@index([userId, status, createdAt])
+  @@index([churchId, createdAt])
+  @@index([churchId, status, createdAt])
+  @@index([churchId, fulfillmentDeadline])
+  @@index([campaignId, churchId, status])
   @@map("pledges")
 }
 
