@@ -94,6 +94,14 @@ const updatePledgeSchema = z.object({
   notes: z.string().optional().nullable(),
 });
 
+const recordPledgePaymentSchema = z.object({
+  amount: z.coerce.number().positive('Payment amount must be greater than 0'),
+  paymentMethod: z.enum(['cash', 'bank_transfer', 'mobile_money', 'other']).default('cash'),
+  reference: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  paidAt: z.string().optional().nullable(),
+});
+
 // ─── Create Pledge ────────────────────────────────────────────────────────────
 
 export async function createPledge(req: Request, res: Response): Promise<void> {
@@ -395,6 +403,124 @@ export async function getPledge(req: Request, res: Response): Promise<void> {
 }
 
 // ─── Update pledge ─────────────────────────────────────────────────────────────
+
+export async function recordPledgePayment(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const roleName = req.user?.role;
+  const { id } = req.params;
+
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  if (!roleName || roleName === 'member') {
+    res.status(403).json({ success: false, message: 'Only admins can record manual pledge payments' });
+    return;
+  }
+
+  const parsed = recordPledgePaymentSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const pledge = await prisma.pledge.findUnique({
+    where: { id: String(id) },
+    include: {
+      campaign: { select: { id: true, name: true, category: true, currency: true, status: true, allowPledging: true } },
+      church: { select: { name: true } },
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+    },
+  });
+
+  if (!pledge) {
+    res.status(404).json({ success: false, message: 'Pledge not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName,
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId
+  );
+
+  if (!accessibleChurchIds.includes(pledge.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  if (pledge.status === 'fulfilled') {
+    res.status(400).json({ success: false, message: 'This pledge has already been fulfilled' });
+    return;
+  }
+
+  const outstanding = Math.max(0, pledge.pledgedAmount - pledge.amountPaid);
+  if (parsed.data.amount > outstanding) {
+    res.status(400).json({
+      success: false,
+      message: `Payment cannot exceed the outstanding balance (${pledge.currency} ${outstanding.toLocaleString()})`,
+    });
+    return;
+  }
+
+  const paidAt = parsed.data.paidAt ? new Date(parsed.data.paidAt) : new Date();
+  if (Number.isNaN(paidAt.getTime())) {
+    res.status(400).json({ success: false, message: 'Invalid payment date' });
+    return;
+  }
+
+  const reference = parsed.data.reference?.trim()
+    || `PLEDGE-${parsed.data.paymentMethod.toUpperCase().replace(/_/g, '-')}-${Date.now()}`;
+  const donorName = pledge.user
+    ? `${pledge.user.firstName} ${pledge.user.lastName}`.trim()
+    : (pledge.pledgerName ?? null);
+
+  await prisma.donationTransaction.create({
+    data: {
+      campaignId: pledge.campaignId,
+      churchId: pledge.churchId,
+      userId: pledge.userId,
+      amount: parsed.data.amount,
+      currency: pledge.currency,
+      paymentMethod: parsed.data.paymentMethod,
+      reference,
+      status: 'completed',
+      isAnonymous: false,
+      isGuest: !pledge.userId,
+      guestName: pledge.userId ? null : (pledge.pledgerName ?? null),
+      guestEmail: pledge.userId ? null : (pledge.pledgerEmail ?? null),
+      guestPhone: pledge.userId ? null : (pledge.pledgerPhone ?? null),
+      donorName,
+      donorEmail: pledge.user?.email ?? pledge.pledgerEmail ?? null,
+      donorPhone: pledge.user?.phone ?? pledge.pledgerPhone ?? null,
+      notes: parsed.data.notes?.trim() || null,
+      pledgeId: pledge.id,
+      createdAt: paidAt,
+    },
+  });
+
+  await recalculatePledgeStatus(pledge.id);
+
+  const updated = await prisma.pledge.findUnique({
+    where: { id: pledge.id },
+    include: {
+      campaign: { select: { id: true, name: true, category: true, currency: true, status: true, allowPledging: true } },
+      church: { select: { name: true } },
+      user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+      payments: {
+        where: { status: 'completed' },
+        select: { id: true, amount: true, currency: true, createdAt: true, paymentMethod: true, reference: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+  });
+
+  res.status(201).json({ success: true, data: updated });
+}
 
 export async function updatePledge(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
