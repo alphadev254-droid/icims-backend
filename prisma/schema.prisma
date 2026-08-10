@@ -104,7 +104,7 @@ model User {
   regions                String?  @db.Text
   districts              String?  @db.Text
   traditionalAuthorities String?  @db.Text
-  title                  String?  // Rev, Dr, Prof, Pastor, Prophet, Seer, Sister, Brother, Father, Other
+  title                  String?  // Rev, Dr, Prof, Pastor, Prophet, Seer, Sister, Brother, Father, Deacon, Apostle, Evangelist, Other
   titleOther             String?  // Custom title when title = 'Other'
   ministryName           String?  // Name of Ministry/Church
   currentMembership      Int?     // Current membership count

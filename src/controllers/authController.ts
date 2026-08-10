@@ -296,7 +296,7 @@ export async function login(req: Request, res: Response): Promise<void> {
   res.json({ success: true, user: safeUser(userWithPackage, permissions) });
 }
 
-const TITLES = ['Rev', 'Dr', 'Prof', 'Pastor', 'Prophet', 'Seer', 'Sister', 'Brother', 'Father', 'Other'] as const;
+const TITLES = ['Rev', 'Dr', 'Prof', 'Pastor', 'Prophet', 'Seer', 'Sister', 'Brother', 'Father', 'Deacon', 'Apostle', 'Evangelist', 'Other'] as const;
 const TERMS_VERSION = '2026-08-11';
 const PRIVACY_VERSION = '2026-08-11';
 
