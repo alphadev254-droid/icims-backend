@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { cancelUserAccount } from '../lib/userCancellation';
+import axios from 'axios';
 
 function groupDonationDetails(rows: any[]) {
   const grouped = new Map<string, any[]>();
@@ -1558,4 +1559,70 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
     data: enriched,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
+}
+
+export async function reconcileAdminPendingTransaction(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id || '');
+  const pendingTx = await prisma.pendingTransaction.findUnique({ where: { id } });
+  if (!pendingTx) {
+    res.status(404).json({ success: false, message: 'Pending transaction not found' });
+    return;
+  }
+
+  if (!pendingTx.reference) {
+    res.status(400).json({ success: false, message: 'Pending transaction has no gateway reference to reconcile' });
+    return;
+  }
+
+  const metadata = (() => {
+    try { return pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {}; } catch { return {}; }
+  })();
+  const gateway = String(metadata.gateway || '').toLowerCase();
+  const backendUrl = process.env.BACKEND_URL || 'http://localhost:5001';
+
+  try {
+    if (gateway === 'paychangu') {
+      await axios.get(`${backendUrl}/api/webhooks/paychangu/callback`, {
+        params: { tx_ref: pendingTx.reference },
+        maxRedirects: 0,
+        validateStatus: status => status >= 200 && status < 400,
+      });
+    } else if (gateway === 'paystack') {
+      await axios.get(`${backendUrl}/api/payments/verify`, {
+        params: { reference: pendingTx.reference },
+        maxRedirects: 0,
+        validateStatus: status => status >= 200 && status < 400,
+      });
+    } else {
+      res.status(400).json({ success: false, message: 'Only PayChangu and Paystack pending transactions can be reconciled automatically' });
+      return;
+    }
+
+    const stillPending = await prisma.pendingTransaction.findUnique({ where: { id } });
+    if (!stillPending) {
+      res.json({ success: true, message: 'Payment reconciled successfully and pending transaction was cleared' });
+      return;
+    }
+
+    const completedPayment = await prisma.payment.findFirst({ where: { reference: pendingTx.reference } });
+    const completedTransaction = await prisma.transaction.findFirst({ where: { reference: pendingTx.reference } });
+    if (completedPayment || completedTransaction) {
+      await prisma.pendingTransaction.delete({ where: { id } }).catch(() => {});
+      res.json({ success: true, message: 'Payment had already completed. Pending transaction was cleared.' });
+      return;
+    }
+
+    await prisma.pendingTransaction.update({
+      where: { id },
+      data: { status: 'failed' },
+    });
+    res.status(409).json({ success: false, message: 'Gateway did not confirm a completed payment. Pending transaction marked failed for review.' });
+  } catch (error: any) {
+    const message = error.response?.data?.message || error.message || 'Failed to reconcile pending transaction';
+    await prisma.pendingTransaction.update({
+      where: { id },
+      data: { status: 'failed' },
+    }).catch(() => {});
+    res.status(500).json({ success: false, message: `Reconciliation failed: ${message}` });
+  }
 }

@@ -156,6 +156,9 @@ model User {
   childGuardianLinks    ChildGuardian[]
   createdChildren       Child[] @relation("ChildCreator")
   childProfile          Child? @relation("ChildUser")
+  packageInvoices       PackageInvoice[] @relation("PackageInvoiceMinistryAdmin")
+  createdPackageInvoices PackageInvoice[] @relation("PackageInvoiceCreator")
+  packageInvoicePayments Payment[] @relation("PackageInvoicePaymentCreator")
 
   @@index([churchId, roleId, status, createdAt])
   @@index([memberType])
@@ -859,6 +862,7 @@ model Package {
   features     PackageFeatureLink[]
   payments     Payment[]
   subscriptions Subscription[]
+  invoices      PackageInvoice[]
 
   @@map("packages")
 }
@@ -894,6 +898,7 @@ model Payment {
   id              String   @id @default(cuid())
   ministryAdminId String
   packageId       String?
+  invoiceId       String?
   amount          Float
   currency        String   @default("MWK")
   // type: subscription | upgrade | downgrade | renewal | package_subscription
@@ -938,13 +943,56 @@ model Payment {
   updatedAt       DateTime @updatedAt
 
   package         Package? @relation(fields: [packageId], references: [id])
+  invoice         PackageInvoice? @relation(fields: [invoiceId], references: [id])
+  createdBy       User? @relation("PackageInvoicePaymentCreator", fields: [createdById], references: [id])
 
   @@index([ministryAdminId])
+  @@index([invoiceId])
   @@index([status])
   @@index([paidAt])
   @@index([reference])
   @@index([expiresAt])
   @@map("payments")
+}
+
+model PackageInvoice {
+  id                 String   @id @default(cuid())
+  invoiceNumber      String   @unique
+  ministryAdminId    String
+  packageId          String
+  packageName        String
+  billingCycle       String   @default("monthly") // monthly | yearly | custom
+  currency           String   @default("MWK")
+  amount             Float
+  amountPaid         Float    @default(0)
+  balanceDue         Float    @default(0)
+  status             String   @default("draft") // draft | sent | partially_paid | paid | overdue | cancelled
+  publicToken        String?  @unique
+  invoiceDate        DateTime @default(now())
+  dueDate            DateTime
+  servicePeriodStart DateTime
+  servicePeriodEnd   DateTime
+  lineItems          String?  @db.LongText
+  notes              String?  @db.Text
+  terms              String?  @db.Text
+  sentAt             DateTime?
+  paidAt             DateTime?
+  lastReminderAt     DateTime?
+  createdById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  ministryAdmin User    @relation("PackageInvoiceMinistryAdmin", fields: [ministryAdminId], references: [id])
+  package       Package @relation(fields: [packageId], references: [id])
+  createdBy     User?   @relation("PackageInvoiceCreator", fields: [createdById], references: [id])
+  payments      Payment[]
+
+  @@index([ministryAdminId, status])
+  @@index([packageId])
+  @@index([publicToken])
+  @@index([dueDate])
+  @@index([servicePeriodStart, servicePeriodEnd])
+  @@map("package_invoices")
 }
 
 

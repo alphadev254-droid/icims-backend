@@ -12,6 +12,7 @@ import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
+import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
 
 function safeJsonParse(value: string): any {
   try {
@@ -290,12 +291,14 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
     return;
   }
 
-  const startsAt = new Date();
-  const expiresAt = new Date(startsAt);
-  if (metadata.billingCycle === 'monthly') {
-    expiresAt.setMonth(expiresAt.getMonth() + 1);
-  } else {
-    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+  const startsAt = metadata.invoiceServicePeriodStart ? new Date(metadata.invoiceServicePeriodStart) : new Date();
+  const expiresAt = metadata.invoiceServicePeriodEnd ? new Date(metadata.invoiceServicePeriodEnd) : new Date(startsAt);
+  if (!metadata.invoiceServicePeriodEnd) {
+    if (metadata.billingCycle === 'monthly') {
+      expiresAt.setMonth(expiresAt.getMonth() + 1);
+    } else {
+      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    }
   }
 
   const pkg = await prisma.package.findUnique({
@@ -308,6 +311,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
     data: {
       ministryAdminId: metadata.ministryAdminId,
       packageId: metadata.packageId,
+      invoiceId: metadata.invoiceId || null,
       packageName: pkg?.name || metadata.packageName || 'Unknown',
       amount: metadata.totalAmount,
       baseAmount: metadata.baseAmount,
@@ -332,24 +336,16 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
     },
   });
 
-  await prisma.subscription.upsert({
-    where: { ministryAdminId: metadata.ministryAdminId },
-    create: {
+  if (metadata.invoiceId) {
+    await recalculatePackageInvoice(metadata.invoiceId);
+  } else {
+    await activateSubscriptionFromInvoice({
       ministryAdminId: metadata.ministryAdminId,
       packageId: metadata.packageId,
-      status: 'active',
-      startsAt,
-      expiresAt,
-      lastEmailDay: null,
-    },
-    update: {
-      packageId: metadata.packageId,
-      status: 'active',
-      startsAt,
-      expiresAt,
-      lastEmailDay: null,
-    },
-  });
+      servicePeriodStart: startsAt,
+      servicePeriodEnd: expiresAt,
+    });
+  }
 
   console.log(`[${traceId}] Subscription activated until: ${expiresAt}`);
 

@@ -6,6 +6,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
+import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
 
 function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
   return {
@@ -117,16 +118,19 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
       const pkg = await prisma.package.findUnique({ where: { id: metadata.packageId } });
       console.log(`[${traceId}] Package: ${pkg?.name}`);
 
-      const startsAt = new Date();
-      const expiresAt = new Date(startsAt);
-      if (metadata.billingCycle === 'monthly') expiresAt.setMonth(expiresAt.getMonth() + 1);
-      else expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      const startsAt = metadata.invoiceServicePeriodStart ? new Date(metadata.invoiceServicePeriodStart) : new Date();
+      const expiresAt = metadata.invoiceServicePeriodEnd ? new Date(metadata.invoiceServicePeriodEnd) : new Date(startsAt);
+      if (!metadata.invoiceServicePeriodEnd) {
+        if (metadata.billingCycle === 'monthly') expiresAt.setMonth(expiresAt.getMonth() + 1);
+        else expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      }
       console.log(`[${traceId}] Subscription period — startsAt: ${startsAt.toISOString()}, expiresAt: ${expiresAt.toISOString()}`);
 
       const payment = await prisma.payment.create({
         data: {
           ministryAdminId: metadata.ministryAdminId,
           packageId: metadata.packageId,
+          invoiceId: metadata.invoiceId || null,
           packageName: metadata.packageName || pkg?.name || 'Unknown',
           amount: metadata.totalAmount,
           baseAmount: metadata.baseAmount,
@@ -150,11 +154,16 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
       });
       console.log(`[${traceId}] Payment record created: ${payment.id}`);
 
-      await prisma.subscription.upsert({
-        where: { ministryAdminId: metadata.ministryAdminId },
-        create: { ministryAdminId: metadata.ministryAdminId, packageId: metadata.packageId, status: 'active', startsAt, expiresAt, lastEmailDay: null },
-        update: { packageId: metadata.packageId, status: 'active', startsAt, expiresAt, lastEmailDay: null },
-      });
+      if (metadata.invoiceId) {
+        await recalculatePackageInvoice(metadata.invoiceId);
+      } else {
+        await activateSubscriptionFromInvoice({
+          ministryAdminId: metadata.ministryAdminId,
+          packageId: metadata.packageId,
+          servicePeriodStart: startsAt,
+          servicePeriodEnd: expiresAt,
+        });
+      }
       console.log(`[${traceId}] Subscription upserted — expiresAt: ${expiresAt.toISOString()}`);
 
       await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });

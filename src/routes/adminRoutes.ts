@@ -21,6 +21,7 @@ import {
   updateAdminChurchUser,
   getAdminMinistries,
   getAdminPendingTransactions,
+  reconcileAdminPendingTransaction,
 } from '../controllers/adminController';
 import {
   getPackages,
@@ -38,6 +39,15 @@ import {
   requestAdminTreasuryWithdrawal,
   sendAdminTreasuryOtp,
 } from '../controllers/adminTreasuryController';
+import {
+  cancelAdminPackageInvoice,
+  createAdminPackageInvoice,
+  getAdminPackageInvoice,
+  getAdminPackageInvoices,
+  recordAdminPackageInvoicePayment,
+  sendAdminPackageInvoice,
+  updateAdminPackageInvoice,
+} from '../controllers/packageInvoiceController';
 
 const router = Router();
 router.use(authenticate, authorizeSystemAdmin);
@@ -85,6 +95,16 @@ router.get('/packages/features', getAllFeatures);
 
 // Pending transaction metadata (superadmin debug tool)
 router.get('/pending-transactions', getAdminPendingTransactions);
+router.post('/pending-transactions/:id/reconcile', reconcileAdminPendingTransaction);
+
+// Package invoices
+router.get('/invoices', getAdminPackageInvoices);
+router.post('/invoices', createAdminPackageInvoice);
+router.get('/invoices/:id', getAdminPackageInvoice);
+router.put('/invoices/:id', updateAdminPackageInvoice);
+router.post('/invoices/:id/send', sendAdminPackageInvoice);
+router.post('/invoices/:id/payments', recordAdminPackageInvoicePayment);
+router.post('/invoices/:id/cancel', cancelAdminPackageInvoice);
 
 // All churches list (for filter dropdowns)
 router.get('/all-churches', async (req, res) => {

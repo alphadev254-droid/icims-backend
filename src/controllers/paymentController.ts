@@ -13,6 +13,7 @@ import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { displayName, maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
+import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -83,8 +84,11 @@ function donationPaymentLogMeta(traceId: string, pendingTx: any, metadata: any =
 }
 
 const subscribeSchema = z.object({
-  packageId: z.string().min(1, 'Package ID required'),
-  billingCycle: z.enum(['monthly', 'yearly']),
+  packageId: z.string().optional(),
+  billingCycle: z.enum(['monthly', 'yearly']).optional(),
+  invoiceId: z.string().optional(),
+}).refine(data => !!data.invoiceId || (!!data.packageId && !!data.billingCycle), {
+  message: 'Package and billing cycle are required unless paying an invoice',
 });
 
 export async function initiatePackageSubscription(req: Request, res: Response): Promise<void> {
@@ -109,7 +113,8 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
     return;
   }
 
-  const { packageId, billingCycle } = parsed.data;
+  let { packageId, billingCycle } = parsed.data;
+  const { invoiceId } = parsed.data;
   console.log(`[${traceId}] Package ID: ${packageId}, Billing: ${billingCycle}`);
 
   // Get current user with ministryAdminId field
@@ -152,7 +157,26 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
     return;
   }
 
-  const pkg = await prisma.package.findUnique({ where: { id: packageId } });
+  let invoice: any = null;
+  if (invoiceId) {
+    invoice = await prisma.packageInvoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) {
+      res.status(404).json({ success: false, message: 'Invoice not found' });
+      return;
+    }
+    if (invoice.ministryAdminId !== ministryAdminId) {
+      res.status(403).json({ success: false, message: 'This invoice does not belong to your ministry account' });
+      return;
+    }
+    if (['paid', 'cancelled'].includes(invoice.status)) {
+      res.status(400).json({ success: false, message: `Invoice is already ${invoice.status}` });
+      return;
+    }
+    packageId = invoice.packageId;
+    billingCycle = invoice.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+  }
+
+  const pkg = await prisma.package.findUnique({ where: { id: packageId! } });
   if (!pkg) {
     console.log(`[${traceId}] ERROR: Package not found: ${packageId}`);
     res.status(404).json({ success: false, message: 'Package not found' });
@@ -179,7 +203,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   const isMalawi = gatewayCountry === 'Malawi';
   const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
   const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
-  const baseAmount = Math.round(convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES') * discount);
+  const baseAmount = invoice ? Math.max(0, invoice.balanceDue || invoice.amount) : Math.round(convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES') * discount);
   console.log(`[${traceId}] Converted amount: ${convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES')} ${currency} → after ${isMalawi ? `${discount * 100}% Malawi discount` : 'no discount'}: ${baseAmount} ${currency}`);
   
   // Calculate fees (Kenya has no tax, Malawi has 17.5% tax)
@@ -212,6 +236,10 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
         packageId,
         packageName: pkg.name,
         billingCycle,
+        invoiceId: invoice?.id,
+        invoiceNumber: invoice?.invoiceNumber,
+        invoiceServicePeriodStart: invoice?.servicePeriodStart,
+        invoiceServicePeriodEnd: invoice?.servicePeriodEnd,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
@@ -235,6 +263,97 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
     console.log(`[${traceId}] ========== ROUTING TO PAYSTACK ==========`);
     return await initiatePaystackPayment(pendingTx, ministryAdmin, fees, traceId, res);
   }
+}
+
+export async function initiatePublicInvoicePayment(req: Request, res: Response): Promise<void> {
+  const traceId = `INV-PUBLIC-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const token = String(req.params.token || req.body?.token || '');
+
+  if (!token || token.length < 24) {
+    res.status(404).json({ success: false, message: 'Invoice not found' });
+    return;
+  }
+
+  const invoice = await prisma.packageInvoice.findUnique({ where: { publicToken: token } });
+  if (!invoice || invoice.status === 'cancelled') {
+    res.status(404).json({ success: false, message: 'Invoice not found or no longer available' });
+    return;
+  }
+  if (invoice.status === 'paid' || invoice.balanceDue <= 0) {
+    res.status(400).json({ success: false, message: 'Invoice has already been paid' });
+    return;
+  }
+
+  const ministryAdmin = await prisma.user.findUnique({ where: { id: invoice.ministryAdminId } });
+  if (!ministryAdmin?.email) {
+    res.status(400).json({ success: false, message: 'Invoice account cannot receive online payments right now' });
+    return;
+  }
+
+  const pkg = await prisma.package.findUnique({ where: { id: invoice.packageId } });
+  if (!pkg) {
+    res.status(404).json({ success: false, message: 'Invoice package not found' });
+    return;
+  }
+
+  const gateway = await getPaymentGateway(invoice.ministryAdminId);
+  const currency = getCurrency(gateway);
+  const gatewayCountry = getGatewayCountry(gateway);
+  if (currency !== invoice.currency) {
+    res.status(400).json({ success: false, message: 'Invoice currency does not match the payment gateway currency' });
+    return;
+  }
+
+  const baseAmount = Math.max(0, invoice.balanceDue || invoice.amount);
+  const fees = calculatePaymentFees(baseAmount, gatewayCountry);
+  const expiresAt = new Date();
+  expiresAt.setHours(expiresAt.getHours() + 1);
+
+  const pendingTx = await prisma.pendingTransaction.create({
+    data: {
+      amount: fees.totalAmount,
+      currency,
+      userId: ministryAdmin.id,
+      churchId: ministryAdmin.churchId || '',
+      type: 'package_subscription',
+      expiresAt,
+      metadata: JSON.stringify({
+        traceId,
+        ministryAdminId: invoice.ministryAdminId,
+        initiatedBy: ministryAdmin.id,
+        initiatedByName: 'Public invoice link',
+        publicInvoicePayment: true,
+        invoicePublicToken: token,
+        packageId: invoice.packageId,
+        packageName: pkg.name,
+        billingCycle: invoice.billingCycle === 'yearly' ? 'yearly' : 'monthly',
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceServicePeriodStart: invoice.servicePeriodStart,
+        invoiceServicePeriodEnd: invoice.servicePeriodEnd,
+        baseAmount: fees.baseAmount,
+        convenienceFee: fees.convenienceFee,
+        systemFeeAmount: fees.systemFeeAmount,
+        ceilRoundingAmount: fees.ceilRoundingAmount,
+        totalAmount: fees.totalAmount,
+        gatewayFeeRate: fees.systemGatewayFeeRate,
+        systemFeeRate: fees.systemFeeRate,
+        gateway,
+        gatewayCountry,
+      }),
+    },
+  });
+
+  recordPaymentEvent(gateway, 'package_subscription', 'initialized', packagePaymentLogMeta(traceId, pendingTx, JSON.parse(pendingTx.metadata || '{}'), {
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    source: 'public_invoice_link',
+  }));
+
+  if (gateway === 'paychangu') {
+    return await initiatePaychanguPayment(pendingTx, ministryAdmin, fees, traceId, res);
+  }
+  return await initiatePaystackPayment(pendingTx, ministryAdmin, fees, traceId, res);
 }
 
 async function initiatePaystackPayment(
@@ -358,13 +477,17 @@ async function initiatePaychanguPayment(
     const tx_ref = pendingTx.reference || `PKG-${Date.now()}`;
     console.log(`[${traceId}] Transaction reference: ${tx_ref}`);
     
+    const returnUrl = existingMetadata.publicInvoicePayment && existingMetadata.invoicePublicToken
+      ? `${process.env.FRONTEND_URL}/invoice/pay/${existingMetadata.invoicePublicToken}?status=cancelled`
+      : `${process.env.FRONTEND_URL}/dashboard/packages?status=cancelled`;
+
     const paychanguPayload = {
       amount: fees.totalAmount,
       currency: 'MWK',
       email: ministryAdmin.email,
       tx_ref,
       callback_url: `${BACKEND_URL}/api/webhooks/paychangu/callback`,
-      return_url: `${process.env.FRONTEND_URL}/dashboard/packages?status=cancelled`,
+      return_url: returnUrl,
       customization: {
         title: 'Package Subscription',
         description: 'ICIMS Package Subscription'
@@ -525,12 +648,14 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         console.log(`[${traceId}] Fee breakdown — base: ${baseAmount}, convenience: ${convenienceFee}, systemFee: ${systemFeeAmount}, total: ${totalAmount}`);
 
         // Create payment record
-        const startsAt = new Date(data.paid_at);
-        const expiresAt = new Date(startsAt);
-        if (metadata.billingCycle === 'monthly') {
-          expiresAt.setMonth(expiresAt.getMonth() + 1);
-        } else {
-          expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+        const startsAt = pendingMetadata.invoiceServicePeriodStart ? new Date(pendingMetadata.invoiceServicePeriodStart) : new Date(data.paid_at);
+        const expiresAt = pendingMetadata.invoiceServicePeriodEnd ? new Date(pendingMetadata.invoiceServicePeriodEnd) : new Date(startsAt);
+        if (!pendingMetadata.invoiceServicePeriodEnd) {
+          if (metadata.billingCycle === 'monthly') {
+            expiresAt.setMonth(expiresAt.getMonth() + 1);
+          } else {
+            expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+          }
         }
         console.log(`[${traceId}] Subscription period — startsAt: ${startsAt.toISOString()}, expiresAt: ${expiresAt.toISOString()}`);
 
@@ -538,6 +663,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           data: {
             ministryAdminId: metadata.ministryAdminId,
             packageId: metadata.packageId,
+            invoiceId: pendingMetadata.invoiceId || null,
             amount,
             currency: data.currency,
             type: 'package_subscription',
@@ -581,25 +707,17 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         }));
         console.log(`[${traceId}] Payment — amount: ${payment.amount}, currency: ${payment.currency}, gateway: ${payment.gateway}, gatewayCharge: ${payment.gatewayCharge}`);
 
-        // Create or update subscription and reset email tracking
-        await prisma.subscription.upsert({
-          where: { ministryAdminId: metadata.ministryAdminId },
-          create: {
+        if (pendingMetadata.invoiceId) {
+          await recalculatePackageInvoice(pendingMetadata.invoiceId);
+        } else {
+          // Create or update subscription and reset email tracking
+          await activateSubscriptionFromInvoice({
             ministryAdminId: metadata.ministryAdminId,
             packageId: metadata.packageId,
-            status: 'active',
-            startsAt,
-            expiresAt,
-            lastEmailDay: null,
-          },
-          update: {
-            packageId: metadata.packageId,
-            status: 'active',
-            startsAt,
-            expiresAt,
-            lastEmailDay: null,
-          },
-        });
+            servicePeriodStart: startsAt,
+            servicePeriodEnd: expiresAt,
+          });
+        }
         console.log(`[${traceId}] Subscription upserted — ministryAdminId: ${metadata.ministryAdminId}, expiresAt: ${expiresAt.toISOString()}`);
 
         // Delete pending transaction

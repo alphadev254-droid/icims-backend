@@ -8,6 +8,7 @@ import {
   calculateFees,
   getPayments, createPayment, updatePayment,
 } from '../controllers/packageController';
+import { getMyPackageInvoices, getPublicPackageInvoice } from '../controllers/packageInvoiceController';
 import { Request, Response } from 'express';
 
 // Public rates handler — reads from env, no DB needed
@@ -29,6 +30,7 @@ const router = Router();
 router.get('/',         authenticateOptional, getPackages);   // Public pricing page + dashboard
 router.get('/features', authenticateOptional, getFeatures);  // Public feature list
 router.get('/rates',    getRates);                           // Public conversion rates
+router.get('/invoices/public/:token', getPublicPackageInvoice);
 
 // All other routes require authentication
 router.use(authenticate);
@@ -44,6 +46,7 @@ router.put('/:id/features',       authorizePermission('packages:manage'), setPac
 
 // ─── Payments ─────────────────────────────────────────────────────────────────
 router.get('/payments',           authorizePermission('system_payments:view'), getPayments);
+router.get('/invoices',           getMyPackageInvoices);
 router.post('/payments',          authorizePermission('payments:create'), createPayment);
 router.put('/payments/:id',       authorizePermission('payments:create'), updatePayment);
 

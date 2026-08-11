@@ -8,6 +8,7 @@ import { generateReceiptPDF } from '../lib/receiptPDF';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
+import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -114,12 +115,14 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
 
       console.log(`[${traceId}] Fee breakdown — base: ${baseAmount}, convenience: ${convenienceFee}, systemFee: ${systemFeeAmount}, total: ${totalAmount}`);
 
-      const startsAt = new Date(txData.paid_at);
-      const expiresAt = new Date(startsAt);
-      if (metadata.billingCycle === 'monthly') {
-        expiresAt.setMonth(expiresAt.getMonth() + 1);
-      } else {
-        expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      const startsAt = metadata.invoiceServicePeriodStart ? new Date(metadata.invoiceServicePeriodStart) : new Date(txData.paid_at);
+      const expiresAt = metadata.invoiceServicePeriodEnd ? new Date(metadata.invoiceServicePeriodEnd) : new Date(startsAt);
+      if (!metadata.invoiceServicePeriodEnd) {
+        if (metadata.billingCycle === 'monthly') {
+          expiresAt.setMonth(expiresAt.getMonth() + 1);
+        } else {
+          expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+        }
       }
       console.log(`[${traceId}] Subscription period — startsAt: ${startsAt.toISOString()}, expiresAt: ${expiresAt.toISOString()}`);
 
@@ -130,6 +133,7 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
         data: {
           ministryAdminId: metadata.ministryAdminId,
           packageId: metadata.packageId,
+          invoiceId: metadata.invoiceId || null,
           amount,
           currency: txData.currency,
           type: 'package_subscription',
@@ -163,11 +167,16 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
       });
       console.log(`[${traceId}] Payment record created: ${payment.id}`);
 
-      await prisma.subscription.upsert({
-        where: { ministryAdminId: metadata.ministryAdminId },
-        create: { ministryAdminId: metadata.ministryAdminId, packageId: metadata.packageId, status: 'active', startsAt, expiresAt, lastEmailDay: null },
-        update: { packageId: metadata.packageId, status: 'active', startsAt, expiresAt, lastEmailDay: null },
-      });
+      if (metadata.invoiceId) {
+        await recalculatePackageInvoice(metadata.invoiceId);
+      } else {
+        await activateSubscriptionFromInvoice({
+          ministryAdminId: metadata.ministryAdminId,
+          packageId: metadata.packageId,
+          servicePeriodStart: startsAt,
+          servicePeriodEnd: expiresAt,
+        });
+      }
 
       if (pendingTx) await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });
 
