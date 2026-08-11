@@ -12,6 +12,7 @@ import {
   generateInvoiceNumber,
   generateInvoicePublicToken,
   packageInvoiceInclude,
+  packageInvoiceListInclude,
   parseNumber,
   recalculatePackageInvoice,
 } from '../services/packageInvoiceService';
@@ -93,7 +94,7 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
   const [invoices, total, statusCounts, amountAgg] = await Promise.all([
     prisma.packageInvoice.findMany({
       where,
-      include: packageInvoiceInclude,
+      include: packageInvoiceListInclude,
       orderBy: { createdAt: 'desc' },
       skip,
       take: params.limit,
@@ -383,9 +384,27 @@ export async function getMyPackageInvoices(req: Request, res: Response): Promise
 
   const invoices = await prisma.packageInvoice.findMany({
     where: { ministryAdminId, status: { not: 'cancelled' } },
-    include: packageInvoiceInclude,
+    include: packageInvoiceListInclude,
     orderBy: { createdAt: 'desc' },
   });
   const invoicesWithLinks = await withPublicInvoiceTokens(invoices);
   res.json({ success: true, data: invoicesWithLinks.map(serializeInvoice) });
+}
+
+export async function getMyPackageInvoice(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
+
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: { select: { name: true } }, ministryAdminId: true } });
+  const ministryAdminId = user?.role?.name === 'ministry_admin' ? userId : user?.ministryAdminId;
+  if (!ministryAdminId) { res.status(400).json({ success: false, message: 'No ministry admin assigned' }); return; }
+
+  const invoice = await prisma.packageInvoice.findFirst({
+    where: { id: String(req.params.id), ministryAdminId, status: { not: 'cancelled' } },
+    include: packageInvoiceInclude,
+  });
+  if (!invoice) { res.status(404).json({ success: false, message: 'Invoice not found' }); return; }
+
+  const [invoiceWithLink] = await withPublicInvoiceTokens([invoice]);
+  res.json({ success: true, data: serializeInvoice(invoiceWithLink) });
 }

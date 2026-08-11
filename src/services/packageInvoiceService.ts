@@ -147,3 +147,8 @@ export const packageInvoiceInclude = {
     },
   },
 };
+
+export const packageInvoiceListInclude = {
+  ministryAdmin: packageInvoiceInclude.ministryAdmin,
+  package: packageInvoiceInclude.package,
+};

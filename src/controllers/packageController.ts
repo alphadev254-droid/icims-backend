@@ -308,6 +308,15 @@ export async function getPayments(req: Request, res: Response): Promise<void> {
       expiresAt: true,
       paymentMethod: true,
       package: { select: { displayName: true } },
+      invoice: {
+        select: {
+          id: true,
+          invoiceNumber: true,
+          status: true,
+          balanceDue: true,
+          amountPaid: true,
+        },
+      },
     },
   });
   res.json({ success: true, data: payments });

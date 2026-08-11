@@ -8,7 +8,7 @@ import {
   calculateFees,
   getPayments, createPayment, updatePayment,
 } from '../controllers/packageController';
-import { getMyPackageInvoices, getPublicPackageInvoice } from '../controllers/packageInvoiceController';
+import { getMyPackageInvoice, getMyPackageInvoices, getPublicPackageInvoice } from '../controllers/packageInvoiceController';
 import { Request, Response } from 'express';
 
 // Public rates handler — reads from env, no DB needed
@@ -47,6 +47,7 @@ router.put('/:id/features',       authorizePermission('packages:manage'), setPac
 // ─── Payments ─────────────────────────────────────────────────────────────────
 router.get('/payments',           authorizePermission('system_payments:view'), getPayments);
 router.get('/invoices',           getMyPackageInvoices);
+router.get('/invoices/:id',        getMyPackageInvoice);
 router.post('/payments',          authorizePermission('payments:create'), createPayment);
 router.put('/payments/:id',       authorizePermission('payments:create'), updatePayment);
 
