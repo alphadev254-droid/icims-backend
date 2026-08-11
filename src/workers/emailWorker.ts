@@ -42,6 +42,9 @@ export async function processEmailQueue(): Promise<void> {
           ? JSON.parse(email.attachments).map((a: any) => ({
               filename: a.filename,
               content: Buffer.from(a.content, 'base64'),
+              cid: a.cid,
+              contentType: a.contentType,
+              contentDisposition: a.contentDisposition,
             }))
           : undefined;
 

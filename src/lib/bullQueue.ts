@@ -17,6 +17,9 @@ const redisConnection = {
 export interface EmailAttachment {
   filename: string;
   content: Buffer;
+  cid?: string;
+  contentType?: string;
+  contentDisposition?: 'attachment' | 'inline';
 }
 
 // Email job data type
@@ -27,6 +30,9 @@ export interface EmailJobData {
   attachments?: Array<{
     filename: string;
     content: string; // base64 encoded
+    cid?: string;
+    contentType?: string;
+    contentDisposition?: 'attachment' | 'inline';
   }>;
   emailType: string;
 }
@@ -61,6 +67,9 @@ export const emailWorker = new Worker<EmailJobData>(
     const decodedAttachments = attachments?.map(a => ({
       filename: a.filename,
       content: Buffer.from(a.content, 'base64'),
+      cid: a.cid,
+      contentType: a.contentType,
+      contentDisposition: a.contentDisposition,
     }));
 
     // Send email
@@ -115,6 +124,9 @@ export async function queueEmailBull(
   const encodedAttachments = attachments?.map(a => ({
     filename: a.filename,
     content: a.content.toString('base64'),
+    cid: a.cid,
+    contentType: a.contentType,
+    contentDisposition: a.contentDisposition,
   }));
 
   const job = await emailQueue.add(

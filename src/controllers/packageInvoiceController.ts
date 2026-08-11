@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { convertUSDToLocal } from '../utils/currencyConversion';
 import { queueEmail } from '../lib/emailQueue';
 import { packageInvoiceTemplate } from '../lib/emailTemplates';
+import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
 import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
 import {
   addBillingCycle,
@@ -280,6 +281,7 @@ export async function sendAdminPackageInvoice(req: Request, res: Response): Prom
       terms: invoice.terms,
       payUrl,
     });
+    const logoAttachment = getIcimsLogoAttachment();
     await queueEmail(
       invoice.ministryAdmin.email,
       `Invoice ${invoice.invoiceNumber} - ${packageName}`,
@@ -300,8 +302,12 @@ export async function sendAdminPackageInvoice(req: Request, res: Response): Prom
         notes: invoice.notes,
         terms: invoice.terms,
         payUrl,
+        logoCid: logoAttachment ? ICIMS_LOGO_CID : undefined,
       }),
-      [{ filename: `invoice-${invoice.invoiceNumber}.pdf`, content: invoicePDF }],
+      [
+        ...(logoAttachment ? [logoAttachment] : []),
+        { filename: `invoice-${invoice.invoiceNumber}.pdf`, content: invoicePDF },
+      ],
       'package_subscription',
     );
   }

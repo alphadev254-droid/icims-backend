@@ -3,25 +3,30 @@ const SYSTEM_NAME = process.env.SYSTEM || 'ICIMS';
 
 const getBaseStyle = () => `
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; background-color: #f9fafb; margin: 0; padding: 0; }
-    .container { max-width: 600px; margin: 40px auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .church-header { background: white; color: #1e3a8a; padding: 20px 24px; text-align: center; border-bottom: 4px solid #d4a574; }
-    .church-header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
-    .header { background: #d4a574; color: white; padding: 32px 24px; text-align: center; }
-    .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-    .header p { margin: 8px 0 0 0; opacity: 0.9; font-size: 14px; }
-    .content { padding: 32px 24px; }
-    .content h2 { margin: 0 0 16px 0; font-size: 20px; font-weight: 600; color: #111827; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; background-color: #f3f4f6; margin: 0; padding: 0; }
+    .container { max-width: 620px; margin: 36px auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb; box-shadow: 0 12px 32px rgba(17,24,39,0.08); }
+    .email-brand { background: #ffffff; color: #111827; padding: 24px 24px 18px 24px; text-align: center; border-bottom: 4px solid #d4a574; }
+    .email-logo { width: 62px; height: 62px; object-fit: contain; border-radius: 14px; display: block; margin: 0 auto 10px auto; }
+    .email-brand h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.7px; }
+    .church-header { background: #ffffff; color: #111827; padding: 18px 24px; text-align: center; border-bottom: 1px solid #e5e7eb; }
+    .church-header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.3px; }
+    .header { background: #111827; color: #ffffff; padding: 30px 24px; text-align: center; }
+    .header h1 { margin: 0; font-size: 24px; font-weight: 700; }
+    .header p { margin: 8px 0 0 0; color: #d4a574; font-size: 14px; font-weight: 600; }
+    .content { padding: 32px 26px; }
+    .content h2 { margin: 0 0 16px 0; font-size: 20px; font-weight: 700; color: #111827; }
+    .content h3 { color: #111827; }
     .content p { margin: 0 0 16px 0; color: #4b5563; }
-    .button { display: inline-block; background: #d4a574; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 16px 0; font-weight: 500; }
+    .button { display: inline-block; background: #d4a574; color: #111827 !important; padding: 12px 24px; text-decoration: none; border-radius: 7px; margin: 16px 0; font-weight: 700; }
     .button:hover { background: #c89563; }
-    .info-box { background: #f3f4f6; padding: 20px; border-radius: 6px; border-left: 4px solid #d4a574; margin: 20px 0; }
-    .info-box h3 { margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #111827; }
+    .info-box { background: #f9fafb; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; border-left: 4px solid #d4a574; margin: 20px 0; }
+    .info-box h3 { margin: 0 0 12px 0; font-size: 16px; font-weight: 700; color: #111827; }
     .info-box p { margin: 8px 0; color: #4b5563; font-size: 14px; }
     .footer { background: #f9fafb; padding: 24px; text-align: center; color: #6b7280; font-size: 12px; border-top: 1px solid #e5e7eb; }
     .footer p { margin: 4px 0; }
     ol { padding-left: 20px; }
     ol li { margin: 8px 0; color: #4b5563; }
+    a { color: #b8873f; }
   </style>
 `;
 
@@ -342,16 +347,38 @@ export const packageInvoiceTemplate = (data: {
   payUrl: string;
   heading?: string;
   intro?: string;
+  logoCid?: string;
 }) => `
 <!DOCTYPE html>
 <html>
-<head>${getBaseStyle()}</head>
+<head>
+${getBaseStyle()}
+<style>
+  .invoice-brand { padding: 22px 24px; text-align: center; background: #ffffff; border-bottom: 4px solid #d4a574; }
+  .invoice-logo { width: 64px; height: 64px; object-fit: contain; border-radius: 14px; display: block; margin: 0 auto 10px auto; }
+  .invoice-brand h1 { margin: 0; color: #111827; font-size: 22px; letter-spacing: 0.6px; }
+  .invoice-hero { background: #111827; color: #ffffff; padding: 30px 24px; text-align: center; }
+  .invoice-hero h1 { margin: 0; font-size: 24px; font-weight: 700; }
+  .invoice-hero p { margin: 8px 0 0 0; color: #d4a574; font-size: 14px; font-weight: 700; letter-spacing: 0.06em; }
+  .invoice-amount { background: #fffaf0; border: 1px solid #f0d7a4; border-radius: 8px; padding: 20px; margin: 22px 0; text-align: center; }
+  .invoice-amount .label { color: #6b7280; font-size: 13px; margin: 0 0 6px 0; }
+  .invoice-amount .value { color: #111827; font-size: 30px; line-height: 1.15; font-weight: 800; margin: 0; }
+  .invoice-grid { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  .invoice-grid td { padding: 11px 0; border-bottom: 1px solid #e5e7eb; font-size: 14px; vertical-align: top; }
+  .invoice-grid td:first-child { color: #6b7280; font-weight: 700; width: 42%; }
+  .invoice-grid td:last-child { color: #111827; font-weight: 600; text-align: right; }
+  .invoice-callout { background: #f9fafb; border-left: 4px solid #d4a574; border-radius: 6px; padding: 16px; margin: 18px 0; }
+  .invoice-callout h3 { margin: 0 0 8px 0; font-size: 15px; color: #111827; }
+  .invoice-callout p { margin: 0; white-space: pre-line; font-size: 14px; color: #4b5563; }
+</style>
+</head>
 <body>
   <div class="container">
-    <div class="church-header">
+    <div class="invoice-brand">
+      ${data.logoCid ? `<img src="cid:${escapeHtml(data.logoCid)}" alt="ICIMS" class="invoice-logo" />` : ''}
       <h1>ICIMS</h1>
     </div>
-    <div class="header">
+    <div class="invoice-hero">
       <h1>${escapeHtml(data.heading || 'Package Invoice')}</h1>
       <p>${escapeHtml(data.invoiceNumber)}</p>
     </div>
@@ -359,35 +386,33 @@ export const packageInvoiceTemplate = (data: {
       <h2>Hello ${escapeHtml(data.firstName || 'there')},</h2>
       <p>${escapeHtml(data.intro || `Your package invoice is ready for ${data.packageName}.`)}</p>
 
-      <div class="info-box">
-        <h3>Invoice Summary</h3>
-        ${data.ministryName ? `<p><strong>Ministry:</strong> ${escapeHtml(data.ministryName)}</p>` : ''}
-        <p><strong>Invoice Number:</strong> ${escapeHtml(data.invoiceNumber)}</p>
-        <p><strong>Package:</strong> ${escapeHtml(data.packageName)}</p>
-        <p><strong>Billing Cycle:</strong> ${escapeHtml(data.billingCycle)}</p>
-        <p><strong>Invoice Date:</strong> ${formatEmailDate(data.invoiceDate)}</p>
-        <p><strong>Due Date:</strong> ${formatEmailDate(data.dueDate)}</p>
-        <p><strong>Service Period:</strong> ${formatEmailDate(data.servicePeriodStart)} - ${formatEmailDate(data.servicePeriodEnd)}</p>
+      <div class="invoice-amount">
+        <p class="label">Balance Due</p>
+        <p class="value">${formatEmailMoney(data.currency, data.balanceDue)}</p>
       </div>
 
-      <div class="info-box" style="background:#fffbeb;">
-        <h3>Payment Details</h3>
-        <p><strong>Amount:</strong> ${formatEmailMoney(data.currency, data.amount)}</p>
-        <p><strong>Paid:</strong> ${formatEmailMoney(data.currency, data.amountPaid)}</p>
-        <p><strong>Balance Due:</strong> ${formatEmailMoney(data.currency, data.balanceDue)}</p>
-      </div>
+      <table class="invoice-grid" role="presentation">
+        ${data.ministryName ? `<tr><td>Ministry</td><td>${escapeHtml(data.ministryName)}</td></tr>` : ''}
+        <tr><td>Package</td><td>${escapeHtml(data.packageName)}</td></tr>
+        <tr><td>Billing Cycle</td><td>${escapeHtml(data.billingCycle)}</td></tr>
+        <tr><td>Invoice Date</td><td>${formatEmailDate(data.invoiceDate)}</td></tr>
+        <tr><td>Due Date</td><td>${formatEmailDate(data.dueDate)}</td></tr>
+        <tr><td>Service Period</td><td>${formatEmailDate(data.servicePeriodStart)} - ${formatEmailDate(data.servicePeriodEnd)}</td></tr>
+        <tr><td>Amount</td><td>${formatEmailMoney(data.currency, data.amount)}</td></tr>
+        <tr><td>Paid</td><td>${formatEmailMoney(data.currency, data.amountPaid)}</td></tr>
+      </table>
 
       ${data.notes ? `
-        <div class="info-box" style="background:#f9fafb;">
+        <div class="invoice-callout">
           <h3>Notes</h3>
-          <p style="white-space:pre-line;">${escapeHtml(data.notes)}</p>
+          <p>${escapeHtml(data.notes)}</p>
         </div>
       ` : ''}
 
       ${data.terms ? `
-        <div class="info-box" style="background:#f9fafb;">
+        <div class="invoice-callout">
           <h3>Terms</h3>
-          <p style="white-space:pre-line;">${escapeHtml(data.terms)}</p>
+          <p>${escapeHtml(data.terms)}</p>
         </div>
       ` : ''}
 

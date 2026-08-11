@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma';
 import { queueEmail } from '../lib/emailQueue';
 import { packageInvoiceTemplate } from '../lib/emailTemplates';
+import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
 import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
 import { addBillingCycle, ensureInvoicePublicToken, generateInvoiceNumber, generateInvoicePublicToken } from '../services/packageInvoiceService';
 import { convertUSDToLocal } from '../utils/currencyConversion';
@@ -94,7 +95,7 @@ export async function checkExpiringSubscriptions() {
 async function ensureRenewalInvoice(subscription: any, reminderDay: number, phase: 'before_expiry' | 'after_expiry') {
   const user = await prisma.user.findUnique({
     where: { id: subscription.ministryAdminId },
-    select: { id: true, firstName: true, email: true, accountCountry: true },
+    select: { id: true, firstName: true, email: true, accountCountry: true, ministryName: true, lastName: true },
   });
   const pkg = subscription.package;
   if (!user || !pkg) return;
@@ -253,6 +254,7 @@ async function sendInvoiceReminderEmail({
     terms: invoice.terms,
     payUrl,
   });
+  const logoAttachment = getIcimsLogoAttachment();
   await queueEmail(
     user.email,
     isOverdue
@@ -277,8 +279,12 @@ async function sendInvoiceReminderEmail({
       payUrl,
       heading: isOverdue ? 'Package Invoice Overdue' : 'Package Renewal Invoice',
       intro,
+      logoCid: logoAttachment ? ICIMS_LOGO_CID : undefined,
     }),
-    [{ filename: `invoice-${invoice.invoiceNumber}.pdf`, content: invoicePDF }],
+    [
+      ...(logoAttachment ? [logoAttachment] : []),
+      { filename: `invoice-${invoice.invoiceNumber}.pdf`, content: invoicePDF },
+    ],
     'package_subscription',
   );
 
