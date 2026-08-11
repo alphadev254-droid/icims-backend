@@ -1330,7 +1330,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   }
 
   if (cellIds.length === 0) {
-    res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByGiving: [], topByAttendanceRate: [] } });
+    res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByGiving: [], topByAttendanceRate: [] } });
     return;
   }
 
@@ -1354,6 +1354,8 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     // Per-cell meeting counts
     meetingCounts,
     allMeetingCounts,
+    // Per-cell visitor counts
+    visitorCounts,
     // Per-cell giving totals
     givingPerCell,
     // Cell names for display
@@ -1400,6 +1402,13 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       by: ['cellId'],
       where: { cellId: { in: cellIds } },
       _count: { id: true },
+    }),
+    prisma.cellAttendance.groupBy({
+      by: ['cellId'],
+      where: { cellId: { in: cellIds }, isVisitor: true },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 5,
     }),
     prisma.donationTransaction.groupBy({
       by: ['cellId'],
@@ -1466,6 +1475,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       cumulativeConversionRate: overviewGuestConversion.conversionRate,
       topByMembers: memberCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByMeetings: meetingCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
+      topByVisitors: visitorCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByGiving: givingPerCell.filter(c => c.cellId).map(c => ({ id: c.cellId!, name: label(c.cellId!), total: c._sum.amount ?? 0 })),
       topByAttendanceRate,
     },
