@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { queueEmail } from '../lib/emailQueue';
+import { cellMemberAddedTemplate } from '../lib/cellEmailTemplates';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -412,7 +414,10 @@ export async function deleteCell(req: Request, res: Response): Promise<void> {
   const churchId = req.user?.churchId;
   const cellId = String(req.params.id);
 
-  const cell = await prisma.cell.findUnique({ where: { id: cellId } });
+  const cell = await prisma.cell.findUnique({
+    where: { id: cellId },
+    include: { church: { select: { name: true } } },
+  });
   if (!cell) { res.status(404).json({ success: false, message: 'Cell not found' }); return; }
 
   const accessibleChurchIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
@@ -471,8 +476,29 @@ export async function addCellMember(req: Request, res: Response): Promise<void> 
       leftAt: null,
       joinedAt: new Date(),
     },
-    include: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },
+    include: { user: { select: { id: true, firstName: true, lastName: true, email: true, loginEnabled: true } } },
   });
+
+  const adminUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { firstName: true, lastName: true },
+  });
+
+  if (member.user?.email && member.user.loginEnabled !== false) {
+    queueEmail(
+      member.user.email,
+      `Added to ${cell.name}`,
+      cellMemberAddedTemplate({
+        firstName: member.user.firstName,
+        cellName: cell.name,
+        churchName: (cell as any).church?.name || 'your church',
+        addedBy: adminUser ? `${adminUser.firstName} ${adminUser.lastName}`.trim() : 'Your church administrator',
+        isLeader: member.isLeader,
+        isAssistant: member.isAssistant,
+      }),
+      'notification'
+    ).catch(err => console.error('Failed to queue cell member assignment email:', err));
+  }
 
   res.status(201).json({ success: true, data: member });
 }
@@ -585,9 +611,109 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
     }),
   ]);
 
+  const memberIds = members.map(member => member.userId).filter(Boolean);
+  const earliestJoinedAt = members.reduce<Date | null>((earliest, member) => {
+    const joinedAt = member.joinedAt;
+    if (!earliest || joinedAt < earliest) return joinedAt;
+    return earliest;
+  }, null);
+
+  const [eligibleMeetings, attendanceRows, givingRows] = memberIds.length > 0
+    ? await Promise.all([
+        prisma.cellMeeting.findMany({
+          where: {
+            cellId,
+            ...(earliestJoinedAt ? { date: { gte: earliestJoinedAt } } : {}),
+          },
+          select: { id: true, date: true },
+          orderBy: { date: 'asc' },
+        }),
+        prisma.cellAttendance.findMany({
+          where: {
+            cellId,
+            userId: { in: memberIds },
+            isVisitor: false,
+          },
+          select: { userId: true, meetingId: true, status: true, meeting: { select: { date: true } } },
+        }),
+        prisma.donationTransaction.groupBy({
+          by: ['userId', 'currency'],
+          where: {
+            cellId,
+            userId: { in: memberIds },
+            status: 'completed',
+            isGuest: false,
+            isAnonymous: false,
+          },
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+      ])
+    : [[], [], []] as const;
+
+  const attendanceByUser = new Map<string, Array<(typeof attendanceRows)[number]>>();
+  for (const row of attendanceRows) {
+    if (!row.userId) continue;
+    if (!attendanceByUser.has(row.userId)) attendanceByUser.set(row.userId, []);
+    attendanceByUser.get(row.userId)!.push(row);
+  }
+
+  const givingByUser = new Map<string, { total: number; count: number; totalsByCurrency: Array<{ currency: string; total: number; count: number }> }>();
+  for (const row of givingRows as any[]) {
+    const existing = givingByUser.get(row.userId) ?? { total: 0, count: 0, totalsByCurrency: [] };
+    const total = row._sum?.amount ?? 0;
+    const count = row._count?.id ?? 0;
+    existing.total += total;
+    existing.count += count;
+    existing.totalsByCurrency.push({ currency: row.currency, total, count });
+    givingByUser.set(row.userId, existing);
+  }
+
+  const enrichedMembers = members.map(member => {
+    const expectedMeetingIds = new Set(
+      eligibleMeetings
+        .filter(meeting => meeting.date >= member.joinedAt)
+        .map(meeting => meeting.id)
+    );
+    const memberAttendanceRows = attendanceByUser.get(member.userId) ?? [];
+    const presentMeetingIds = new Set<string>();
+    const excusedMeetingIds = new Set<string>();
+    let lastAttendedAt: Date | null = null;
+
+    for (const row of memberAttendanceRows) {
+      if (!expectedMeetingIds.has(row.meetingId)) continue;
+      if (row.status === 'present') {
+        presentMeetingIds.add(row.meetingId);
+        if (!lastAttendedAt || row.meeting.date > lastAttendedAt) lastAttendedAt = row.meeting.date;
+      } else if (row.status === 'excused') {
+        excusedMeetingIds.add(row.meetingId);
+      }
+    }
+
+    const expectedMeetings = expectedMeetingIds.size;
+    const attendedMeetings = presentMeetingIds.size;
+    const excusedMeetings = excusedMeetingIds.size;
+    const missedMeetings = Math.max(0, expectedMeetings - attendedMeetings - excusedMeetings);
+    const attendanceRate = expectedMeetings > 0 ? Math.round((attendedMeetings / expectedMeetings) * 100) : null;
+    const giving = givingByUser.get(member.userId) ?? { total: 0, count: 0, totalsByCurrency: [] };
+
+    return {
+      ...member,
+      attendanceStats: {
+        expectedMeetings,
+        attendedMeetings,
+        missedMeetings,
+        excusedMeetings,
+        attendanceRate,
+        lastAttendedAt,
+      },
+      givingStats: giving,
+    };
+  });
+
   res.json({
     success: true,
-    data: members,
+    data: enrichedMembers,
     pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
   });
 }
