@@ -33,6 +33,23 @@ type CellAttendanceRateEntry = {
   totalRows: number;
 };
 
+type CellAttendanceRateInput = {
+  presentCount: number;
+  activeMemberCount: number;
+  meetingCount: number;
+};
+
+type VisitorIdentityRow = {
+  visitorPhone?: string | null;
+  visitorEmail?: string | null;
+  visitorName?: string | null;
+};
+
+type MemberIdentityRow = {
+  phone?: string | null;
+  email?: string | null;
+};
+
 function buildCellAttendanceRateMap(rows: Array<{ cellId: string | null; meetingId: string; userId: string | null; status: string }>) {
   const map = new Map<string, CellAttendanceRateEntry>();
   for (const row of rows) {
@@ -48,10 +65,67 @@ function buildCellAttendanceRateMap(rows: Array<{ cellId: string | null; meeting
   return map;
 }
 
-function cellAttendanceRate(entry: CellAttendanceRateEntry | undefined, activeMemberCount: number): number | null {
-  if (!entry || entry.meetingIds.size === 0) return null;
-  const expectedRows = activeMemberCount > 0 ? activeMemberCount * entry.meetingIds.size : entry.totalRows;
-  return percentage(entry.presentKeys.size, expectedRows);
+function calculateCellAttendanceRate({ presentCount, activeMemberCount, meetingCount }: CellAttendanceRateInput): number | null {
+  if (activeMemberCount <= 0 || meetingCount <= 0) return null;
+  return Math.min(100, percentage(presentCount, activeMemberCount * meetingCount));
+}
+
+function cellAttendanceRate(entry: CellAttendanceRateEntry | undefined, activeMemberCount: number, meetingCount: number): number | null {
+  return calculateCellAttendanceRate({
+    presentCount: entry?.presentKeys.size ?? 0,
+    activeMemberCount,
+    meetingCount,
+  });
+}
+
+function normalizePhone(value?: string | null): string | null {
+  const digits = value?.replace(/\D/g, '') ?? '';
+  if (!digits) return null;
+  return digits.startsWith('265') && digits.length > 9 ? digits.slice(3) : digits;
+}
+
+function normalizeEmail(value?: string | null): string | null {
+  const email = value?.trim().toLowerCase();
+  return email || null;
+}
+
+function normalizeName(value?: string | null): string | null {
+  const name = value?.trim().replace(/\s+/g, ' ').toLowerCase();
+  return name || null;
+}
+
+function visitorIdentityKey(visitor: VisitorIdentityRow): string | null {
+  const phone = normalizePhone(visitor.visitorPhone);
+  if (phone) return `phone:${phone}`;
+  const email = normalizeEmail(visitor.visitorEmail);
+  if (email) return `email:${email}`;
+  const name = normalizeName(visitor.visitorName);
+  return name ? `name:${name}` : null;
+}
+
+function summarizeGuestConversion(visitors: VisitorIdentityRow[], members: MemberIdentityRow[]) {
+  const memberPhones = new Set(members.map(m => normalizePhone(m.phone)).filter(Boolean) as string[]);
+  const memberEmails = new Set(members.map(m => normalizeEmail(m.email)).filter(Boolean) as string[]);
+  const visitorKeys = new Map<string, VisitorIdentityRow>();
+  const convertedKeys = new Set<string>();
+
+  for (const visitor of visitors) {
+    const key = visitorIdentityKey(visitor);
+    if (!key) continue;
+    if (!visitorKeys.has(key)) visitorKeys.set(key, visitor);
+
+    const phone = normalizePhone(visitor.visitorPhone);
+    const email = normalizeEmail(visitor.visitorEmail);
+    if ((phone && memberPhones.has(phone)) || (email && memberEmails.has(email))) {
+      convertedKeys.add(key);
+    }
+  }
+
+  return {
+    convertedCount: convertedKeys.size,
+    totalUniqueVisitors: visitorKeys.size,
+    conversionRate: visitorKeys.size > 0 ? percentage(convertedKeys.size, visitorKeys.size) : 0,
+  };
 }
 
 // ─── GET /api/cells ───────────────────────────────────────────────────────────
@@ -143,7 +217,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   const cellIds = cells.map(c => c.id);
 
   // Round 2: all enrichment in parallel, scoped to page cell IDs (and optional date range)
-  const [lastMeetingsRaw, attendanceRowsScoped, visitorPhonesPerCell, offeringStatsRaw] = await Promise.all([
+  const [lastMeetingsRaw, attendanceRowsScoped, visitorRowsPerCell, offeringStatsRaw] = await Promise.all([
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds }, ...(hasDates && { date: dateFilter }) },
@@ -160,9 +234,8 @@ export async function getCells(req: Request, res: Response): Promise<void> {
       select: { cellId: true, meetingId: true, userId: true, status: true },
     }),
     prisma.cellAttendance.findMany({
-      where: { cellId: { in: cellIds }, isVisitor: true, visitorPhone: { not: null } },
-      select: { cellId: true, visitorPhone: true },
-      distinct: ['cellId', 'visitorPhone'],
+      where: { cellId: { in: cellIds }, isVisitor: true },
+      select: { cellId: true, visitorPhone: true, visitorEmail: true, visitorName: true },
     }),
     (prisma as any).donationTransaction.groupBy({
       by: ['cellId'],
@@ -171,30 +244,26 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     }),
   ]);
 
-  // Round 3: member phone match (needs visitor phones from round 2)
-  const allVisitorPhones = [...new Set(visitorPhonesPerCell.map(v => v.visitorPhone!).filter(Boolean))];
-  const matchedMembers = allVisitorPhones.length > 0
-    ? await prisma.cellMember.findMany({
-        where: { cellId: { in: cellIds }, status: 'active', user: { phone: { in: allVisitorPhones } } },
-        select: { cellId: true, user: { select: { phone: true } } },
-      })
-    : [];
+  // Round 3: active member identities for guest conversion matching
+  const activeMembersPerCell = await prisma.cellMember.findMany({
+    where: { cellId: { in: cellIds }, status: 'active' },
+    select: { cellId: true, user: { select: { phone: true, email: true } } },
+  });
 
   // Build lookup maps — O(n) in memory
   const lastMeetingMap = new Map(lastMeetingsRaw.map(m => [m.cellId, m._max?.date ?? null]));
 
   const attMap = buildCellAttendanceRateMap(attendanceRowsScoped as any);
 
-  const cellVisitorPhones = new Map<string, Set<string>>();
-  for (const v of visitorPhonesPerCell) {
-    if (!cellVisitorPhones.has(v.cellId)) cellVisitorPhones.set(v.cellId, new Set());
-    cellVisitorPhones.get(v.cellId)!.add(v.visitorPhone!);
+  const cellVisitorRows = new Map<string, VisitorIdentityRow[]>();
+  for (const v of visitorRowsPerCell) {
+    if (!cellVisitorRows.has(v.cellId)) cellVisitorRows.set(v.cellId, []);
+    cellVisitorRows.get(v.cellId)!.push(v);
   }
-  const cellConvertedPhones = new Map<string, Set<string>>();
-  for (const m of matchedMembers) {
-    if (!m.user?.phone) continue;
-    if (!cellConvertedPhones.has(m.cellId)) cellConvertedPhones.set(m.cellId, new Set());
-    cellConvertedPhones.get(m.cellId)!.add(m.user.phone);
+  const cellMemberRows = new Map<string, MemberIdentityRow[]>();
+  for (const m of activeMembersPerCell) {
+    if (!cellMemberRows.has(m.cellId)) cellMemberRows.set(m.cellId, []);
+    cellMemberRows.get(m.cellId)!.push({ phone: m.user?.phone, email: m.user?.email });
   }
 
   const meetingCountMap = new Map(lastMeetingsRaw.map(m => [m.cellId, (m._count as any)?._all ?? 0]));
@@ -204,7 +273,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     ...c,
     lastMeetingDate: lastMeetingMap.get(c.id) ?? null,
     meetingsInPeriod: hasDates ? (meetingCountMap.get(c.id) ?? 0) : (c._count?.meetings ?? 0),
-    totalVisitors: cellVisitorPhones.get(c.id)?.size ?? 0,
+    totalVisitors: cellVisitorRows.get(c.id)?.length ?? 0,
     totalOffering: offeringMap.get(c.id) ?? 0,
     leaderName: (() => {
       const leaders = (c as any).members?.filter((m: any) => m.isLeader);
@@ -212,14 +281,13 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     })(),
     attendanceRate: (() => {
       const a = attMap.get(c.id);
-      return cellAttendanceRate(a, c._count?.members ?? 0);
+      const meetingCount = hasDates ? (meetingCountMap.get(c.id) ?? 0) : (c._count?.meetings ?? 0);
+      return cellAttendanceRate(a, c._count?.members ?? 0, meetingCount);
     })(),
     conversionRate: (() => {
-      const visitors = cellVisitorPhones.get(c.id);
-      const converted = cellConvertedPhones.get(c.id);
-      if (!visitors || visitors.size === 0) return null;
-      const count = converted ? [...converted].filter(p => visitors.has(p)).length : 0;
-      return Math.round((count / visitors.size) * 100);
+      const visitors = cellVisitorRows.get(c.id) ?? [];
+      if (visitors.length === 0) return null;
+      return summarizeGuestConversion(visitors, cellMemberRows.get(c.id) ?? []).conversionRate;
     })(),
   }));
 
@@ -614,6 +682,14 @@ const attendanceSchema = z.object({
     isFirstTime: z.boolean().optional().default(true),
     invitedByUserId: z.string().optional(),
     notes: z.string().optional(),
+  }).superRefine((record, ctx) => {
+    if (record.isVisitor && !record.visitorPhone?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['visitorPhone'],
+        message: 'Guest phone is required',
+      });
+    }
   })),
 });
 
@@ -653,7 +729,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   // ── Parallel: basic counts + last 5 meeting IDs + member growth counts ───
   const [
     totalMembers,
-    totalMeetings,
+    allMeetings,
     totalVisitors,
     newThisMonth,
     leftThisMonth,
@@ -666,10 +742,10 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
     activeMembers,
   ] = await Promise.all([
     prisma.cellMember.count({ where: { cellId, status: 'active' } }),
-    prisma.cellMeeting.count({ where: { cellId } }),
+    prisma.cellMeeting.findMany({ where: { cellId }, select: { id: true } }),
     prisma.cellAttendance.count({ where: { cellId, isVisitor: true } }),
     prisma.cellMember.count({ where: { cellId, joinedAt: { gte: startOfMonth } } }),
-    prisma.cellMember.count({ where: { cellId, status: 'inactive' } }), // leftAt filter applied after generate
+    prisma.cellMember.count({ where: { cellId, status: 'inactive', leftAt: { gte: startOfMonth } } }),
     prisma.cellMember.count({ where: { cellId, joinedAt: { gte: startOfLastMonth, lte: endOfLastMonth } } }),
     prisma.cellMeeting.findMany({
       where: { cellId },
@@ -699,33 +775,33 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       where: { cellId, status: 'active' },
       select: {
         userId: true,
-        user: { select: { id: true, firstName: true, lastName: true, phone: true, dateOfBirth: true, memberType: true, loginEnabled: true } },
+        user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, dateOfBirth: true, memberType: true, loginEnabled: true } },
       },
     }),
   ]);
 
+  const totalMeetings = allMeetings.length;
+  const allMeetingIds = allMeetings.map(m => m.id);
   const netGrowth = newThisMonth - leftThisMonth;
 
   // ── Attendance trend ──────────────────────────────────────────────────────
   const attendanceTrend = recentMeetings.map(m => ({
     date: m.date.toISOString().split('T')[0],
     topic: m.topic ?? '',
-    present: m.attendance.filter(a => a.status === 'present').length,
+    present: m.attendance.filter(a => !a.isVisitor && a.status === 'present').length,
     absent: m.attendance.filter(a => !a.isVisitor && a.status === 'absent').length,
-    excused: m.attendance.filter(a => a.status === 'excused').length,
+    excused: m.attendance.filter(a => !a.isVisitor && a.status === 'excused').length,
     visitors: m.attendance.filter(a => a.isVisitor).length,
   }));
 
   // ── Overall attendance rate + per-member stats (single pass) ─────────────
   const activeMemberIds = new Set(activeMembers.map(m => m.userId));
-  const activeMemberAttendance = allMemberAttendance.filter(a => a.userId && activeMemberIds.has(a.userId));
-  const recordedMeetingIds = [...new Set(activeMemberAttendance.map(a => a.meetingId))];
 
   const memberMap = new Map<string, { name: string; present: number; absent: number; excused: number; total: number; byMeeting: Map<string, string> }>();
   for (const m of activeMembers) {
     memberMap.set(m.userId, {
       name: `${m.user?.firstName ?? ''} ${m.user?.lastName ?? ''}`.trim(),
-      present: 0, absent: 0, excused: 0, total: recordedMeetingIds.length,
+      present: 0, absent: 0, excused: 0, total: totalMeetings,
       byMeeting: new Map(),
     });
   }
@@ -739,7 +815,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
     entry.present = 0;
     entry.absent = 0;
     entry.excused = 0;
-    for (const meetingId of recordedMeetingIds) {
+    for (const meetingId of allMeetingIds) {
       const status = entry.byMeeting.get(meetingId) ?? 'absent';
       if (status === 'present') entry.present++;
       else if (status === 'excused') entry.excused++;
@@ -748,8 +824,11 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   }
 
   const totalPresent = Array.from(memberMap.values()).reduce((s, m) => s + m.present, 0);
-  const totalRecords = activeMembers.length * recordedMeetingIds.length;
-  const attendanceRate = percentage(totalPresent, totalRecords);
+  const attendanceRate = calculateCellAttendanceRate({
+    presentCount: totalPresent,
+    activeMemberCount: activeMembers.length,
+    meetingCount: totalMeetings,
+  }) ?? 0;
 
   // ── Consecutive absences — no N+1, use byMeeting map ─────────────────────
   const last5Ids = last5Meetings.map(m => m.id);
@@ -809,44 +888,16 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   const ageDistribution = Object.entries(ageBuckets).map(([range, count]) => ({ range, count }));
 
   // ── Guest-to-member conversion tracking ──────────────────────────────────
-  // A guest "converted" if their phone or email matches an active cell member's user record
-  // Done at DB level: get all visitor phones/emails, then check against member users
+  // A guest "converted" if their phone or email matches an active cell member's user record.
 
-  // Get distinct visitor phones and emails for this cell
-  const [visitorPhones, visitorEmails] = await Promise.all([
-    prisma.cellAttendance.findMany({
-      where: { cellId, isVisitor: true, visitorPhone: { not: null } },
-      select: { visitorPhone: true },
-      distinct: ['visitorPhone'],
-    }),
-    prisma.cellAttendance.findMany({
-      where: { cellId, isVisitor: true, visitorEmail: { not: null } } as any,
-      select: { visitorEmail: true } as any,
-      distinct: ['visitorEmail' as any],
-    }).catch(() => []),
-  ]);
-
-  const phones = visitorPhones.map((v: any) => v.visitorPhone).filter(Boolean);
-  const emails = (visitorEmails as any[]).map((v: any) => v.visitorEmail).filter(Boolean);
-
-  // Count active members whose phone or email matches a past visitor
-  const convertedCount = await prisma.cellMember.count({
-    where: {
-      cellId,
-      status: 'active',
-      user: {
-        OR: [
-          ...(phones.length > 0 ? [{ phone: { in: phones } }] : []),
-          ...(emails.length > 0 ? [{ email: { in: emails } }] : []),
-        ],
-      },
-    },
+  const visitorIdentityRows = await prisma.cellAttendance.findMany({
+    where: { cellId, isVisitor: true },
+    select: { visitorPhone: true, visitorEmail: true, visitorName: true },
   });
-
-  const totalUniqueVisitors = phones.length + emails.filter(e => !phones.includes(e)).length;
-  const conversionRate = totalUniqueVisitors > 0
-    ? Math.round((convertedCount / totalUniqueVisitors) * 100)
-    : 0;
+  const guestConversion = summarizeGuestConversion(
+    visitorIdentityRows,
+    activeMembers.map(m => ({ phone: m.user?.phone, email: m.user?.email })),
+  );
   // Three separate groupBy queries (phone, email, name) — DB does the counting
   const [byPhone, byEmail, byName] = await Promise.all([
     prisma.cellAttendance.groupBy({
@@ -877,13 +928,13 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
 
   // Merge results — phone takes priority, then email, then name
   // Fetch one representative record per group to get name/email/phone for display
-  const phoneKeys = new Set(byPhone.map((r: any) => r.visitorPhone));
-  const emailKeys = new Set((byEmail as any[]).map((r: any) => r.visitorEmail));
+  const phoneKeys = new Set(byPhone.map((r: any) => r.visitorPhone).filter(Boolean));
+  const emailKeys = new Set((byEmail as any[]).map((r: any) => r.visitorEmail).filter(Boolean));
 
   const repeatVisitorKeys = [
     ...byPhone.map((r: any) => ({ key: r.visitorPhone, field: 'visitorPhone', visits: r._count.id })),
-    ...(byEmail as any[]).filter((r: any) => !phoneKeys.has(r.visitorPhone)).map((r: any) => ({ key: r.visitorEmail, field: 'visitorEmail', visits: r._count.id })),
-    ...(byName as any[]).filter((r: any) => !phoneKeys.has(r.visitorPhone) && !emailKeys.has((r as any).visitorEmail)).map((r: any) => ({ key: r.visitorName, field: 'visitorName', visits: r._count.id })),
+    ...(byEmail as any[]).map((r: any) => ({ key: r.visitorEmail, field: 'visitorEmail', visits: r._count.id })),
+    ...(byName as any[]).map((r: any) => ({ key: r.visitorName, field: 'visitorName', visits: r._count.id })),
   ].sort((a, b) => b.visits - a.visits).slice(0, 10);
 
   // Fetch one representative record per group for display info — single bulk query instead of N+1
@@ -893,23 +944,26 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       isVisitor: true,
       OR: repeatVisitorKeys.map(({ key, field }) => ({ [field]: key })),
     },
-    select: { visitorName: true, visitorPhone: true },
-    distinct: ['visitorPhone', 'visitorName'],
+    select: { visitorName: true, visitorPhone: true, visitorEmail: true },
+    distinct: ['visitorPhone', 'visitorEmail', 'visitorName'],
     take: 20,
   });
 
   // Build a lookup map: phone → record, name → record
   const sampleByPhone = new Map(repeatVisitorSamples.filter(s => s.visitorPhone).map(s => [s.visitorPhone!, s]));
+  const sampleByEmail = new Map(repeatVisitorSamples.filter((s: any) => s.visitorEmail).map((s: any) => [s.visitorEmail!, s]));
   const sampleByName  = new Map(repeatVisitorSamples.filter(s => s.visitorName).map(s => [s.visitorName!, s]));
 
   const repeatVisitors = repeatVisitorKeys.map(({ key, field, visits }) => {
     const sample = field === 'visitorPhone'
       ? sampleByPhone.get(key)
+      : field === 'visitorEmail'
+      ? sampleByEmail.get(key)
       : sampleByName.get(key);
     return {
       name: sample?.visitorName ?? '',
       phone: sample?.visitorPhone ?? null,
-      email: null as string | null,
+      email: (sample as any)?.visitorEmail ?? null,
       visits,
     };
   });
@@ -922,7 +976,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       memberGrowth: { newThisMonth, leftThisMonth, netGrowth, newLastMonth },
       ageDistribution, topAttendees, mostAbsent,
       repeatVisitors,
-      guestConversion: { convertedCount, totalUniqueVisitors, conversionRate },
+      guestConversion,
     },
   });
 }
@@ -1165,12 +1219,15 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     totalMeetings,
     totalVisitors,
     attendanceRows,
+    visitorIdentityRows,
+    activeMemberIdentityRows,
     recentMeetingsCount,
     // Per-cell member counts
     memberCounts,
     activeMemberCounts,
     // Per-cell meeting counts
     meetingCounts,
+    allMeetingCounts,
     // Per-cell giving totals
     givingPerCell,
     // Cell names for display
@@ -1184,6 +1241,14 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     prisma.cellAttendance.findMany({
       where: { cellId: { in: cellIds }, isVisitor: false, userId: { not: null } },
       select: { cellId: true, meetingId: true, userId: true, status: true },
+    }),
+    prisma.cellAttendance.findMany({
+      where: { cellId: { in: cellIds }, isVisitor: true },
+      select: { visitorPhone: true, visitorEmail: true, visitorName: true },
+    }),
+    prisma.cellMember.findMany({
+      where: { cellId: { in: cellIds }, status: 'active' },
+      select: { user: { select: { phone: true, email: true } } },
     }),
     prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, date: { gte: thirtyDaysAgo } } }),
     prisma.cellMember.groupBy({
@@ -1204,6 +1269,11 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
+    }),
+    prisma.cellMeeting.groupBy({
+      by: ['cellId'],
+      where: { cellId: { in: cellIds } },
+      _count: { id: true },
     }),
     prisma.donationTransaction.groupBy({
       by: ['cellId'],
@@ -1227,61 +1297,47 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
 
   // ── Overall attendance rate ───────────────────────────────────────────────
   const activeMemberCountMap = new Map(activeMemberCounts.map(a => [a.cellId, a._count.id]));
+  const meetingCountMap = new Map(allMeetingCounts.map(a => [a.cellId, a._count.id]));
   const cellAttMap = buildCellAttendanceRateMap(attendanceRows as any);
   let presentTotal = 0;
   let attTotal = 0;
-  for (const [cellId, entry] of cellAttMap.entries()) {
+  for (const cellId of cellIds) {
+    const entry = cellAttMap.get(cellId);
     const activeCount = activeMemberCountMap.get(cellId) ?? 0;
-    presentTotal += entry.presentKeys.size;
-    attTotal += activeCount > 0 ? activeCount * entry.meetingIds.size : entry.totalRows;
+    const meetingCount = meetingCountMap.get(cellId) ?? 0;
+    presentTotal += entry?.presentKeys.size ?? 0;
+    attTotal += activeCount * meetingCount;
   }
   const attendanceRate = percentage(presentTotal, attTotal);
 
   // ── Top by attendance rate (compute per-cell rate from grouped data) ──────
-  const topByAttendanceRate = Array.from(cellAttMap.entries())
-    .map(([cellId, v]) => ({
-      id: cellId,
-      name: label(cellId),
-      attendanceRate: cellAttendanceRate(v, activeMemberCountMap.get(cellId) ?? 0) ?? 0,
-      present: v.presentKeys.size,
-      total: (activeMemberCountMap.get(cellId) ?? 0) > 0
-        ? (activeMemberCountMap.get(cellId) ?? 0) * v.meetingIds.size
-        : v.totalRows,
-    }))
+  const topByAttendanceRate = cellIds
+    .map((cellId) => {
+      const v = cellAttMap.get(cellId);
+      const activeCount = activeMemberCountMap.get(cellId) ?? 0;
+      const meetingCount = meetingCountMap.get(cellId) ?? 0;
+      return {
+        id: cellId,
+        name: label(cellId),
+        attendanceRate: cellAttendanceRate(v, activeCount, meetingCount) ?? 0,
+        present: v?.presentKeys.size ?? 0,
+        total: activeCount * meetingCount,
+      };
+    })
     .sort((a, b) => b.attendanceRate - a.attendanceRate)
     .slice(0, 5);
 
-  // ── Cumulative conversion rate — two parallel DB queries ─────────────────
-  const [uniqueVisitorPhones, convertedMembers] = await Promise.all([
-    prisma.cellAttendance.findMany({
-      where: { cellId: { in: cellIds }, isVisitor: true, visitorPhone: { not: null } },
-      select: { visitorPhone: true },
-      distinct: ['visitorPhone'],
-    }),
-    // Will filter after getting visitor phones
-    Promise.resolve(null),
-  ]);
-
-  const visitorPhones = uniqueVisitorPhones.map((v: any) => v.visitorPhone).filter(Boolean);
-  const convertedCount = visitorPhones.length > 0
-    ? await prisma.cellMember.count({
-        where: {
-          cellId: { in: cellIds },
-          status: 'active',
-          user: { phone: { in: visitorPhones } },
-        },
-      })
-    : 0;
-
-  const cumulativeConversionRate = visitorPhones.length > 0
-    ? Math.round((convertedCount / visitorPhones.length) * 100)
-    : 0;
+  // ── Cumulative conversion rate ───────────────────────────────────────────
+  const overviewGuestConversion = summarizeGuestConversion(
+    visitorIdentityRows,
+    activeMemberIdentityRows.map(m => ({ phone: m.user?.phone, email: m.user?.email })),
+  );
 
   res.json({
     success: true,
     data: {
       totalCells, activeCells, totalMembers, totalMeetings, totalVisitors, attendanceRate, recentMeetingsCount,
-      cumulativeConversionRate,
+      cumulativeConversionRate: overviewGuestConversion.conversionRate,
       topByMembers: memberCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByMeetings: meetingCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByGiving: givingPerCell.filter(c => c.cellId).map(c => ({ id: c.cellId!, name: label(c.cellId!), total: c._sum.amount ?? 0 })),
