@@ -23,6 +23,37 @@ async function getAccessibleCellIds(userId: string, roleName: string, churchId: 
   return cells.map((c: any) => c.id);
 }
 
+function percentage(numerator: number, denominator: number): number {
+  return denominator > 0 ? Math.round((numerator / denominator) * 100) : 0;
+}
+
+type CellAttendanceRateEntry = {
+  meetingIds: Set<string>;
+  presentKeys: Set<string>;
+  totalRows: number;
+};
+
+function buildCellAttendanceRateMap(rows: Array<{ cellId: string | null; meetingId: string; userId: string | null; status: string }>) {
+  const map = new Map<string, CellAttendanceRateEntry>();
+  for (const row of rows) {
+    if (!row.cellId || !row.userId) continue;
+    if (!map.has(row.cellId)) {
+      map.set(row.cellId, { meetingIds: new Set(), presentKeys: new Set(), totalRows: 0 });
+    }
+    const entry = map.get(row.cellId)!;
+    entry.meetingIds.add(row.meetingId);
+    entry.totalRows += 1;
+    if (row.status === 'present') entry.presentKeys.add(`${row.meetingId}:${row.userId}`);
+  }
+  return map;
+}
+
+function cellAttendanceRate(entry: CellAttendanceRateEntry | undefined, activeMemberCount: number): number | null {
+  if (!entry || entry.meetingIds.size === 0) return null;
+  const expectedRows = activeMemberCount > 0 ? activeMemberCount * entry.meetingIds.size : entry.totalRows;
+  return percentage(entry.presentKeys.size, expectedRows);
+}
+
 // ─── GET /api/cells ───────────────────────────────────────────────────────────
 
 export async function getCells(req: Request, res: Response): Promise<void> {
@@ -112,17 +143,21 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   const cellIds = cells.map(c => c.id);
 
   // Round 2: all enrichment in parallel, scoped to page cell IDs (and optional date range)
-  const [lastMeetingsRaw, attendanceStatsScoped, visitorPhonesPerCell, offeringStatsRaw] = await Promise.all([
+  const [lastMeetingsRaw, attendanceRowsScoped, visitorPhonesPerCell, offeringStatsRaw] = await Promise.all([
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds }, ...(hasDates && { date: dateFilter }) },
       _max: { date: true },
       _count: { _all: true },
     }),
-    prisma.cellAttendance.groupBy({
-      by: ['cellId', 'status'],
-      where: { cellId: { in: cellIds }, isVisitor: false },
-      _count: { _all: true },
+    prisma.cellAttendance.findMany({
+      where: {
+        cellId: { in: cellIds },
+        isVisitor: false,
+        userId: { not: null },
+        ...(hasDates && { meeting: { date: dateFilter } }),
+      },
+      select: { cellId: true, meetingId: true, userId: true, status: true },
     }),
     prisma.cellAttendance.findMany({
       where: { cellId: { in: cellIds }, isVisitor: true, visitorPhone: { not: null } },
@@ -148,14 +183,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   // Build lookup maps — O(n) in memory
   const lastMeetingMap = new Map(lastMeetingsRaw.map(m => [m.cellId, m._max?.date ?? null]));
 
-  const attMap = new Map<string, { present: number; total: number }>();
-  for (const a of attendanceStatsScoped) {
-    if (!attMap.has(a.cellId)) attMap.set(a.cellId, { present: 0, total: 0 });
-    const entry = attMap.get(a.cellId)!;
-    const cnt = (a._count as any)?._all ?? 0;
-    entry.total += cnt;
-    if (a.status === 'present') entry.present += cnt;
-  }
+  const attMap = buildCellAttendanceRateMap(attendanceRowsScoped as any);
 
   const cellVisitorPhones = new Map<string, Set<string>>();
   for (const v of visitorPhonesPerCell) {
@@ -184,7 +212,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     })(),
     attendanceRate: (() => {
       const a = attMap.get(c.id);
-      return a && a.total > 0 ? Math.round((a.present / a.total) * 100) : null;
+      return cellAttendanceRate(a, c._count?.members ?? 0);
     })(),
     conversionRate: (() => {
       const visitors = cellVisitorPhones.get(c.id);
@@ -689,27 +717,39 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   }));
 
   // ── Overall attendance rate + per-member stats (single pass) ─────────────
+  const activeMemberIds = new Set(activeMembers.map(m => m.userId));
+  const activeMemberAttendance = allMemberAttendance.filter(a => a.userId && activeMemberIds.has(a.userId));
+  const recordedMeetingIds = [...new Set(activeMemberAttendance.map(a => a.meetingId))];
+
   const memberMap = new Map<string, { name: string; present: number; absent: number; excused: number; total: number; byMeeting: Map<string, string> }>();
+  for (const m of activeMembers) {
+    memberMap.set(m.userId, {
+      name: `${m.user?.firstName ?? ''} ${m.user?.lastName ?? ''}`.trim(),
+      present: 0, absent: 0, excused: 0, total: recordedMeetingIds.length,
+      byMeeting: new Map(),
+    });
+  }
   for (const a of allMemberAttendance) {
-    if (!a.userId) continue;
-    if (!memberMap.has(a.userId)) {
-      memberMap.set(a.userId, {
-        name: `${a.user?.firstName ?? ''} ${a.user?.lastName ?? ''}`.trim(),
-        present: 0, absent: 0, excused: 0, total: 0,
-        byMeeting: new Map(),
-      });
-    }
+    if (!a.userId || !activeMemberIds.has(a.userId)) continue;
     const entry = memberMap.get(a.userId)!;
-    entry.total++;
     entry.byMeeting.set(a.meetingId, a.status);
-    if (a.status === 'present') entry.present++;
-    else if (a.status === 'absent') entry.absent++;
-    else if (a.status === 'excused') entry.excused++;
+  }
+
+  for (const entry of memberMap.values()) {
+    entry.present = 0;
+    entry.absent = 0;
+    entry.excused = 0;
+    for (const meetingId of recordedMeetingIds) {
+      const status = entry.byMeeting.get(meetingId) ?? 'absent';
+      if (status === 'present') entry.present++;
+      else if (status === 'excused') entry.excused++;
+      else entry.absent++;
+    }
   }
 
   const totalPresent = Array.from(memberMap.values()).reduce((s, m) => s + m.present, 0);
-  const totalRecords = Array.from(memberMap.values()).reduce((s, m) => s + m.total, 0);
-  const attendanceRate = totalRecords > 0 ? Math.round((totalPresent / totalRecords) * 100) : 0;
+  const totalRecords = activeMembers.length * recordedMeetingIds.length;
+  const attendanceRate = percentage(totalPresent, totalRecords);
 
   // ── Consecutive absences — no N+1, use byMeeting map ─────────────────────
   const last5Ids = last5Meetings.map(m => m.id);
@@ -1124,14 +1164,13 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     totalMembers,
     totalMeetings,
     totalVisitors,
-    attendanceByStatus,
+    attendanceRows,
     recentMeetingsCount,
     // Per-cell member counts
     memberCounts,
+    activeMemberCounts,
     // Per-cell meeting counts
     meetingCounts,
-    // Per-cell attendance (for rate ranking)
-    attendancePerCell,
     // Per-cell giving totals
     givingPerCell,
     // Cell names for display
@@ -1142,10 +1181,9 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     prisma.cellMember.count({ where: { cellId: { in: cellIds }, status: 'active' } }),
     prisma.cellMeeting.count({ where: { cellId: { in: cellIds } } }),
     prisma.cellAttendance.count({ where: { cellId: { in: cellIds }, isVisitor: true } }),
-    prisma.cellAttendance.groupBy({
-      by: ['status'],
-      where: { cellId: { in: cellIds }, isVisitor: false },
-      _count: { id: true },
+    prisma.cellAttendance.findMany({
+      where: { cellId: { in: cellIds }, isVisitor: false, userId: { not: null } },
+      select: { cellId: true, meetingId: true, userId: true, status: true },
     }),
     prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, date: { gte: thirtyDaysAgo } } }),
     prisma.cellMember.groupBy({
@@ -1155,17 +1193,17 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
+    prisma.cellMember.groupBy({
+      by: ['cellId'],
+      where: { cellId: { in: cellIds }, status: 'active' },
+      _count: { id: true },
+    }),
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds } },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
-    }),
-    prisma.cellAttendance.groupBy({
-      by: ['cellId', 'status'],
-      where: { cellId: { in: cellIds }, isVisitor: false },
-      _count: { id: true },
     }),
     prisma.donationTransaction.groupBy({
       by: ['cellId'],
@@ -1188,26 +1226,27 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   };
 
   // ── Overall attendance rate ───────────────────────────────────────────────
-  const presentTotal = attendanceByStatus.find(a => a.status === 'present')?._count.id ?? 0;
-  const attTotal = attendanceByStatus.reduce((s, a) => s + a._count.id, 0);
-  const attendanceRate = attTotal > 0 ? Math.round((presentTotal / attTotal) * 100) : 0;
+  const activeMemberCountMap = new Map(activeMemberCounts.map(a => [a.cellId, a._count.id]));
+  const cellAttMap = buildCellAttendanceRateMap(attendanceRows as any);
+  let presentTotal = 0;
+  let attTotal = 0;
+  for (const [cellId, entry] of cellAttMap.entries()) {
+    const activeCount = activeMemberCountMap.get(cellId) ?? 0;
+    presentTotal += entry.presentKeys.size;
+    attTotal += activeCount > 0 ? activeCount * entry.meetingIds.size : entry.totalRows;
+  }
+  const attendanceRate = percentage(presentTotal, attTotal);
 
   // ── Top by attendance rate (compute per-cell rate from grouped data) ──────
-  const cellAttMap = new Map<string, { present: number; total: number }>();
-  for (const a of attendancePerCell) {
-    if (!a.cellId) continue;
-    if (!cellAttMap.has(a.cellId)) cellAttMap.set(a.cellId, { present: 0, total: 0 });
-    const entry = cellAttMap.get(a.cellId)!;
-    entry.total += a._count.id;
-    if (a.status === 'present') entry.present += a._count.id;
-  }
   const topByAttendanceRate = Array.from(cellAttMap.entries())
     .map(([cellId, v]) => ({
       id: cellId,
       name: label(cellId),
-      attendanceRate: v.total > 0 ? Math.round((v.present / v.total) * 100) : 0,
-      present: v.present,
-      total: v.total,
+      attendanceRate: cellAttendanceRate(v, activeMemberCountMap.get(cellId) ?? 0) ?? 0,
+      present: v.presentKeys.size,
+      total: (activeMemberCountMap.get(cellId) ?? 0) > 0
+        ? (activeMemberCountMap.get(cellId) ?? 0) * v.meetingIds.size
+        : v.totalRows,
     }))
     .sort((a, b) => b.attendanceRate - a.attendanceRate)
     .slice(0, 5);
