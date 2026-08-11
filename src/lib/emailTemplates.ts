@@ -31,6 +31,20 @@ const getChurchHeader = (churchName?: string) => churchName ? `
   </div>
 ` : '';
 
+const escapeHtml = (value: unknown) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const formatEmailDate = (value: Date | string | null | undefined) => value
+  ? new Date(value).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+  : '—';
+
+const formatEmailMoney = (currency: string, amount: number) =>
+  `${currency} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 export const userCreatedTemplate = (data: { firstName: string; lastName: string; email: string; password: string; churchName?: string; roleName?: string }) => `
 <!DOCTYPE html>
 <html>
@@ -303,6 +317,86 @@ export const donationReceiptTemplate = (data: {
     <div class="footer">
       <p>&copy; ${new Date().getFullYear()} ${data.churchName || SYSTEM_NAME}. All rights reserved.</p>
       <p>This is an official receipt for your records.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const packageInvoiceTemplate = (data: {
+  firstName?: string | null;
+  ministryName?: string | null;
+  invoiceNumber: string;
+  packageName: string;
+  billingCycle: string;
+  currency: string;
+  amount: number;
+  amountPaid: number;
+  balanceDue: number;
+  invoiceDate: Date | string;
+  dueDate: Date | string;
+  servicePeriodStart: Date | string;
+  servicePeriodEnd: Date | string;
+  notes?: string | null;
+  terms?: string | null;
+  payUrl: string;
+  heading?: string;
+  intro?: string;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="church-header">
+      <h1>ICIMS</h1>
+    </div>
+    <div class="header">
+      <h1>${escapeHtml(data.heading || 'Package Invoice')}</h1>
+      <p>${escapeHtml(data.invoiceNumber)}</p>
+    </div>
+    <div class="content">
+      <h2>Hello ${escapeHtml(data.firstName || 'there')},</h2>
+      <p>${escapeHtml(data.intro || `Your package invoice is ready for ${data.packageName}.`)}</p>
+
+      <div class="info-box">
+        <h3>Invoice Summary</h3>
+        ${data.ministryName ? `<p><strong>Ministry:</strong> ${escapeHtml(data.ministryName)}</p>` : ''}
+        <p><strong>Invoice Number:</strong> ${escapeHtml(data.invoiceNumber)}</p>
+        <p><strong>Package:</strong> ${escapeHtml(data.packageName)}</p>
+        <p><strong>Billing Cycle:</strong> ${escapeHtml(data.billingCycle)}</p>
+        <p><strong>Invoice Date:</strong> ${formatEmailDate(data.invoiceDate)}</p>
+        <p><strong>Due Date:</strong> ${formatEmailDate(data.dueDate)}</p>
+        <p><strong>Service Period:</strong> ${formatEmailDate(data.servicePeriodStart)} - ${formatEmailDate(data.servicePeriodEnd)}</p>
+      </div>
+
+      <div class="info-box" style="background:#fffbeb;">
+        <h3>Payment Details</h3>
+        <p><strong>Amount:</strong> ${formatEmailMoney(data.currency, data.amount)}</p>
+        <p><strong>Paid:</strong> ${formatEmailMoney(data.currency, data.amountPaid)}</p>
+        <p><strong>Balance Due:</strong> ${formatEmailMoney(data.currency, data.balanceDue)}</p>
+      </div>
+
+      ${data.notes ? `
+        <div class="info-box" style="background:#f9fafb;">
+          <h3>Notes</h3>
+          <p style="white-space:pre-line;">${escapeHtml(data.notes)}</p>
+        </div>
+      ` : ''}
+
+      ${data.terms ? `
+        <div class="info-box" style="background:#f9fafb;">
+          <h3>Terms</h3>
+          <p style="white-space:pre-line;">${escapeHtml(data.terms)}</p>
+        </div>
+      ` : ''}
+
+      <a href="${escapeHtml(data.payUrl)}" class="button">Pay Invoice</a>
+      <p style="font-size: 13px; color: #6b7280;">A detailed PDF copy of this invoice is attached for your records.</p>
+    </div>
+    <div class="footer">
+      <p>This invoice was sent by ${SYSTEM_NAME}.</p>
+      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
 </body>

@@ -1,5 +1,7 @@
 import prisma from '../lib/prisma';
 import { queueEmail } from '../lib/emailQueue';
+import { packageInvoiceTemplate } from '../lib/emailTemplates';
+import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
 import { addBillingCycle, ensureInvoicePublicToken, generateInvoiceNumber, generateInvoicePublicToken } from '../services/packageInvoiceService';
 import { convertUSDToLocal } from '../utils/currencyConversion';
 
@@ -225,28 +227,58 @@ async function sendInvoiceReminderEmail({
   }
 
   const isOverdue = phase === 'after_expiry';
+  const payUrl = `${FRONTEND_URL}/invoice/pay/${publicToken}`;
+  const intro = isOverdue
+    ? `Your ${pkg.displayName} subscription expired ${reminderDay} day(s) ago. Invoice ${invoice.invoiceNumber} is ready for the next service period.`
+    : `Your ${pkg.displayName} subscription expires in ${reminderDay} day(s). Invoice ${invoice.invoiceNumber} is ready for the next service period.`;
+  const billedToName = user.ministryName
+    || `${user.firstName || ''} ${user.lastName || ''}`.trim()
+    || user.email;
+  const invoicePDF = await generatePackageInvoicePDF({
+    invoiceNumber: invoice.invoiceNumber,
+    status: isOverdue ? 'overdue' : invoice.status,
+    packageName: pkg.displayName,
+    billedToName,
+    billedToEmail: user.email,
+    billingCycle: invoice.billingCycle,
+    currency,
+    amount,
+    amountPaid: invoice.amountPaid || 0,
+    balanceDue: invoice.balanceDue || amount,
+    invoiceDate: invoice.invoiceDate,
+    dueDate,
+    servicePeriodStart,
+    servicePeriodEnd,
+    notes: invoice.notes,
+    terms: invoice.terms,
+    payUrl,
+  });
   await queueEmail(
     user.email,
     isOverdue
       ? `Invoice ${invoice.invoiceNumber} overdue - ${pkg.displayName}`
       : `Invoice ${invoice.invoiceNumber} - ${pkg.displayName}`,
-    `
-      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827">
-        <h2>${isOverdue ? 'Package Invoice Overdue' : 'Package Renewal Invoice'}</h2>
-        <p>Hello ${user.firstName || 'there'},</p>
-        <p>
-          ${isOverdue
-            ? `Your ${pkg.displayName} subscription expired ${reminderDay} day(s) ago.`
-            : `Your ${pkg.displayName} subscription expires in ${reminderDay} day(s).`
-          }
-          Invoice <strong>${invoice.invoiceNumber}</strong> is ready for the next service period.
-        </p>
-        <p><strong>Amount due:</strong> ${currency} ${amount.toLocaleString()}</p>
-        <p><strong>Due date:</strong> ${dueDate.toLocaleDateString()}</p>
-        <p><strong>Service period:</strong> ${servicePeriodStart.toLocaleDateString()} - ${servicePeriodEnd.toLocaleDateString()}</p>
-        <p><a href="${FRONTEND_URL}/invoice/pay/${publicToken}" style="display:inline-block;background:#d29a35;color:#111827;padding:10px 14px;border-radius:6px;text-decoration:none">Pay Invoice</a></p>
-      </div>
-    `,
+    packageInvoiceTemplate({
+      firstName: user.firstName,
+      ministryName: user.ministryName,
+      invoiceNumber: invoice.invoiceNumber,
+      packageName: pkg.displayName,
+      billingCycle: invoice.billingCycle,
+      currency,
+      amount,
+      amountPaid: invoice.amountPaid || 0,
+      balanceDue: invoice.balanceDue || amount,
+      invoiceDate: invoice.invoiceDate,
+      dueDate,
+      servicePeriodStart,
+      servicePeriodEnd,
+      notes: invoice.notes,
+      terms: invoice.terms,
+      payUrl,
+      heading: isOverdue ? 'Package Invoice Overdue' : 'Package Renewal Invoice',
+      intro,
+    }),
+    [{ filename: `invoice-${invoice.invoiceNumber}.pdf`, content: invoicePDF }],
     'package_subscription',
   );
 

@@ -3,6 +3,8 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { convertUSDToLocal } from '../utils/currencyConversion';
 import { queueEmail } from '../lib/emailQueue';
+import { packageInvoiceTemplate } from '../lib/emailTemplates';
+import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
 import {
   addBillingCycle,
   ensureInvoicePublicToken,
@@ -255,19 +257,51 @@ export async function sendAdminPackageInvoice(req: Request, res: Response): Prom
   });
   if (invoice.ministryAdmin?.email) {
     const payUrl = `${FRONTEND_URL}/invoice/pay/${publicToken}`;
+    const packageName = invoice.package?.displayName || invoice.packageName;
+    const billedToName = invoice.ministryAdmin.ministryName
+      || `${invoice.ministryAdmin.firstName || ''} ${invoice.ministryAdmin.lastName || ''}`.trim()
+      || invoice.ministryAdmin.email;
+    const invoicePDF = await generatePackageInvoicePDF({
+      invoiceNumber: invoice.invoiceNumber,
+      status: invoice.status,
+      packageName,
+      billedToName,
+      billedToEmail: invoice.ministryAdmin.email,
+      billingCycle: invoice.billingCycle,
+      currency: invoice.currency,
+      amount: invoice.amount,
+      amountPaid: invoice.amountPaid,
+      balanceDue: invoice.balanceDue,
+      invoiceDate: invoice.invoiceDate,
+      dueDate: invoice.dueDate,
+      servicePeriodStart: invoice.servicePeriodStart,
+      servicePeriodEnd: invoice.servicePeriodEnd,
+      notes: invoice.notes,
+      terms: invoice.terms,
+      payUrl,
+    });
     await queueEmail(
       invoice.ministryAdmin.email,
-      `Invoice ${invoice.invoiceNumber} - ${invoice.package?.displayName || invoice.packageName}`,
-      `
-        <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827">
-          <h2>Package Invoice</h2>
-          <p>Hello ${invoice.ministryAdmin.firstName || 'there'},</p>
-          <p>Invoice <strong>${invoice.invoiceNumber}</strong> is ready for ${invoice.package?.displayName || invoice.packageName}.</p>
-          <p><strong>Amount due:</strong> ${invoice.currency} ${invoice.balanceDue.toLocaleString()}</p>
-          <p><strong>Due date:</strong> ${invoice.dueDate.toLocaleDateString()}</p>
-          <p><a href="${payUrl}" style="display:inline-block;background:#d29a35;color:#111827;padding:10px 14px;border-radius:6px;text-decoration:none">Pay Invoice</a></p>
-        </div>
-      `,
+      `Invoice ${invoice.invoiceNumber} - ${packageName}`,
+      packageInvoiceTemplate({
+        firstName: invoice.ministryAdmin.firstName,
+        ministryName: invoice.ministryAdmin.ministryName,
+        invoiceNumber: invoice.invoiceNumber,
+        packageName,
+        billingCycle: invoice.billingCycle,
+        currency: invoice.currency,
+        amount: invoice.amount,
+        amountPaid: invoice.amountPaid,
+        balanceDue: invoice.balanceDue,
+        invoiceDate: invoice.invoiceDate,
+        dueDate: invoice.dueDate,
+        servicePeriodStart: invoice.servicePeriodStart,
+        servicePeriodEnd: invoice.servicePeriodEnd,
+        notes: invoice.notes,
+        terms: invoice.terms,
+        payUrl,
+      }),
+      [{ filename: `invoice-${invoice.invoiceNumber}.pdf`, content: invoicePDF }],
       'package_subscription',
     );
   }
