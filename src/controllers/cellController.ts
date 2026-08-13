@@ -52,6 +52,36 @@ type MemberIdentityRow = {
   email?: string | null;
 };
 
+type CellMemberAttendanceInput = {
+  userId: string;
+  name: string;
+  joinedAt: Date;
+};
+
+type CellMeetingInput = {
+  id: string;
+  date: Date;
+};
+
+type CellAttendanceInput = {
+  userId: string | null;
+  meetingId: string;
+  status: string;
+  meeting?: { date: Date };
+};
+
+type CellMemberAttendanceSummary = {
+  userId: string;
+  name: string;
+  expectedMeetings: number;
+  attendedMeetings: number;
+  missedMeetings: number;
+  excusedMeetings: number;
+  attendanceRate: number | null;
+  lastAttendedAt: Date | null;
+  byMeeting: Map<string, string>;
+};
+
 function buildCellAttendanceRateMap(rows: Array<{ cellId: string | null; meetingId: string; userId: string | null; status: string }>) {
   const map = new Map<string, CellAttendanceRateEntry>();
   for (const row of rows) {
@@ -78,6 +108,61 @@ function cellAttendanceRate(entry: CellAttendanceRateEntry | undefined, activeMe
     activeMemberCount,
     meetingCount,
   });
+}
+
+function summarizeCellMemberAttendance(
+  members: CellMemberAttendanceInput[],
+  meetings: CellMeetingInput[],
+  attendanceRows: CellAttendanceInput[],
+): Map<string, CellMemberAttendanceSummary> {
+  const attendanceByUser = new Map<string, CellAttendanceInput[]>();
+  for (const row of attendanceRows) {
+    if (!row.userId) continue;
+    if (!attendanceByUser.has(row.userId)) attendanceByUser.set(row.userId, []);
+    attendanceByUser.get(row.userId)!.push(row);
+  }
+
+  const summaries = new Map<string, CellMemberAttendanceSummary>();
+  for (const member of members) {
+    const expectedMeetings = meetings.filter(meeting => meeting.date >= member.joinedAt);
+    const expectedMeetingIds = new Set(expectedMeetings.map(meeting => meeting.id));
+    const memberRows = attendanceByUser.get(member.userId) ?? [];
+    const byMeeting = new Map<string, string>();
+    const presentMeetingIds = new Set<string>();
+    const excusedMeetingIds = new Set<string>();
+    let lastAttendedAt: Date | null = null;
+
+    for (const row of memberRows) {
+      if (!expectedMeetingIds.has(row.meetingId)) continue;
+      byMeeting.set(row.meetingId, row.status);
+      if (row.status === 'present') {
+        presentMeetingIds.add(row.meetingId);
+        const meetingDate = row.meeting?.date ?? meetings.find(meeting => meeting.id === row.meetingId)?.date;
+        if (meetingDate && (!lastAttendedAt || meetingDate > lastAttendedAt)) lastAttendedAt = meetingDate;
+      } else if (row.status === 'excused') {
+        excusedMeetingIds.add(row.meetingId);
+      }
+    }
+
+    const expectedCount = expectedMeetings.length;
+    const attendedMeetings = presentMeetingIds.size;
+    const excusedMeetings = excusedMeetingIds.size;
+    const missedMeetings = Math.max(0, expectedCount - attendedMeetings - excusedMeetings);
+
+    summaries.set(member.userId, {
+      userId: member.userId,
+      name: member.name,
+      expectedMeetings: expectedCount,
+      attendedMeetings,
+      missedMeetings,
+      excusedMeetings,
+      attendanceRate: expectedCount > 0 ? Math.round((attendedMeetings / expectedCount) * 100) : null,
+      lastAttendedAt,
+      byMeeting,
+    });
+  }
+
+  return summaries;
 }
 
 function normalizePhone(value?: string | null): string | null {
@@ -649,14 +734,7 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
           _count: { id: true },
         }),
       ])
-    : [[], [], []] as const;
-
-  const attendanceByUser = new Map<string, Array<(typeof attendanceRows)[number]>>();
-  for (const row of attendanceRows) {
-    if (!row.userId) continue;
-    if (!attendanceByUser.has(row.userId)) attendanceByUser.set(row.userId, []);
-    attendanceByUser.get(row.userId)!.push(row);
-  }
+    : [[], [], []];
 
   const givingByUser = new Map<string, { total: number; count: number; totalsByCurrency: Array<{ currency: string; total: number; count: number }> }>();
   for (const row of givingRows as any[]) {
@@ -669,43 +747,29 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
     givingByUser.set(row.userId, existing);
   }
 
+  const attendanceSummaries = summarizeCellMemberAttendance(
+    members.map(member => ({
+      userId: member.userId,
+      name: `${member.user?.firstName ?? ''} ${member.user?.lastName ?? ''}`.trim(),
+      joinedAt: member.joinedAt,
+    })),
+    eligibleMeetings,
+    attendanceRows,
+  );
+
   const enrichedMembers = members.map(member => {
-    const expectedMeetingIds = new Set(
-      eligibleMeetings
-        .filter(meeting => meeting.date >= member.joinedAt)
-        .map(meeting => meeting.id)
-    );
-    const memberAttendanceRows = attendanceByUser.get(member.userId) ?? [];
-    const presentMeetingIds = new Set<string>();
-    const excusedMeetingIds = new Set<string>();
-    let lastAttendedAt: Date | null = null;
-
-    for (const row of memberAttendanceRows) {
-      if (!expectedMeetingIds.has(row.meetingId)) continue;
-      if (row.status === 'present') {
-        presentMeetingIds.add(row.meetingId);
-        if (!lastAttendedAt || row.meeting.date > lastAttendedAt) lastAttendedAt = row.meeting.date;
-      } else if (row.status === 'excused') {
-        excusedMeetingIds.add(row.meetingId);
-      }
-    }
-
-    const expectedMeetings = expectedMeetingIds.size;
-    const attendedMeetings = presentMeetingIds.size;
-    const excusedMeetings = excusedMeetingIds.size;
-    const missedMeetings = Math.max(0, expectedMeetings - attendedMeetings - excusedMeetings);
-    const attendanceRate = expectedMeetings > 0 ? Math.round((attendedMeetings / expectedMeetings) * 100) : null;
+    const summary = attendanceSummaries.get(member.userId);
     const giving = givingByUser.get(member.userId) ?? { total: 0, count: 0, totalsByCurrency: [] };
 
     return {
       ...member,
       attendanceStats: {
-        expectedMeetings,
-        attendedMeetings,
-        missedMeetings,
-        excusedMeetings,
-        attendanceRate,
-        lastAttendedAt,
+        expectedMeetings: summary?.expectedMeetings ?? 0,
+        attendedMeetings: summary?.attendedMeetings ?? 0,
+        missedMeetings: summary?.missedMeetings ?? 0,
+        excusedMeetings: summary?.excusedMeetings ?? 0,
+        attendanceRate: summary?.attendanceRate ?? null,
+        lastAttendedAt: summary?.lastAttendedAt ?? null,
       },
       givingStats: giving,
     };
@@ -868,7 +932,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
     activeMembers,
   ] = await Promise.all([
     prisma.cellMember.count({ where: { cellId, status: 'active' } }),
-    prisma.cellMeeting.findMany({ where: { cellId }, select: { id: true } }),
+    prisma.cellMeeting.findMany({ where: { cellId }, select: { id: true, date: true } }),
     prisma.cellAttendance.count({ where: { cellId, isVisitor: true } }),
     prisma.cellMember.count({ where: { cellId, joinedAt: { gte: startOfMonth } } }),
     prisma.cellMember.count({ where: { cellId, status: 'inactive', leftAt: { gte: startOfMonth } } }),
@@ -901,13 +965,13 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       where: { cellId, status: 'active' },
       select: {
         userId: true,
+        joinedAt: true,
         user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, dateOfBirth: true, memberType: true, loginEnabled: true } },
       },
     }),
   ]);
 
   const totalMeetings = allMeetings.length;
-  const allMeetingIds = allMeetings.map(m => m.id);
   const netGrowth = newThisMonth - leftThisMonth;
 
   // ── Attendance trend ──────────────────────────────────────────────────────
@@ -921,40 +985,19 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   }));
 
   // ── Overall attendance rate + per-member stats (single pass) ─────────────
-  const activeMemberIds = new Set(activeMembers.map(m => m.userId));
-
-  const memberMap = new Map<string, { name: string; present: number; absent: number; excused: number; total: number; byMeeting: Map<string, string> }>();
-  for (const m of activeMembers) {
-    memberMap.set(m.userId, {
+  const memberAttendanceSummaries = summarizeCellMemberAttendance(
+    activeMembers.map(m => ({
+      userId: m.userId,
       name: `${m.user?.firstName ?? ''} ${m.user?.lastName ?? ''}`.trim(),
-      present: 0, absent: 0, excused: 0, total: totalMeetings,
-      byMeeting: new Map(),
-    });
-  }
-  for (const a of allMemberAttendance) {
-    if (!a.userId || !activeMemberIds.has(a.userId)) continue;
-    const entry = memberMap.get(a.userId)!;
-    entry.byMeeting.set(a.meetingId, a.status);
-  }
+      joinedAt: m.joinedAt,
+    })),
+    allMeetings,
+    allMemberAttendance,
+  );
 
-  for (const entry of memberMap.values()) {
-    entry.present = 0;
-    entry.absent = 0;
-    entry.excused = 0;
-    for (const meetingId of allMeetingIds) {
-      const status = entry.byMeeting.get(meetingId) ?? 'absent';
-      if (status === 'present') entry.present++;
-      else if (status === 'excused') entry.excused++;
-      else entry.absent++;
-    }
-  }
-
-  const totalPresent = Array.from(memberMap.values()).reduce((s, m) => s + m.present, 0);
-  const attendanceRate = calculateCellAttendanceRate({
-    presentCount: totalPresent,
-    activeMemberCount: activeMembers.length,
-    meetingCount: totalMeetings,
-  }) ?? 0;
+  const totalPresent = Array.from(memberAttendanceSummaries.values()).reduce((s, m) => s + m.attendedMeetings, 0);
+  const totalExpectedMeetings = Array.from(memberAttendanceSummaries.values()).reduce((s, m) => s + m.expectedMeetings, 0);
+  const attendanceRate = percentage(totalPresent, totalExpectedMeetings);
 
   // ── Consecutive absences — no N+1, use byMeeting map ─────────────────────
   const last5Ids = last5Meetings.map(m => m.id);
@@ -962,7 +1005,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
 
   if (last5Ids.length >= 3) {
     for (const m of activeMembers) {
-      const entry = memberMap.get(m.userId);
+      const entry = memberAttendanceSummaries.get(m.userId);
       let streak = 0;
       for (const mid of last5Ids) {
         const status = entry?.byMeeting.get(mid) ?? 'absent';
@@ -981,18 +1024,22 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
   }
 
   // ── Top attendees + most absent (from same memberMap) ────────────────────
-  const memberStats = Array.from(memberMap.values()).map(m => ({
-    name: m.name, present: m.present, absent: m.absent, excused: m.excused, total: m.total,
-    attendanceRate: m.total > 0 ? Math.round((m.present / m.total) * 100) : 0,
+  const memberStats = Array.from(memberAttendanceSummaries.values()).map(m => ({
+    name: m.name,
+    present: m.attendedMeetings,
+    absent: m.missedMeetings,
+    excused: m.excusedMeetings,
+    total: m.expectedMeetings,
+    attendanceRate: m.attendanceRate ?? 0,
   }));
 
   const topAttendees = [...memberStats]
-    .filter(m => m.total > 0)
-    .sort((a, b) => b.present - a.present || b.attendanceRate - a.attendanceRate)
+    .filter(m => m.total > 0 && m.present > 0)
+    .sort((a, b) => b.attendanceRate - a.attendanceRate || b.present - a.present)
     .slice(0, 5);
 
   const mostAbsent = [...memberStats]
-    .filter(m => m.total > 0)
+    .filter(m => m.total > 0 && (m.absent + m.excused) > 0)
     .sort((a, b) => (b.absent + b.excused) - (a.absent + a.excused))
     .slice(0, 5);
 
@@ -1350,10 +1397,9 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     recentMeetingsCount,
     // Per-cell member counts
     memberCounts,
-    activeMemberCounts,
     // Per-cell meeting counts
     meetingCounts,
-    allMeetingCounts,
+    allMeetingsForRate,
     // Per-cell visitor counts
     visitorCounts,
     // Per-cell giving totals
@@ -1376,7 +1422,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     }),
     prisma.cellMember.findMany({
       where: { cellId: { in: cellIds }, status: 'active' },
-      select: { user: { select: { phone: true, email: true } } },
+      select: { cellId: true, userId: true, joinedAt: true, user: { select: { firstName: true, lastName: true, phone: true, email: true } } },
     }),
     prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, date: { gte: thirtyDaysAgo } } }),
     prisma.cellMember.groupBy({
@@ -1386,11 +1432,6 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
-    prisma.cellMember.groupBy({
-      by: ['cellId'],
-      where: { cellId: { in: cellIds }, status: 'active' },
-      _count: { id: true },
-    }),
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds } },
@@ -1398,10 +1439,9 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
-    prisma.cellMeeting.groupBy({
-      by: ['cellId'],
+    prisma.cellMeeting.findMany({
       where: { cellId: { in: cellIds } },
-      _count: { id: true },
+      select: { id: true, cellId: true, date: true },
     }),
     prisma.cellAttendance.groupBy({
       by: ['cellId'],
@@ -1431,32 +1471,53 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   };
 
   // ── Overall attendance rate ───────────────────────────────────────────────
-  const activeMemberCountMap = new Map(activeMemberCounts.map(a => [a.cellId, a._count.id]));
-  const meetingCountMap = new Map(allMeetingCounts.map(a => [a.cellId, a._count.id]));
-  const cellAttMap = buildCellAttendanceRateMap(attendanceRows as any);
+  const meetingsByCell = new Map<string, Array<{ id: string; date: Date }>>();
+  for (const meeting of allMeetingsForRate) {
+    if (!meetingsByCell.has(meeting.cellId)) meetingsByCell.set(meeting.cellId, []);
+    meetingsByCell.get(meeting.cellId)!.push({ id: meeting.id, date: meeting.date });
+  }
+  const membersByCell = new Map<string, Array<{ userId: string; name: string; joinedAt: Date }>>();
+  for (const member of activeMemberIdentityRows) {
+    if (!membersByCell.has(member.cellId)) membersByCell.set(member.cellId, []);
+    membersByCell.get(member.cellId)!.push({
+      userId: member.userId,
+      name: `${member.user?.firstName ?? ''} ${member.user?.lastName ?? ''}`.trim(),
+      joinedAt: member.joinedAt,
+    });
+  }
+  const attendanceRowsByCell = new Map<string, Array<{ userId: string | null; meetingId: string; status: string }>>();
+  for (const row of attendanceRows) {
+    if (!row.cellId) continue;
+    if (!attendanceRowsByCell.has(row.cellId)) attendanceRowsByCell.set(row.cellId, []);
+    attendanceRowsByCell.get(row.cellId)!.push(row);
+  }
+  const cellAttendanceSummaryMap = new Map<string, { present: number; total: number; rate: number }>();
   let presentTotal = 0;
   let attTotal = 0;
   for (const cellId of cellIds) {
-    const entry = cellAttMap.get(cellId);
-    const activeCount = activeMemberCountMap.get(cellId) ?? 0;
-    const meetingCount = meetingCountMap.get(cellId) ?? 0;
-    presentTotal += entry?.presentKeys.size ?? 0;
-    attTotal += activeCount * meetingCount;
+    const summaries = summarizeCellMemberAttendance(
+      membersByCell.get(cellId) ?? [],
+      meetingsByCell.get(cellId) ?? [],
+      attendanceRowsByCell.get(cellId) ?? [],
+    );
+    const present = Array.from(summaries.values()).reduce((sum, member) => sum + member.attendedMeetings, 0);
+    const total = Array.from(summaries.values()).reduce((sum, member) => sum + member.expectedMeetings, 0);
+    presentTotal += present;
+    attTotal += total;
+    cellAttendanceSummaryMap.set(cellId, { present, total, rate: percentage(present, total) });
   }
   const attendanceRate = percentage(presentTotal, attTotal);
 
   // ── Top by attendance rate (compute per-cell rate from grouped data) ──────
   const topByAttendanceRate = cellIds
     .map((cellId) => {
-      const v = cellAttMap.get(cellId);
-      const activeCount = activeMemberCountMap.get(cellId) ?? 0;
-      const meetingCount = meetingCountMap.get(cellId) ?? 0;
+      const summary = cellAttendanceSummaryMap.get(cellId);
       return {
         id: cellId,
         name: label(cellId),
-        attendanceRate: cellAttendanceRate(v, activeCount, meetingCount) ?? 0,
-        present: v?.presentKeys.size ?? 0,
-        total: activeCount * meetingCount,
+        attendanceRate: summary?.rate ?? 0,
+        present: summary?.present ?? 0,
+        total: summary?.total ?? 0,
       };
     })
     .sort((a, b) => b.attendanceRate - a.attendanceRate)
