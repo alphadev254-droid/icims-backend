@@ -82,6 +82,12 @@ type CellMemberAttendanceSummary = {
   byMeeting: Map<string, string>;
 };
 
+function startOfDay(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 function buildCellAttendanceRateMap(rows: Array<{ cellId: string | null; meetingId: string; userId: string | null; status: string }>) {
   const map = new Map<string, CellAttendanceRateEntry>();
   for (const row of rows) {
@@ -124,13 +130,19 @@ function summarizeCellMemberAttendance(
 
   const summaries = new Map<string, CellMemberAttendanceSummary>();
   for (const member of members) {
-    const expectedMeetings = meetings.filter(meeting => meeting.date >= member.joinedAt);
-    const expectedMeetingIds = new Set(expectedMeetings.map(meeting => meeting.id));
     const memberRows = attendanceByUser.get(member.userId) ?? [];
+    const memberRowsByMeeting = new Map(memberRows.map(row => [row.meetingId, row]));
+    const expectedFrom = startOfDay(member.joinedAt);
+    const expectedMeetings = meetings.filter(meeting => meeting.date >= expectedFrom || memberRowsByMeeting.has(meeting.id));
+    const expectedMeetingIds = new Set(expectedMeetings.map(meeting => meeting.id));
     const byMeeting = new Map<string, string>();
     const presentMeetingIds = new Set<string>();
     const excusedMeetingIds = new Set<string>();
     let lastAttendedAt: Date | null = null;
+
+    for (const meeting of expectedMeetings) {
+      byMeeting.set(meeting.id, 'absent');
+    }
 
     for (const row of memberRows) {
       if (!expectedMeetingIds.has(row.meetingId)) continue;
@@ -1008,7 +1020,8 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       const entry = memberAttendanceSummaries.get(m.userId);
       let streak = 0;
       for (const mid of last5Ids) {
-        const status = entry?.byMeeting.get(mid) ?? 'absent';
+        const status = entry?.byMeeting.get(mid);
+        if (!status) continue;
         if (status === 'absent') streak++;
         else break;
       }
