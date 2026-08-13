@@ -959,8 +959,9 @@ const createGuestMultipleDonationSchema = z.object({
 async function resolveDonationCampaigns(
   items: Array<{ campaignId: string; churchId?: string; amount: number; cellId?: string }>,
   requirePublic: boolean,
-  options: { selectedChurchId?: string | null; userChurchId?: string | null } = {},
+  options: { selectedChurchId?: string | null; userChurchId?: string | null; validateCellSelection?: boolean } = {},
 ) {
+  const validateCellSelection = options.validateCellSelection !== false;
   const ids = [...new Set(items.map(item => item.campaignId))];
 
   const campaigns = await prisma.givingCampaign.findMany({
@@ -1002,10 +1003,10 @@ async function resolveDonationCampaigns(
     }
     itemChurchIds[index] = itemChurchId;
 
-    if (campaign.category === 'fellowship_offering' && !item.cellId) {
+    if (validateCellSelection && campaign.category === 'fellowship_offering' && !item.cellId) {
       return { error: `Please select a cell/fellowship for ${campaign.name}` };
     }
-    if (campaign.category === 'fellowship_offering' && item.cellId) {
+    if (validateCellSelection && campaign.category === 'fellowship_offering' && item.cellId) {
       const cell = await prisma.cell.findFirst({
         where: { id: item.cellId, churchId: itemChurchId, status: 'active' },
         select: { id: true },
@@ -1421,7 +1422,7 @@ export async function getGuestDonationFees(req: Request, res: Response): Promise
   const resolved = await resolveDonationCampaigns(
     [{ campaignId, amount: parsedAmount }],
     true,
-    { selectedChurchId: churchId ?? null },
+    { selectedChurchId: churchId ?? null, validateCellSelection: false },
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
@@ -1941,7 +1942,7 @@ export async function getPublicCampaignCells(req: Request, res: Response): Promi
   const resolved = await resolveDonationCampaigns(
     [{ campaignId: String(id), amount: 1 }],
     true,
-    { selectedChurchId: selectedChurchId ?? null },
+    { selectedChurchId: selectedChurchId ?? null, validateCellSelection: false },
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
