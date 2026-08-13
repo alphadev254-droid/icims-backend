@@ -953,6 +953,7 @@ const createGuestMultipleDonationSchema = z.object({
   guestName: z.string().min(1),
   guestEmail: z.string().email().optional().or(z.literal('')),
   guestPhone: z.string().trim().min(1, 'Phone is required'),
+  donorType: z.enum(['member', 'guest']).optional().default('member'),
 });
 
 async function resolveDonationCampaigns(
@@ -1482,6 +1483,7 @@ const guestDonationSchema = z.object({
   guestEmail: z.string().email().optional().or(z.literal('')),
   guestPhone: z.string().trim().min(1, 'Phone is required'),
   cellId: z.string().optional(),
+  donorType: z.enum(['member', 'guest']).optional().default('member'),
 });
 
 export async function createGuestDonation(req: Request, res: Response): Promise<void> {
@@ -1494,7 +1496,7 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
     return;
   }
 
-  const { campaignId, churchId: selectedChurchId, amount, guestName, guestEmail, guestPhone, cellId } = parsed.data;
+  const { campaignId, churchId: selectedChurchId, amount, guestName, guestEmail, guestPhone, cellId, donorType } = parsed.data;
   const resolved = await resolveDonationCampaigns(
     [{ campaignId, amount, cellId }],
     true,
@@ -1513,11 +1515,20 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   const fees = calculatePaymentFees(amount, gatewayCountry);
-  const matchedMember = await findDonationMemberByContact({
-    churchId: resolved.churchId,
-    email: guestEmail,
-    phone: guestPhone,
-  });
+  const matchedMember = donorType === 'member'
+    ? await findDonationMemberByContact({
+        churchId: resolved.churchId,
+        email: guestEmail,
+        phone: guestPhone,
+      })
+    : null;
+  if (donorType === 'member' && !matchedMember) {
+    res.status(400).json({
+      success: false,
+      message: 'We could not find a church member account matching that church and contact details. Check the selected church, phone, or email, or continue as a guest.',
+    });
+    return;
+  }
   const checkoutEmail = guestEmail || matchedMember?.email || process.env.DEFAULT_PAYMENT_EMAIL || 'payments@churchcentral.church';
 
   const expiresAt = new Date();
@@ -1536,6 +1547,7 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
         campaignId,
         campaignName: campaign.name,
         isGuest: true,
+        donorType,
         guestName,
         guestEmail: guestEmail || null,
         guestPhone,
@@ -1573,7 +1585,7 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
     return;
   }
 
-  const { items, churchId: selectedChurchId, guestName, guestEmail, guestPhone } = parsed.data;
+  const { items, churchId: selectedChurchId, guestName, guestEmail, guestPhone, donorType } = parsed.data;
   const resolved = await resolveDonationCampaigns(items, true, { selectedChurchId });
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
@@ -1592,11 +1604,20 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
   const gatewayCountry = getGatewayCountry(gateway);
   const baseAmount = items.reduce((sum, item) => sum + item.amount, 0);
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
-  const matchedMember = await findDonationMemberByContact({
-    churchId: resolved.churchId,
-    email: guestEmail,
-    phone: guestPhone,
-  });
+  const matchedMember = donorType === 'member'
+    ? await findDonationMemberByContact({
+        churchId: resolved.churchId,
+        email: guestEmail,
+        phone: guestPhone,
+      })
+    : null;
+  if (donorType === 'member' && !matchedMember) {
+    res.status(400).json({
+      success: false,
+      message: 'We could not find a church member account matching that church and contact details. Check the selected church, phone, or email, or continue as a guest.',
+    });
+    return;
+  }
   const checkoutEmail = guestEmail || matchedMember?.email || process.env.DEFAULT_PAYMENT_EMAIL || 'payments@churchcentral.church';
 
   const expiresAt = new Date();
@@ -1622,6 +1643,7 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
           cellId: item.cellId || null,
         })),
         isGuest: true,
+        donorType,
         guestName,
         guestEmail: guestEmail || null,
         guestPhone,
