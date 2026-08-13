@@ -3,6 +3,7 @@ import { queueEmail } from './emailQueue';
 import { donationReceiptTemplate } from './emailTemplates';
 import { generateReceiptPDF } from './receiptPDF';
 import { creditChurchWallet } from '../utils/walletOperations';
+import { getEffectiveDonationDonor } from './donationMemberMatching';
 
 type DonationLine = {
   campaignId: string;
@@ -51,7 +52,7 @@ export async function createDonationRecordsForTransaction(args: {
 }) {
   const { pendingTx, metadata, transactionId, reference, currency, paymentMethod, gatewayCustomerEmail } = args;
   const lines = getDonationLines(metadata);
-  const isGuest = metadata.isGuest === true;
+  const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, metadata);
   const created: any[] = [];
 
   for (const line of lines) {
@@ -59,7 +60,7 @@ export async function createDonationRecordsForTransaction(args: {
     const donationTx = await prisma.donationTransaction.create({
       data: {
         campaignId: line.campaignId,
-        userId: isGuest ? null : pendingTx.userId,
+        userId: effectiveUserId,
         churchId: lineChurchId,
         amount: line.amount,
         currency,
@@ -68,10 +69,10 @@ export async function createDonationRecordsForTransaction(args: {
         paymentMethod,
         status: 'completed',
         isAnonymous: metadata.isAnonymous || false,
-        isGuest,
-        guestName: isGuest ? metadata.guestName : null,
-        guestEmail: isGuest ? metadata.guestEmail : null,
-        guestPhone: isGuest ? metadata.guestPhone : null,
+        isGuest: effectiveIsGuest,
+        guestName: effectiveIsGuest ? metadata.guestName : null,
+        guestEmail: effectiveIsGuest ? metadata.guestEmail : null,
+        guestPhone: effectiveIsGuest ? metadata.guestPhone : null,
         donorName: metadata.donorName,
         donorEmail: metadata.donorEmail,
         donorPhone: metadata.donorPhone,
@@ -82,10 +83,10 @@ export async function createDonationRecordsForTransaction(args: {
     });
 
     let pledgeId = line.pledgeId || null;
-    if (!pledgeId && !isGuest && pendingTx.userId && line.campaignId) {
+    if (!pledgeId && !effectiveIsGuest && effectiveUserId && line.campaignId) {
       const activePledge = await prisma.pledge.findFirst({
         where: {
-          userId: pendingTx.userId,
+          userId: effectiveUserId,
           campaignId: line.campaignId,
           status: { in: ['pending', 'partial', 'overdue'] },
         },
@@ -112,12 +113,14 @@ export async function createDonationRecordsForTransaction(args: {
     created.push(donationTx);
   }
 
-  const donor = isGuest
+  const donor = effectiveIsGuest || !effectiveUserId
     ? null
-    : await prisma.user.findUnique({ where: { id: pendingTx.userId }, select: { email: true, firstName: true, lastName: true } });
+    : await prisma.user.findUnique({ where: { id: effectiveUserId }, select: { email: true, firstName: true, lastName: true } });
 
   const guestFirstName = metadata.guestName?.split(' ')[0] || 'Donor';
-  const donorEmail = isGuest ? metadata.guestEmail : donor?.email || gatewayCustomerEmail || metadata.donorEmail;
+  const donorEmail = effectiveIsGuest
+    ? metadata.guestEmail
+    : metadata.guestEmail || donor?.email || gatewayCustomerEmail || metadata.donorEmail;
   if (!donorEmail) return created;
 
   const campaigns = await prisma.givingCampaign.findMany({
@@ -133,10 +136,10 @@ export async function createDonationRecordsForTransaction(args: {
   });
   const receivingChurchName = receivingChurch?.name || firstCampaign.church.name;
 
-  const donorFirstName = isGuest ? guestFirstName : donor?.firstName || 'Donor';
-  const donorFullName = isGuest
+  const donorFirstName = effectiveIsGuest ? guestFirstName : donor?.firstName || guestFirstName;
+  const donorFullName = effectiveIsGuest
     ? metadata.guestName || 'Donor'
-    : `${donor?.firstName || ''} ${donor?.lastName || ''}`.trim() || donorFirstName;
+    : `${donor?.firstName || ''} ${donor?.lastName || ''}`.trim() || metadata.guestName || donorFirstName;
   const totalBaseAmount = lines.reduce((sum, line) => sum + line.amount, 0);
   const isMultiple = lines.length > 1;
   const campaignName = isMultiple ? `${lines.length} giving items` : firstCampaign.name;
@@ -171,7 +174,7 @@ export async function createDonationRecordsForTransaction(args: {
       campaignName,
       reference,
       isAnonymous: metadata.isAnonymous || false,
-      isGuest,
+      isGuest: effectiveIsGuest,
       churchName: receivingChurchName,
     }),
     [{ filename: `donation-receipt-${reference}.pdf`, content: receiptPDF }],

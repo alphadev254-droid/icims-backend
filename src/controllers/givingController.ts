@@ -9,6 +9,7 @@ import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { givingCampaignCreatedTemplate } from '../lib/emailTemplates';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
+import { findDonationMemberByContact } from '../lib/donationMemberMatching';
 
 function donationLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
   return {
@@ -950,8 +951,8 @@ const createGuestMultipleDonationSchema = z.object({
   items: z.array(donationItemSchema.omit({ pledgeId: true })).min(1).max(20),
   churchId: z.string().optional(),
   guestName: z.string().min(1),
-  guestEmail: z.string().email(),
-  guestPhone: z.string().optional(),
+  guestEmail: z.string().email().optional().or(z.literal('')),
+  guestPhone: z.string().trim().min(1, 'Phone is required'),
 });
 
 async function resolveDonationCampaigns(
@@ -1233,7 +1234,7 @@ async function initiatePaystackDonation(
     const amountInKobo = Math.round(fees.totalAmount * 100);
     const isGuest = metadata.isGuest === true;
     const callbackUrl = isGuest
-      ? `${BACKEND_URL}/api/payments/verify?guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&isGuest=true&type=donation`
+      ? `${BACKEND_URL}/api/payments/verify?guestEmail=${encodeURIComponent(metadata.guestEmail || '')}&guestName=${encodeURIComponent(metadata.guestName)}&isGuest=true&type=donation`
       : `${BACKEND_URL}/api/payments/verify`;
     
     // Get church subaccount
@@ -1332,7 +1333,7 @@ async function initiatePaychanguDonation(
   try {
     const isGuest = metadata.isGuest === true;
     const returnUrl = isGuest
-      ? `${FRONTEND_URL}/payment/callback?status=success&type=donation&isGuest=true&reference=${tx_ref}&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=MWK`
+      ? `${FRONTEND_URL}/payment/callback?status=success&type=donation&isGuest=true&reference=${tx_ref}&guestEmail=${encodeURIComponent(metadata.guestEmail || '')}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=MWK`
       : `${FRONTEND_URL}/payment/callback?status=success&type=donation&reference=${tx_ref}`;
     
     const paychanguPayload = {
@@ -1478,8 +1479,8 @@ const guestDonationSchema = z.object({
   churchId: z.string().optional(),
   amount: z.number().positive(),
   guestName: z.string().min(1),
-  guestEmail: z.string().email(),
-  guestPhone: z.string().optional(),
+  guestEmail: z.string().email().optional().or(z.literal('')),
+  guestPhone: z.string().trim().min(1, 'Phone is required'),
   cellId: z.string().optional(),
 });
 
@@ -1512,6 +1513,12 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
   const currency = getCurrency(gateway);
   const gatewayCountry = getGatewayCountry(gateway);
   const fees = calculatePaymentFees(amount, gatewayCountry);
+  const matchedMember = await findDonationMemberByContact({
+    churchId: resolved.churchId,
+    email: guestEmail,
+    phone: guestPhone,
+  });
+  const checkoutEmail = guestEmail || matchedMember?.email || process.env.DEFAULT_PAYMENT_EMAIL || 'payments@churchcentral.church';
 
   const expiresAt = new Date();
   expiresAt.setMinutes(expiresAt.getMinutes() + 30);
@@ -1530,8 +1537,11 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
         campaignName: campaign.name,
         isGuest: true,
         guestName,
-        guestEmail,
-        guestPhone: guestPhone || null,
+        guestEmail: guestEmail || null,
+        guestPhone,
+        matchedMemberId: matchedMember?.id || null,
+        matchedMemberName: matchedMember ? `${matchedMember.firstName} ${matchedMember.lastName}`.trim() : null,
+        linkedFromGuestContact: !!matchedMember,
         isAnonymous: false,
         cellId: cellId || null,
         baseAmount: fees.baseAmount,
@@ -1548,9 +1558,9 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
   console.log(`[${traceId}] Pending transaction created: ${pendingTx.id}`);
 
   if (gateway === 'paychangu') {
-    return await initiatePaychanguDonation(pendingTx, guestEmail, guestEmail, fees, traceId, res);
+    return await initiatePaychanguDonation(pendingTx, checkoutEmail, guestEmail || matchedMember?.email || undefined, fees, traceId, res);
   } else {
-    return await initiatePaystackDonation(pendingTx, guestEmail, guestEmail, campaign, fees, currency, traceId, res);
+    return await initiatePaystackDonation(pendingTx, checkoutEmail, guestEmail || matchedMember?.email || undefined, campaign, fees, currency, traceId, res);
   }
 }
 
@@ -1582,6 +1592,12 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
   const gatewayCountry = getGatewayCountry(gateway);
   const baseAmount = items.reduce((sum, item) => sum + item.amount, 0);
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
+  const matchedMember = await findDonationMemberByContact({
+    churchId: resolved.churchId,
+    email: guestEmail,
+    phone: guestPhone,
+  });
+  const checkoutEmail = guestEmail || matchedMember?.email || process.env.DEFAULT_PAYMENT_EMAIL || 'payments@churchcentral.church';
 
   const expiresAt = new Date();
   expiresAt.setMinutes(expiresAt.getMinutes() + 30);
@@ -1607,8 +1623,11 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
         })),
         isGuest: true,
         guestName,
-        guestEmail,
-        guestPhone: guestPhone || null,
+        guestEmail: guestEmail || null,
+        guestPhone,
+        matchedMemberId: matchedMember?.id || null,
+        matchedMemberName: matchedMember ? `${matchedMember.firstName} ${matchedMember.lastName}`.trim() : null,
+        linkedFromGuestContact: !!matchedMember,
         isAnonymous: false,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
@@ -1623,9 +1642,9 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
 
   const firstCampaign = resolved.campaignMap.get(items[0].campaignId);
   if (gateway === 'paychangu') {
-    return await initiatePaychanguDonation(pendingTx, guestEmail, guestEmail, fees, traceId, res);
+    return await initiatePaychanguDonation(pendingTx, checkoutEmail, guestEmail || matchedMember?.email || undefined, fees, traceId, res);
   }
-  return await initiatePaystackDonation(pendingTx, guestEmail, guestEmail, firstCampaign, fees, currency, traceId, res);
+  return await initiatePaystackDonation(pendingTx, checkoutEmail, guestEmail || matchedMember?.email || undefined, firstCampaign, fees, currency, traceId, res);
 }
 
 export async function getDonationTransaction(req: Request, res: Response): Promise<void> {

@@ -14,6 +14,7 @@ import { recordPaymentEvent } from '../middleware/metrics';
 import { displayName, maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -801,11 +802,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
+        const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, pendingMetadata);
         
         // Create transaction
         const transaction = await prisma.transaction.create({
           data: {
-            userId: pendingMetadata.isGuest ? null : (metadata.userId || pendingTx.userId),
+            userId: effectiveUserId || metadata.userId || null,
             churchId: pendingTx.churchId,
             eventId: pendingMetadata.eventId,
             type: 'event_ticket',
@@ -834,10 +836,10 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             subaccountName: metadata.subaccountName || data.subaccount?.business_name,
             gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
             gatewayResponse: JSON.stringify(data),
-            isGuest: pendingMetadata.isGuest === true,
-            guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
-            guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
-            guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
+            isGuest: effectiveIsGuest,
+            guestName: effectiveIsGuest ? pendingMetadata.guestName : null,
+            guestEmail: effectiveIsGuest ? pendingMetadata.guestEmail : null,
+            guestPhone: effectiveIsGuest ? pendingMetadata.guestPhone : null,
           }
         });
         
@@ -1001,7 +1003,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
           const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
           const callbackUrl = isGuest
-            ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}`
+            ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail || '')}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}`
             : `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`;
           res.redirect(callbackUrl);
           return;
@@ -1024,11 +1026,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
+        const donationDonor = getEffectiveDonationDonor(pendingTx, pendingMetadata);
         
         // Create transaction
         const transaction = await prisma.transaction.create({
           data: {
-            userId: pendingMetadata.isGuest ? null : (metadata.userId || pendingTx.userId),
+            userId: donationDonor.effectiveUserId || metadata.userId || null,
             churchId: pendingTx.churchId,
             type: 'donation',
             amount: data.amount / 100,
@@ -1056,10 +1059,10 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
             subaccountName: metadata.subaccountName || data.subaccount?.business_name,
             gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
             gatewayResponse: JSON.stringify(data),
-            isGuest: pendingMetadata.isGuest === true,
-            guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
-            guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
-            guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
+            isGuest: donationDonor.effectiveIsGuest,
+            guestName: donationDonor.effectiveIsGuest ? pendingMetadata.guestName : null,
+            guestEmail: donationDonor.effectiveIsGuest ? pendingMetadata.guestEmail : null,
+            guestPhone: donationDonor.effectiveIsGuest ? pendingMetadata.guestPhone : null,
           }
         });
         
@@ -1090,7 +1093,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         console.log(`[${traceId}] Donation created`);
         const isGuestDonation = pendingMetadata.isGuest === true;
         const donationCallbackUrl = isGuestDonation
-          ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(pendingMetadata.guestEmail)}&guestName=${encodeURIComponent(pendingMetadata.guestName)}&amount=${pendingMetadata.baseAmount}&currency=${data.currency}`
+          ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(pendingMetadata.guestEmail || '')}&guestName=${encodeURIComponent(pendingMetadata.guestName)}&amount=${pendingMetadata.baseAmount}&currency=${data.currency}`
           : `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation`;
         res.redirect(donationCallbackUrl);
       } else {

@@ -9,6 +9,7 @@ import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -234,10 +235,11 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
 
       const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
       const amount = txData.amount / 100;
+      const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, pendingMetadata);
 
       const transaction = await prisma.transaction.create({
         data: {
-          userId: pendingMetadata.isGuest ? null : (metadata.userId || pendingTx.userId),
+          userId: effectiveUserId || metadata.userId || null,
           churchId: pendingTx.churchId,
           eventId: pendingMetadata.eventId,
           type: 'event_ticket',
@@ -266,10 +268,10 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
           subaccountName: metadata.subaccountName || txData.subaccount?.business_name,
           gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
           gatewayResponse: JSON.stringify(txData),
-          isGuest: pendingMetadata.isGuest === true,
-          guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
-          guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
-          guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
+          isGuest: effectiveIsGuest,
+          guestName: effectiveIsGuest ? pendingMetadata.guestName : null,
+          guestEmail: effectiveIsGuest ? pendingMetadata.guestEmail : null,
+          guestPhone: effectiveIsGuest ? pendingMetadata.guestPhone : null,
         }
       });
       console.log(`[${traceId}] Transaction created: ${transaction.id}`);
@@ -370,10 +372,11 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
 
       const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
       const amount = txData.amount / 100;
+      const donationDonor = getEffectiveDonationDonor(pendingTx, pendingMetadata);
 
       const transaction = await prisma.transaction.create({
         data: {
-          userId: pendingMetadata.isGuest ? null : (metadata.userId || pendingTx.userId),
+          userId: donationDonor.effectiveUserId || metadata.userId || null,
           churchId: pendingTx.churchId,
           type: 'donation',
           amount,
@@ -401,10 +404,10 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
           subaccountName: metadata.subaccountName || txData.subaccount?.business_name,
           gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
           gatewayResponse: JSON.stringify(txData),
-          isGuest: pendingMetadata.isGuest === true,
-          guestName: pendingMetadata.isGuest ? pendingMetadata.guestName : null,
-          guestEmail: pendingMetadata.isGuest ? pendingMetadata.guestEmail : null,
-          guestPhone: pendingMetadata.isGuest ? pendingMetadata.guestPhone : null,
+          isGuest: donationDonor.effectiveIsGuest,
+          guestName: donationDonor.effectiveIsGuest ? pendingMetadata.guestName : null,
+          guestEmail: donationDonor.effectiveIsGuest ? pendingMetadata.guestEmail : null,
+          guestPhone: donationDonor.effectiveIsGuest ? pendingMetadata.guestPhone : null,
         }
       });
       console.log(`[${traceId}] Transaction created: ${transaction.id}`);

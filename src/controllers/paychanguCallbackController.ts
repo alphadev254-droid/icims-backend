@@ -7,6 +7,7 @@ import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
   return {
@@ -244,9 +245,10 @@ if (pendingTx.type === 'event_ticket') {
   }
 
   // Not yet processed — create records
+  const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, metadata);
   const transaction = await prisma.transaction.create({
     data: {
-      userId: metadata.isGuest ? null : pendingTx.userId,
+      userId: effectiveUserId,
       churchId: pendingTx.churchId,
       eventId: metadata.eventId,
       type: 'event_ticket',
@@ -272,10 +274,10 @@ if (pendingTx.type === 'event_ticket') {
           authorizationCode: checkoutData.authorizationCode,
           cardLast4: checkoutData.cardLast4,
           cardBank: checkoutData.cardBank,
-      isGuest: metadata.isGuest === true,
-      guestName: metadata.isGuest ? metadata.guestName : null,
-      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
-      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+      isGuest: effectiveIsGuest,
+      guestName: effectiveIsGuest ? metadata.guestName : null,
+      guestEmail: effectiveIsGuest ? metadata.guestEmail : null,
+      guestPhone: effectiveIsGuest ? metadata.guestPhone : null,
     },
   });
 
@@ -402,9 +404,10 @@ if (pendingTx.type === 'donation') {
   }
 
   // 3. Verified + not processed — create records
+  const donationDonor = getEffectiveDonationDonor(pendingTx, metadata);
   const transaction = await prisma.transaction.create({
     data: {
-      userId: metadata.isGuest ? null : pendingTx.userId,
+      userId: donationDonor.effectiveUserId,
       churchId: pendingTx.churchId,
       type: 'donation',
       amount: metadata.totalAmount,
@@ -429,10 +432,10 @@ if (pendingTx.type === 'donation') {
       authorizationCode: checkoutData.authorizationCode,
       cardLast4: checkoutData.cardLast4,
       cardBank: checkoutData.cardBank,
-      isGuest: metadata.isGuest === true,
-      guestName: metadata.isGuest ? metadata.guestName : null,
-      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
-      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+      isGuest: donationDonor.effectiveIsGuest,
+      guestName: donationDonor.effectiveIsGuest ? metadata.guestName : null,
+      guestEmail: donationDonor.effectiveIsGuest ? metadata.guestEmail : null,
+      guestPhone: donationDonor.effectiveIsGuest ? metadata.guestPhone : null,
     },
   });
 
@@ -465,7 +468,7 @@ if (pendingTx.type === 'donation') {
   const donationTx = await prisma.donationTransaction.create({
     data: {
       campaignId: metadata.campaignId,
-      userId: metadata.isGuest ? null : pendingTx.userId,
+      userId: donationDonor.effectiveUserId,
       churchId: pendingTx.churchId,
       amount: metadata.baseAmount,
       currency: pendingTx.currency,
@@ -473,10 +476,10 @@ if (pendingTx.type === 'donation') {
       reference: String(tx_ref),
       status: 'completed',
       isAnonymous: metadata.isAnonymous || false,
-      isGuest: metadata.isGuest === true,
-      guestName: metadata.isGuest ? metadata.guestName : null,
-      guestEmail: metadata.isGuest ? metadata.guestEmail : null,
-      guestPhone: metadata.isGuest ? metadata.guestPhone : null,
+      isGuest: donationDonor.effectiveIsGuest,
+      guestName: donationDonor.effectiveIsGuest ? metadata.guestName : null,
+      guestEmail: donationDonor.effectiveIsGuest ? metadata.guestEmail : null,
+      guestPhone: donationDonor.effectiveIsGuest ? metadata.guestPhone : null,
       donorName: metadata.donorName,
       donorPhone: metadata.donorPhone,
       notes: metadata.notes,
@@ -489,9 +492,9 @@ if (pendingTx.type === 'donation') {
   if (metadata.pledgeId) {
     const { recalculatePledgeStatus } = await import('./pledgeController');
     await recalculatePledgeStatus(metadata.pledgeId);
-  } else if (!metadata.isGuest && pendingTx.userId && metadata.campaignId) {
+  } else if (!donationDonor.effectiveIsGuest && donationDonor.effectiveUserId && metadata.campaignId) {
     const activePledge = await prisma.pledge.findFirst({
-      where: { userId: pendingTx.userId, campaignId: metadata.campaignId, status: { in: ['pending', 'partial', 'overdue'] } },
+      where: { userId: donationDonor.effectiveUserId, campaignId: metadata.campaignId, status: { in: ['pending', 'partial', 'overdue'] } },
     });
     if (activePledge) {
       await prisma.donationTransaction.update({ where: { id: donationTx.id }, data: { pledgeId: activePledge.id } });
