@@ -13,6 +13,8 @@ const visitorSchema = z.object({
   ageBracket: z.string().optional(),
   howHeard: z.string().optional(),
   notes: z.string().optional(),
+  isNewConvert: z.boolean().optional().default(false),
+  invitedByUserId: z.string().optional(),
 });
 
 const schema = z.object({
@@ -56,8 +58,13 @@ const guestCheckInSchema = z.object({
   guestPhone: z.string().trim().min(1, 'Phone is required'),
   guestGender: z.string().trim().min(1, 'Gender is required'),
   guestAgeBracket: z.string().trim().min(1, 'Age is required'),
+  guestResidentialArea: z.string().optional(),
+  guestHowHeard: z.string().optional(),
+  guestNotes: z.string().optional(),
   guestFirstTime: z.boolean().optional(),
   invitedBy: z.string().optional(),
+  invitedByUserId: z.string().optional(),
+  isNewConvert: z.boolean().optional().default(false),
 });
 
 const manualMembersSchema = z.object({
@@ -81,6 +88,7 @@ const attendanceListSelect: any = {
   adults: true,
   seniors: true,
   newVisitors: true,
+  newConverts: true,
   serviceType: true,
   notes: true,
   eventId: true,
@@ -154,6 +162,47 @@ function attendanceIncrementData(gender?: string | null, ageBucket?: string | nu
   }
   if (isGuest) data.newVisitors = { increment: 1 };
   return data;
+}
+
+const visitorParticipantMethods = ['visitor_detail', 'legacy_visitor'];
+
+function visitorToParticipantData(visitor: z.infer<typeof visitorSchema>, attendanceId: string, method = 'visitor_detail') {
+  return {
+    attendanceId,
+    guestName: visitor.name.trim(),
+    guestEmail: visitor.email?.trim() || null,
+    guestPhone: visitor.phone?.trim() || null,
+    guestGender: visitor.gender?.trim() || null,
+    guestAgeBracket: visitor.ageBracket?.trim() || null,
+    guestResidentialArea: visitor.residentialArea?.trim() || null,
+    guestHowHeard: visitor.howHeard?.trim() || null,
+    guestNotes: visitor.notes?.trim() || null,
+    invitedByUserId: visitor.invitedByUserId?.trim() || null,
+    isNewConvert: visitor.isNewConvert ?? false,
+    guestFirstTime: false,
+    checkInMethod: method,
+    status: 'present',
+  };
+}
+
+function participantToVisitor(participant: any) {
+  return {
+    id: participant.id,
+    attendanceId: participant.attendanceId,
+    name: participant.guestName,
+    phone: participant.guestPhone,
+    email: participant.guestEmail,
+    residentialArea: participant.guestResidentialArea,
+    gender: participant.guestGender,
+    ageBracket: participant.guestAgeBracket,
+    howHeard: participant.guestHowHeard,
+    notes: participant.guestNotes,
+    invitedByUserId: participant.invitedByUserId,
+    invitedByUser: participant.invitedByUser,
+    isNewConvert: participant.isNewConvert,
+    createdAt: participant.createdAt,
+    attendance: participant.attendance,
+  };
 }
 
 function mergeAttendanceIncrement(target: any, increment: any) {
@@ -657,6 +706,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
 
   // Auto-set newVisitors count from visitors array if provided
   const newVisitorsCount = visitors && visitors.length > 0 ? visitors.length : data.newVisitors;
+  const newConvertsCount = visitors?.filter(v => v.isNewConvert).length ?? 0;
 
   // For event attendance, check if record exists for same event and date
   if (eventId) {
@@ -677,13 +727,14 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
           adults: data.adults,
           seniors: data.seniors,
           newVisitors: newVisitorsCount,
+          newConverts: newConvertsCount,
           serviceType: data.serviceType || existing.serviceType,
           notes: data.notes,
         },
       });
       if (visitors?.length) {
-        await prisma.attendanceVisitor.createMany({
-          data: visitors.map(v => ({ ...v, attendanceId: existing.id })),
+        await (prisma as any).attendanceParticipant.createMany({
+          data: visitors.map(v => visitorToParticipantData(v, existing.id)),
         });
       }
       res.json({ success: true, data: updated, updated: true });
@@ -694,11 +745,11 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   // Create new record with visitors in a transaction
   const record = await prisma.$transaction(async (tx) => {
     const attendance = await tx.attendance.create({
-      data: { ...data, newVisitors: newVisitorsCount, churchId: targetChurchId, eventId, date: attendanceDate },
+      data: { ...data, newVisitors: newVisitorsCount, newConverts: newConvertsCount, churchId: targetChurchId, eventId, date: attendanceDate },
     });
     if (visitors?.length) {
-      await tx.attendanceVisitor.createMany({
-        data: visitors.map(v => ({ ...v, attendanceId: attendance.id })),
+      await (tx as any).attendanceParticipant.createMany({
+        data: visitors.map(v => visitorToParticipantData(v, attendance.id)),
       });
     }
     return attendance;
@@ -850,7 +901,7 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
 
   const record = await prisma.attendance.findUnique({
     where: { id },
-    include: { church: true, _count: { select: { participants: true } } },
+    include: { church: true },
   });
   if (!record) {
     res.status(404).json({ success: false, message: 'Record not found' });
@@ -876,7 +927,13 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const summaryLocked = !!record.qrToken || record.digitalCheckInEnabled || (record as any)._count?.participants > 0;
+  const blockingParticipantCount = await (prisma as any).attendanceParticipant.count({
+    where: {
+      attendanceId: id,
+      checkInMethod: { notIn: visitorParticipantMethods },
+    },
+  });
+  const summaryLocked = !!record.qrToken || record.digitalCheckInEnabled || blockingParticipantCount > 0;
   const parsedAttendanceDate = parseRequiredDate(data.date, 'attendance date');
   if (!parsedAttendanceDate.ok) {
     res.status(400).json({ success: false, message: parsedAttendanceDate.message });
@@ -899,17 +956,20 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
   }
 
   const newVisitorsCount = visitors && visitors.length > 0 ? visitors.length : data.newVisitors;
+  const newConvertsCount = visitors?.filter(v => v.isNewConvert).length ?? 0;
 
   const updated = await prisma.$transaction(async (tx) => {
     const attendance = await tx.attendance.update({
       where: { id },
-      data: { ...data, newVisitors: newVisitorsCount, date: parsedAttendanceDate.date, churchId: targetChurchId, eventId },
+      data: { ...data, newVisitors: newVisitorsCount, newConverts: newConvertsCount, date: parsedAttendanceDate.date, churchId: targetChurchId, eventId },
     });
     if (visitors !== undefined) {
-      await tx.attendanceVisitor.deleteMany({ where: { attendanceId: id } });
+      await (tx as any).attendanceParticipant.deleteMany({
+        where: { attendanceId: id, checkInMethod: { in: visitorParticipantMethods } },
+      });
       if (visitors.length > 0) {
-        await tx.attendanceVisitor.createMany({
-          data: visitors.map(v => ({ ...v, attendanceId: id })),
+        await (tx as any).attendanceParticipant.createMany({
+          data: visitors.map(v => visitorToParticipantData(v, id)),
         });
       }
     }
@@ -926,16 +986,17 @@ export async function getAttendanceVisitors(req: Request, res: Response): Promis
   const skip  = (page - 1) * limit;
 
   const [visitors, total] = await Promise.all([
-    prisma.attendanceVisitor.findMany({
-      where: { attendanceId: id },
+    (prisma as any).attendanceParticipant.findMany({
+      where: { attendanceId: id, checkInMethod: { in: visitorParticipantMethods } },
+      include: { invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
       orderBy: { createdAt: 'asc' },
       skip,
       take: limit,
     }),
-    prisma.attendanceVisitor.count({ where: { attendanceId: id } }),
+    (prisma as any).attendanceParticipant.count({ where: { attendanceId: id, checkInMethod: { in: visitorParticipantMethods } } }),
   ]);
 
-  res.json({ success: true, data: visitors, total, hasMore: skip + visitors.length < total, page, limit });
+  res.json({ success: true, data: visitors.map(participantToVisitor), total, hasMore: skip + visitors.length < total, page, limit });
 }
 
 export async function addAttendanceVisitor(req: Request, res: Response): Promise<void> {
@@ -945,24 +1006,39 @@ export async function addAttendanceVisitor(req: Request, res: Response): Promise
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
     return;
   }
-  const visitor = await prisma.attendanceVisitor.create({
-    data: { ...parsed.data, attendanceId },
+  const participant = await (prisma as any).attendanceParticipant.create({
+    data: visitorToParticipantData(parsed.data, attendanceId),
+    include: { invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
   });
   // Keep newVisitors count in sync
   await prisma.attendance.update({
     where: { id: attendanceId },
-    data: { newVisitors: { increment: 1 } },
+    data: {
+      newVisitors: { increment: 1 },
+      ...(parsed.data.isNewConvert ? { newConverts: { increment: 1 } } : {}),
+    },
   });
-  res.status(201).json({ success: true, data: visitor });
+  res.status(201).json({ success: true, data: participantToVisitor(participant) });
 }
 
 export async function deleteAttendanceVisitor(req: Request, res: Response): Promise<void> {
   const attendanceId = String(req.params.id);
   const visitorId = String(req.params.visitorId);
-  await prisma.attendanceVisitor.delete({ where: { id: visitorId } });
+  const visitor = await (prisma as any).attendanceParticipant.findFirst({
+    where: { id: visitorId, attendanceId, checkInMethod: { in: visitorParticipantMethods } },
+    select: { isNewConvert: true },
+  });
+  if (!visitor) {
+    res.status(404).json({ success: false, message: 'Visitor not found' });
+    return;
+  }
+  await (prisma as any).attendanceParticipant.delete({ where: { id: visitorId } });
   await prisma.attendance.update({
     where: { id: attendanceId },
-    data: { newVisitors: { decrement: 1 } },
+    data: {
+      newVisitors: { decrement: 1 },
+      ...(visitor.isNewConvert ? { newConverts: { decrement: 1 } } : {}),
+    },
   });
   res.json({ success: true });
 }
@@ -998,6 +1074,7 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
           },
         },
         sourceChurch: { select: { id: true, name: true } },
+        invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
         eventTicket: {
           select: {
             id: true,
@@ -1305,14 +1382,22 @@ export async function addManualAttendanceVisitor(req: Request, res: Response): P
         guestPhone: data.guestPhone?.trim() || null,
         guestGender: data.guestGender?.trim() || null,
         guestAgeBracket: data.guestAgeBracket?.trim() || null,
+        guestResidentialArea: data.guestResidentialArea?.trim() || null,
+        guestHowHeard: data.guestHowHeard?.trim() || null,
+        guestNotes: data.guestNotes?.trim() || null,
         guestFirstTime: data.guestFirstTime ?? false,
         invitedBy: data.invitedBy?.trim() || null,
+        invitedByUserId: data.invitedByUserId?.trim() || null,
+        isNewConvert: data.isNewConvert ?? false,
         checkInMethod: 'manual_visitor',
       },
     });
     await (tx.attendance as any).update({
       where: { id: attendanceId },
-      data: attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+      data: {
+        ...attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+        ...(data.isNewConvert ? { newConverts: { increment: 1 } } : {}),
+      },
     });
     return created;
   });
@@ -1581,14 +1666,22 @@ export async function checkInGuestByQr(req: Request, res: Response): Promise<voi
         guestPhone: data.guestPhone?.trim() || null,
         guestGender: data.guestGender?.trim() || null,
         guestAgeBracket: data.guestAgeBracket?.trim() || null,
+        guestResidentialArea: data.guestResidentialArea?.trim() || null,
+        guestHowHeard: data.guestHowHeard?.trim() || null,
+        guestNotes: data.guestNotes?.trim() || null,
         guestFirstTime: data.guestFirstTime ?? false,
         invitedBy: data.invitedBy?.trim() || null,
+        invitedByUserId: data.invitedByUserId?.trim() || null,
+        isNewConvert: data.isNewConvert ?? false,
         checkInMethod: 'qr_guest',
       },
     });
     await (tx.attendance as any).update({
       where: { id: attendance.id },
-      data: attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+      data: {
+        ...attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+        ...(data.isNewConvert ? { newConverts: { increment: 1 } } : {}),
+      },
     });
     return created;
   });
@@ -1897,14 +1990,22 @@ export async function scanVisitorAttendance(req: Request, res: Response): Promis
         guestPhone: data.guestPhone?.trim() || null,
         guestGender: data.guestGender?.trim() || null,
         guestAgeBracket: data.guestAgeBracket?.trim() || null,
+        guestResidentialArea: data.guestResidentialArea?.trim() || null,
+        guestHowHeard: data.guestHowHeard?.trim() || null,
+        guestNotes: data.guestNotes?.trim() || null,
         guestFirstTime: data.guestFirstTime ?? false,
         invitedBy: data.invitedBy?.trim() || null,
+        invitedByUserId: data.invitedByUserId?.trim() || null,
+        isNewConvert: data.isNewConvert ?? false,
         checkInMethod: 'admin_visitor',
       },
     });
     await (tx.attendance as any).update({
       where: { id: attendanceId },
-      data: attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+      data: {
+        ...attendanceIncrementData(data.guestGender, ageBucketFromBracket(data.guestAgeBracket), true),
+        ...(data.isNewConvert ? { newConverts: { increment: 1 } } : {}),
+      },
     });
     return created;
   });
@@ -1945,19 +2046,38 @@ export async function getServiceVisitorsReport(req: Request, res: Response): Pro
   const skip = (page - 1) * limit;
 
   const [visitors, total] = await Promise.all([
-    prisma.attendanceVisitor.findMany({
-      where: { attendance: attendanceWhere },
+    (prisma as any).attendanceParticipant.findMany({
+      where: {
+        userId: null,
+        attendance: attendanceWhere,
+        OR: [
+          { checkInMethod: { in: visitorParticipantMethods } },
+          { checkInMethod: { contains: 'guest' } },
+          { checkInMethod: { contains: 'visitor' } },
+        ],
+      },
       include: {
         attendance: { select: { date: true, serviceType: true, church: { select: { name: true } } } },
+        invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
       },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
     }),
-    prisma.attendanceVisitor.count({ where: { attendance: attendanceWhere } }),
+    (prisma as any).attendanceParticipant.count({
+      where: {
+        userId: null,
+        attendance: attendanceWhere,
+        OR: [
+          { checkInMethod: { in: visitorParticipantMethods } },
+          { checkInMethod: { contains: 'guest' } },
+          { checkInMethod: { contains: 'visitor' } },
+        ],
+      },
+    }),
   ]);
 
-  res.json({ success: true, data: visitors, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  res.json({ success: true, data: visitors.map(participantToVisitor), pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function deleteAttendance(req: Request, res: Response): Promise<void> {

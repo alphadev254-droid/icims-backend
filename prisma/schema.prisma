@@ -148,11 +148,13 @@ model User {
   resourceViews          ResourceView[]
   cellMemberships        CellMember[]
   cellAttendance         CellAttendance[]
+  invitedCellAttendance  CellAttendance[] @relation("CellAttendanceInviter")
   pledges                Pledge[]
   churchProfile         ChurchProfile?
   deviceTokens          DeviceToken[]
   sharedAccessLinks     SharedAccessLink[]
   attendanceParticipants AttendanceParticipant[]
+  invitedAttendanceParticipants AttendanceParticipant[] @relation("AttendanceParticipantInviter")
   childGuardianLinks    ChildGuardian[]
   createdChildren       Child[] @relation("ChildCreator")
   childProfile          Child? @relation("ChildUser")
@@ -633,6 +635,7 @@ model Attendance {
   adults         Int      @default(0)  // 36-59 years
   seniors        Int      @default(0)  // 60+ years
   newVisitors    Int      @default(0)
+  newConverts    Int      @default(0)
   serviceType    String   @default("Sunday Service")
   sharedAccessLinkId String?
   notes              String?  @db.Text
@@ -666,8 +669,13 @@ model AttendanceParticipant {
   guestPhone     String?
   guestGender    String?
   guestAgeBracket String?
+  guestResidentialArea String?
+  guestHowHeard  String?
+  guestNotes     String?  @db.Text
   guestFirstTime Boolean  @default(false)
   invitedBy      String?
+  invitedByUserId String?
+  isNewConvert   Boolean  @default(false)
   checkInMethod  String   @default("qr_guest")
   status         String   @default("present")
   checkedInAt    DateTime @default(now())
@@ -678,6 +686,7 @@ model AttendanceParticipant {
   sourceChurch Church?   @relation(fields: [sourceChurchId], references: [id], onDelete: SetNull)
   eventTicket EventTicket? @relation(fields: [eventTicketId], references: [id], onDelete: SetNull)
   user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  invitedByUser User?   @relation("AttendanceParticipantInviter", fields: [invitedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([attendanceId, userId])
   @@index([attendanceId])
@@ -686,6 +695,8 @@ model AttendanceParticipant {
   @@index([guestPhone])
   @@index([guestGender])
   @@index([guestAgeBracket])
+  @@index([invitedByUserId])
+  @@index([isNewConvert])
   @@map("attendance_participants")
 }
 
@@ -1443,15 +1454,19 @@ model CellAttendance {
   visitorEmail    String?
   isFirstTime     Boolean  @default(true) // first-time vs returning visitor
   invitedByUserId String?  // which cell member invited this visitor
+  isNewConvert    Boolean  @default(false)
   notes           String?
   createdAt       DateTime @default(now())
 
   meeting         CellMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   user            User?       @relation(fields: [userId], references: [id])
+  invitedByUser   User?       @relation("CellAttendanceInviter", fields: [invitedByUserId], references: [id], onDelete: SetNull)
 
   @@index([meetingId])
   @@index([cellId])
   @@index([userId])
+  @@index([invitedByUserId])
+  @@index([isNewConvert])
   @@map("cell_attendance")
 }
 

@@ -524,9 +524,51 @@ const attendanceSchema = z.object({
       ageBracket: z.string().optional(),
       howHeard: z.string().optional(),
       notes: z.string().optional(),
+      isNewConvert: z.boolean().optional().default(false),
+      invitedByUserId: z.string().optional(),
     })
   ).optional(),
 });
+
+const visitorParticipantMethods = ['visitor_detail', 'legacy_visitor'];
+
+function visitorToParticipantData(visitor: any, attendanceId: string, method = 'visitor_detail') {
+  return {
+    attendanceId,
+    guestName: String(visitor.name || '').trim(),
+    guestEmail: visitor.email?.trim() || null,
+    guestPhone: visitor.phone?.trim() || null,
+    guestGender: visitor.gender?.trim() || null,
+    guestAgeBracket: visitor.ageBracket?.trim() || null,
+    guestResidentialArea: visitor.residentialArea?.trim() || null,
+    guestHowHeard: visitor.howHeard?.trim() || null,
+    guestNotes: visitor.notes?.trim() || null,
+    invitedByUserId: visitor.invitedByUserId?.trim() || null,
+    isNewConvert: visitor.isNewConvert ?? false,
+    guestFirstTime: false,
+    checkInMethod: method,
+    status: 'present',
+  };
+}
+
+function participantToVisitor(participant: any) {
+  return {
+    id: participant.id,
+    attendanceId: participant.attendanceId,
+    name: participant.guestName,
+    phone: participant.guestPhone,
+    email: participant.guestEmail,
+    residentialArea: participant.guestResidentialArea,
+    gender: participant.guestGender,
+    ageBracket: participant.guestAgeBracket,
+    howHeard: participant.guestHowHeard,
+    notes: participant.guestNotes,
+    invitedByUserId: participant.invitedByUserId,
+    invitedByUser: participant.invitedByUser,
+    isNewConvert: participant.isNewConvert,
+    createdAt: participant.createdAt,
+  };
+}
 
 export async function submitAttendance(req: Request, res: Response): Promise<void> {
   const token = String(req.params.token);
@@ -574,6 +616,7 @@ export async function submitAttendance(req: Request, res: Response): Promise<voi
 
   const { visitors, ...data } = parsed.data;
   const newVisitorsCount = visitors && visitors.length > 0 ? visitors.length : (data.newVisitors || 0);
+  const newConvertsCount = visitors?.filter((visitor: any) => visitor.isNewConvert).length ?? 0;
   const attendanceDate = new Date(data.date);
 
   // Use a transaction to create attendance + increment useCount
@@ -603,6 +646,7 @@ export async function submitAttendance(req: Request, res: Response): Promise<voi
         adults: data.adults || 0,
         seniors: data.seniors || 0,
         newVisitors: newVisitorsCount,
+        newConverts: newConvertsCount,
         notes: data.notes || null,
         sharedAccessLinkId: link.id,
       },
@@ -610,8 +654,8 @@ export async function submitAttendance(req: Request, res: Response): Promise<voi
 
     // Create visitors if provided
     if (visitors?.length) {
-      await tx.attendanceVisitor.createMany({
-        data: visitors.map((v: any) => ({ ...v, attendanceId: attendance.id })),
+      await (tx as any).attendanceParticipant.createMany({
+        data: visitors.map((v: any) => visitorToParticipantData(v, attendance.id)),
       });
     }
 
@@ -978,6 +1022,7 @@ export async function updateAttendanceByLink(req: Request, res: Response): Promi
 
   const { visitors, ...data } = parsed.data;
   const newVisitorsCount = visitors && visitors.length > 0 ? visitors.length : (data.newVisitors || 0);
+  const newConvertsCount = visitors?.filter((visitor: any) => visitor.isNewConvert).length ?? 0;
 
   const updated = await prisma.$transaction(async (tx) => {
     const attendance = await tx.attendance.update({
@@ -992,14 +1037,17 @@ export async function updateAttendanceByLink(req: Request, res: Response): Promi
         adults: data.adults || 0,
         seniors: data.seniors || 0,
         newVisitors: newVisitorsCount,
+        newConverts: newConvertsCount,
         notes: data.notes || null,
       },
     });
     if (visitors !== undefined) {
-      await tx.attendanceVisitor.deleteMany({ where: { attendanceId: id } });
+      await (tx as any).attendanceParticipant.deleteMany({
+        where: { attendanceId: id, checkInMethod: { in: visitorParticipantMethods } },
+      });
       if (visitors.length > 0) {
-        await tx.attendanceVisitor.createMany({
-          data: visitors.map((v: any) => ({ ...v, attendanceId: id })),
+        await (tx as any).attendanceParticipant.createMany({
+          data: visitors.map((v: any) => visitorToParticipantData(v, id)),
         });
       }
     }
@@ -1029,16 +1077,17 @@ export async function getVisitorsByLink(req: Request, res: Response): Promise<vo
   const skip = (page - 1) * limit;
 
   const [visitors, total] = await Promise.all([
-    prisma.attendanceVisitor.findMany({
-      where: { attendanceId: id },
+    (prisma as any).attendanceParticipant.findMany({
+      where: { attendanceId: id, checkInMethod: { in: visitorParticipantMethods } },
+      include: { invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
       orderBy: { createdAt: 'asc' },
       skip,
       take: limit,
     }),
-    prisma.attendanceVisitor.count({ where: { attendanceId: id } }),
+    (prisma as any).attendanceParticipant.count({ where: { attendanceId: id, checkInMethod: { in: visitorParticipantMethods } } }),
   ]);
 
-  res.json({ success: true, data: visitors, total, hasMore: skip + visitors.length < total, page, limit });
+  res.json({ success: true, data: visitors.map(participantToVisitor), total, hasMore: skip + visitors.length < total, page, limit });
 }
 
 // ─── Public: Add visitor to an attendance record via token ────────────────
@@ -1065,6 +1114,8 @@ export async function addVisitorByLink(req: Request, res: Response): Promise<voi
     ageBracket: z.string().optional(),
     howHeard: z.string().optional(),
     notes: z.string().optional(),
+    isNewConvert: z.boolean().optional().default(false),
+    invitedByUserId: z.string().optional(),
   });
 
   const parsed = visitorSchema.safeParse(req.body);
@@ -1073,16 +1124,20 @@ export async function addVisitorByLink(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const visitor = await prisma.attendanceVisitor.create({
-    data: { ...parsed.data, attendanceId: id },
+  const participant = await (prisma as any).attendanceParticipant.create({
+    data: visitorToParticipantData(parsed.data, id),
+    include: { invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
   });
 
   await prisma.attendance.update({
     where: { id },
-    data: { newVisitors: { increment: 1 } },
+    data: {
+      newVisitors: { increment: 1 },
+      ...(parsed.data.isNewConvert ? { newConverts: { increment: 1 } } : {}),
+    },
   });
 
-  res.status(201).json({ success: true, data: visitor });
+  res.status(201).json({ success: true, data: participantToVisitor(participant) });
 }
 
 // ─── Public: Delete visitor from an attendance record via token ───────────
@@ -1101,10 +1156,21 @@ export async function deleteVisitorByLink(req: Request, res: Response): Promise<
     return;
   }
 
-  await prisma.attendanceVisitor.delete({ where: { id: visitorId } });
+  const visitor = await (prisma as any).attendanceParticipant.findFirst({
+    where: { id: visitorId, attendanceId: id, checkInMethod: { in: visitorParticipantMethods } },
+    select: { id: true, isNewConvert: true },
+  });
+  if (!visitor) {
+    res.status(404).json({ success: false, message: 'Visitor not found' });
+    return;
+  }
+  await (prisma as any).attendanceParticipant.delete({ where: { id: visitor.id } });
   await prisma.attendance.update({
     where: { id },
-    data: { newVisitors: { decrement: 1 } },
+    data: {
+      newVisitors: { decrement: 1 },
+      ...(visitor.isNewConvert ? { newConverts: { decrement: 1 } } : {}),
+    },
   });
 
   res.json({ success: true, message: 'Visitor removed' });

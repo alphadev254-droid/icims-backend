@@ -865,7 +865,10 @@ export async function getMeetingAttendance(req: Request, res: Response): Promise
   const meetingId = String(req.params.meetingId);
   const attendance = await prisma.cellAttendance.findMany({
     where: { meetingId },
-    include: { user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true } } },
+    include: {
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, loginEnabled: true } },
+      invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+    },
     orderBy: { createdAt: 'asc' },
   });
   res.json({ success: true, data: attendance });
@@ -883,6 +886,7 @@ const attendanceSchema = z.object({
     visitorEmail: z.string().email().optional().or(z.literal('')),
     isFirstTime: z.boolean().optional().default(true),
     invitedByUserId: z.string().optional(),
+    isNewConvert: z.boolean().optional().default(false),
     notes: z.string().optional(),
   }).superRefine((record, ctx) => {
     if (record.isVisitor && !record.visitorPhone?.trim()) {
@@ -1633,6 +1637,8 @@ export async function getCellVisitors(req: Request, res: Response): Promise<void
         visitorPhone: true,
         visitorEmail: true,
         isFirstTime: true,
+        invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+        isNewConvert: true,
         notes: true,
         createdAt: true,
         meeting: {
