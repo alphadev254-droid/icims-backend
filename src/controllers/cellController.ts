@@ -709,36 +709,53 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
   ]);
 
   const memberIds = members.map(member => member.userId).filter(Boolean);
+  const earliestJoinedAt = members.reduce<Date | null>((earliest, member) => {
+    const joinedAt = member.joinedAt;
+    if (!earliest || joinedAt < earliest) return joinedAt;
+    return earliest;
+  }, null);
 
-  const [eligibleMeetings, attendanceRows, givingRows] = memberIds.length > 0
-    ? await Promise.all([
-        prisma.cellMeeting.findMany({
-          where: { cellId },
+  let eligibleMeetings: Array<{ id: string; date: Date }> = [];
+  let attendanceRows: Array<{ userId: string | null; meetingId: string; status: string; meeting?: { date: Date } }> = [];
+  let givingRows: any[] = [];
+
+  if (memberIds.length > 0) {
+    [attendanceRows, givingRows] = await Promise.all([
+      prisma.cellAttendance.findMany({
+        where: {
+          cellId,
+          userId: { in: memberIds },
+          isVisitor: false,
+        },
+        select: { userId: true, meetingId: true, status: true, meeting: { select: { date: true } } },
+      }),
+      prisma.donationTransaction.groupBy({
+        by: ['userId', 'currency'],
+        where: {
+          cellId,
+          userId: { in: memberIds },
+          status: 'completed',
+          isGuest: false,
+          isAnonymous: false,
+        },
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
+    ]);
+
+    const attendedMeetingIds = Array.from(new Set(attendanceRows.map(row => row.meetingId)));
+    const meetingOr: any[] = [];
+    if (earliestJoinedAt) meetingOr.push({ date: { gte: earliestJoinedAt } });
+    if (attendedMeetingIds.length > 0) meetingOr.push({ id: { in: attendedMeetingIds } });
+
+    eligibleMeetings = meetingOr.length > 0
+      ? await prisma.cellMeeting.findMany({
+          where: { cellId, OR: meetingOr },
           select: { id: true, date: true },
           orderBy: { date: 'asc' },
-        }),
-        prisma.cellAttendance.findMany({
-          where: {
-            cellId,
-            userId: { in: memberIds },
-            isVisitor: false,
-          },
-          select: { userId: true, meetingId: true, status: true, meeting: { select: { date: true } } },
-        }),
-        prisma.donationTransaction.groupBy({
-          by: ['userId', 'currency'],
-          where: {
-            cellId,
-            userId: { in: memberIds },
-            status: 'completed',
-            isGuest: false,
-            isAnonymous: false,
-          },
-          _sum: { amount: true },
-          _count: { id: true },
-        }),
-      ])
-    : [[], [], []];
+        })
+      : [];
+  }
 
   const givingByUser = new Map<string, { total: number; count: number; totalsByCurrency: Array<{ currency: string; total: number; count: number }> }>();
   for (const row of givingRows as any[]) {
