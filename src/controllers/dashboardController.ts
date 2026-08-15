@@ -72,7 +72,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
           totalMembers: 0, activeMembers: 0, totalChurches: 0,
           totalDonations: 0, upcomingEvents: 0, averageAttendance: 0,
           memberGrowth: 0, donationGrowth: 0, totalNewVisitors: 0,
-          retentionRate: 0, attendanceRate: 0, newMembersThisMonth: 0,
+          totalFirstTimeVisitors: 0, retentionRate: 0, attendanceRate: 0, newMembersThisMonth: 0,
           weeklyAttendance: [], monthlyGiving: [], totalChildren: 0, totalCells: 0, totalTeams: 0,
         },
       });
@@ -96,6 +96,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     prevMonthDonations,
     attendance,
     visitorsAggregate,
+    firstTimeVisitors,
     totalChildren,
     totalCells,
     totalTeams,
@@ -136,6 +137,13 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     prisma.attendance.aggregate({
       where: { churchId: { in: churchIds } },
       _sum: { newVisitors: true },
+    }),
+    (prisma as any).attendanceParticipant.count({
+      where: {
+        attendance: { churchId: { in: churchIds } },
+        userId: null,
+        guestFirstTime: true,
+      },
     }),
     prisma.child.count({ where: { churchId: { in: churchIds }, status: 'active' } }),
     prisma.cell.count({ where: { churchId: { in: churchIds } } }),
@@ -214,6 +222,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
       memberGrowth,
       donationGrowth,
       totalNewVisitors,
+      totalFirstTimeVisitors: firstTimeVisitors,
       retentionRate,
       attendanceRate,
       newMembersThisMonth,
