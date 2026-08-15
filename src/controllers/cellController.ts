@@ -709,19 +709,11 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
   ]);
 
   const memberIds = members.map(member => member.userId).filter(Boolean);
-  const earliestJoinedAt = members.reduce<Date | null>((earliest, member) => {
-    const joinedAt = member.joinedAt;
-    if (!earliest || joinedAt < earliest) return joinedAt;
-    return earliest;
-  }, null);
 
   const [eligibleMeetings, attendanceRows, givingRows] = memberIds.length > 0
     ? await Promise.all([
         prisma.cellMeeting.findMany({
-          where: {
-            cellId,
-            ...(earliestJoinedAt ? { date: { gte: earliestJoinedAt } } : {}),
-          },
+          where: { cellId },
           select: { id: true, date: true },
           orderBy: { date: 'asc' },
         }),

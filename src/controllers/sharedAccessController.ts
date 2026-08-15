@@ -689,7 +689,7 @@ export async function getAttendanceByLink(req: Request, res: Response): Promise<
   const records = await prisma.attendance.findMany({
     where: { sharedAccessLinkId: link.id },
     include: {
-      _count: { select: { visitors: true } },
+      _count: { select: { participants: true } },
     },
     orderBy: { date: 'desc' },
   });
