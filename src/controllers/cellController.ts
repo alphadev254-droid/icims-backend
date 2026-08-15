@@ -1387,6 +1387,40 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   const userId = req.user?.userId!;
   const roleName = req.user?.role ?? 'member';
   const churchId = req.user?.churchId;
+  const givingPeriod = String(req.query.givingPeriod ?? 'this_month');
+  const customStartDate = typeof req.query.givingStartDate === 'string' ? req.query.givingStartDate : undefined;
+  const customEndDate = typeof req.query.givingEndDate === 'string' ? req.query.givingEndDate : undefined;
+
+  const buildGivingDateRange = () => {
+    const now = new Date();
+    const start = new Date(now);
+    const end = new Date(now);
+    end.setHours(23, 59, 59, 999);
+
+    if (givingPeriod === 'custom') {
+      const customStart = customStartDate ? new Date(customStartDate) : undefined;
+      const customEnd = customEndDate ? new Date(customEndDate) : undefined;
+      if (customStart && !Number.isNaN(customStart.getTime())) customStart.setHours(0, 0, 0, 0);
+      if (customEnd && !Number.isNaN(customEnd.getTime())) customEnd.setHours(23, 59, 59, 999);
+      return { startDate: customStart, endDate: customEnd };
+    }
+
+    if (givingPeriod === 'this_week') {
+      const day = start.getDay();
+      const diff = day === 0 ? 6 : day - 1;
+      start.setDate(start.getDate() - diff);
+    } else if (givingPeriod === 'last_month') {
+      start.setMonth(start.getMonth() - 1, 1);
+      end.setDate(0);
+    } else if (givingPeriod === 'last_3_months') {
+      start.setMonth(start.getMonth() - 3);
+    } else {
+      start.setDate(1);
+    }
+
+    start.setHours(0, 0, 0, 0);
+    return { startDate: start, endDate: end };
+  };
 
   // ── Resolve accessible cell IDs ───────────────────────────────────────────
   let cellIds: string[];
@@ -1402,8 +1436,13 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     cellIds = cells.map(c => c.id);
   }
 
+  const givingDateRange = buildGivingDateRange();
+  const givingDateFilter: any = {};
+  if (givingDateRange.startDate) givingDateFilter.gte = givingDateRange.startDate;
+  if (givingDateRange.endDate) givingDateFilter.lte = givingDateRange.endDate;
+
   if (cellIds.length === 0) {
-    res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByGiving: [], topByAttendanceRate: [] } });
+    res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByGiving: [], topByAttendanceRate: [], cellGivingSummary: { currency: 'MWK', totalRaised: 0, startDate: givingDateRange.startDate?.toISOString() ?? null, endDate: givingDateRange.endDate?.toISOString() ?? null, topCampaigns: [] } } });
     return;
   }
 
@@ -1430,6 +1469,9 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     visitorCounts,
     // Per-cell giving totals
     givingPerCell,
+    periodGivingTotal,
+    topGivingCampaigns,
+    topGivingCampaignChurches,
     // Cell names for display
     cellNames,
   ] = await Promise.all([
@@ -1483,17 +1525,73 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       orderBy: { _sum: { amount: 'desc' } },
       take: 5,
     }),
+    prisma.donationTransaction.aggregate({
+      where: {
+        cellId: { in: cellIds },
+        status: 'completed',
+        ...(Object.keys(givingDateFilter).length > 0 ? { createdAt: givingDateFilter } : {}),
+      },
+      _sum: { amount: true },
+    }),
+    prisma.donationTransaction.groupBy({
+      by: ['campaignId', 'currency'],
+      where: {
+        cellId: { in: cellIds },
+        status: 'completed',
+        ...(Object.keys(givingDateFilter).length > 0 ? { createdAt: givingDateFilter } : {}),
+      },
+      _sum: { amount: true },
+      _count: { id: true },
+      orderBy: { _sum: { amount: 'desc' } },
+      take: 5,
+    }),
+    prisma.donationTransaction.groupBy({
+      by: ['campaignId', 'churchId'],
+      where: {
+        cellId: { in: cellIds },
+        status: 'completed',
+        ...(Object.keys(givingDateFilter).length > 0 ? { createdAt: givingDateFilter } : {}),
+      },
+      _count: { id: true },
+    }),
     prisma.cell.findMany({
       where: { id: { in: cellIds } },
-      select: { id: true, name: true, zone: true },
+      select: { id: true, name: true, zone: true, church: { select: { name: true } } },
     }),
   ]);
 
   // ── Build name lookup ─────────────────────────────────────────────────────
-  const nameMap = new Map(cellNames.map(c => [c.id, { name: c.name, zone: c.zone }]));
+  const nameMap = new Map(cellNames.map(c => [c.id, { name: c.name, zone: c.zone, churchName: c.church?.name }]));
   const label = (cellId: string) => {
     const c = nameMap.get(cellId);
     return c ? (c.zone ? `${c.name} (${c.zone})` : c.name) : cellId;
+  };
+
+  const campaignIds = topGivingCampaigns.map((c: any) => c.campaignId).filter(Boolean);
+  const topCampaignRecords = campaignIds.length > 0
+    ? await prisma.givingCampaign.findMany({
+        where: { id: { in: campaignIds } },
+        select: { id: true, name: true, church: { select: { name: true } } },
+      })
+    : [];
+  const campaignMap = new Map(topCampaignRecords.map(c => [c.id, c]));
+  const churchIdsForTopCampaigns = Array.from(new Set(topGivingCampaignChurches.map((row: any) => row.churchId).filter(Boolean)));
+  const churchRecordsForTopCampaigns = churchIdsForTopCampaigns.length > 0
+    ? await prisma.church.findMany({
+        where: { id: { in: churchIdsForTopCampaigns } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const churchNameMap = new Map(churchRecordsForTopCampaigns.map(c => [c.id, c.name]));
+  const campaignChurchLabel = (campaignId: string) => {
+    const churchIds = Array.from(new Set(
+      topGivingCampaignChurches
+        .filter((row: any) => row.campaignId === campaignId && row.churchId)
+        .map((row: any) => row.churchId),
+    ));
+    if (churchIds.length === 1) return churchNameMap.get(churchIds[0]) ?? campaignMap.get(campaignId)?.church?.name ?? null;
+    if (churchIds.length > 1) return `${churchIds.length} churches`;
+    return campaignMap.get(campaignId)?.church?.name ?? null;
   };
 
   // ── Overall attendance rate ───────────────────────────────────────────────
@@ -1565,6 +1663,24 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       topByVisitors: visitorCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByGiving: givingPerCell.filter(c => c.cellId).map(c => ({ id: c.cellId!, name: label(c.cellId!), total: c._sum.amount ?? 0 })),
       topByAttendanceRate,
+      cellGivingSummary: {
+        currency: topGivingCampaigns[0]?.currency ?? 'MWK',
+        totalRaised: periodGivingTotal._sum.amount ?? 0,
+        startDate: givingDateRange.startDate?.toISOString() ?? null,
+        endDate: givingDateRange.endDate?.toISOString() ?? null,
+        topCampaigns: topGivingCampaigns.map((row: any) => {
+          const campaign = campaignMap.get(row.campaignId);
+          return {
+            id: row.campaignId,
+            campaignId: row.campaignId,
+            name: campaign?.name ?? row.campaignId,
+            churchName: campaignChurchLabel(row.campaignId),
+            total: row._sum.amount ?? 0,
+            count: row._count.id,
+            currency: row.currency ?? 'MWK',
+          };
+        }),
+      },
     },
   });
 }
