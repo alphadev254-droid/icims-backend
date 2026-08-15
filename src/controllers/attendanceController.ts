@@ -100,7 +100,7 @@ const attendanceListSelect: any = {
   qrActiveUntil: true,
   qrRegeneratedAt: true,
   church: { select: { id: true, name: true, ministryAdminId: true } },
-  _count: { select: { visitors: true, participants: true } },
+  _count: { select: { participants: true } },
 };
 
 function generateQrToken() {
@@ -835,7 +835,7 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
         qrActiveFrom: qrActiveFrom.date || existing.qrActiveFrom || attendanceDate,
         qrActiveUntil: qrActiveUntil.date,
       },
-      include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+      include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
     });
     res.json({ success: true, data: updated, updated: true });
     return;
@@ -863,7 +863,7 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
       qrActiveFrom: effectiveQrActiveFrom,
       qrActiveUntil: qrActiveUntil.date,
     },
-    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
   });
 
   res.status(201).json({ success: true, data: record });
@@ -1463,7 +1463,7 @@ export async function updateAttendanceQrSettings(req: Request, res: Response): P
   const updated = await (prisma.attendance as any).update({
     where: { id: attendanceId },
     data,
-    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
   });
 
   res.json({ success: true, data: updated });
@@ -1485,7 +1485,7 @@ export async function activateAttendanceQr(req: Request, res: Response): Promise
       qrToken: access.record.qrToken || generateQrToken(),
       qrActiveFrom: access.record.qrActiveFrom || new Date(),
     },
-    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
   });
 
   res.json({ success: true, data: updated });
@@ -1502,7 +1502,7 @@ export async function closeAttendanceQr(req: Request, res: Response): Promise<vo
   const updated = await (prisma.attendance as any).update({
     where: { id: attendanceId },
     data: { qrStatus: 'closed', digitalCheckInEnabled: false },
-    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
   });
 
   res.json({ success: true, data: updated });
@@ -1519,7 +1519,7 @@ export async function regenerateAttendanceQr(req: Request, res: Response): Promi
   const updated = await (prisma.attendance as any).update({
     where: { id: attendanceId },
     data: { qrToken: generateQrToken(), qrRegeneratedAt: new Date() },
-    include: { church: { select: { id: true, name: true } }, _count: { select: { visitors: true, participants: true } } },
+    include: { church: { select: { id: true, name: true } }, _count: { select: { participants: true } } },
   });
 
   res.json({ success: true, data: updated });
