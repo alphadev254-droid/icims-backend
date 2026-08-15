@@ -1054,44 +1054,49 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 1000);
   const skip = (page - 1) * limit;
+  const participantType = String(req.query.participantType || 'all');
+  const validParticipantTypes = new Set(['all', 'visitors', 'ministry_member_guests', 'new_converts']);
+  if (!validParticipantTypes.has(participantType)) {
+    res.status(400).json({ success: false, message: 'Invalid participant type filter' });
+    return;
+  }
+  const participantWhere: any = {
+    attendanceId,
+    ...(participantType === 'new_converts' ? { isNewConvert: true } : {}),
+  };
 
   const participantDelegate = (prisma as any).attendanceParticipant;
-  const [participants, total] = await Promise.all([
-    participantDelegate.findMany({
-      where: { attendanceId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            memberType: true,
-            gender: true,
-            dateOfBirth: true,
-            church: { select: { id: true, name: true } },
-          },
-        },
-        sourceChurch: { select: { id: true, name: true } },
-        invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
-        eventTicket: {
-          select: {
-            id: true,
-            ticketNumber: true,
-            status: true,
-            attended: true,
-            attendedAt: true,
-            church: { select: { id: true, name: true } },
-          },
+  const participants = await participantDelegate.findMany({
+    where: participantWhere,
+    include: {
+      user: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          memberType: true,
+          gender: true,
+          dateOfBirth: true,
+          church: { select: { id: true, name: true } },
         },
       },
-      orderBy: { checkedInAt: 'desc' },
-      skip,
-      take: limit,
-    }),
-    participantDelegate.count({ where: { attendanceId } }),
-  ]);
+      sourceChurch: { select: { id: true, name: true } },
+      invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+      eventTicket: {
+        select: {
+          id: true,
+          ticketNumber: true,
+          status: true,
+          attended: true,
+          attendedAt: true,
+          church: { select: { id: true, name: true } },
+        },
+      },
+    },
+    orderBy: { checkedInAt: 'desc' },
+  });
 
   const attendanceMinistryId = access.record.church?.ministryAdminId;
   const guestEmails = participants
@@ -1164,8 +1169,21 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
       },
     };
   });
+  const filteredParticipants = enrichedParticipants.filter((participant: any) => {
+    if (participantType === 'visitors') return !participant.user && !participant.ministryMember;
+    if (participantType === 'ministry_member_guests') {
+      const userHomeChurchId = participant.user?.church?.id || '';
+      return Boolean(
+        participant.ministryMember ||
+        (participant.user && userHomeChurchId && userHomeChurchId !== access.record.churchId)
+      );
+    }
+    return true;
+  });
+  const total = filteredParticipants.length;
+  const pagedParticipants = filteredParticipants.slice(skip, skip + limit);
 
-  res.json({ success: true, data: enrichedParticipants, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  res.json({ success: true, data: pagedParticipants, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
 
 export async function searchAttendanceMembers(req: Request, res: Response): Promise<void> {
