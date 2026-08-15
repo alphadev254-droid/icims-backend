@@ -464,6 +464,7 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
         userId: true,
         guestEmail: true,
         guestPhone: true,
+        guestFirstTime: true,
         user: { select: { churchId: true } },
     },
   });
@@ -510,9 +511,9 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
     }
   }
 
-  const counts = new Map<string, { trueVisitors: number; ministryMemberGuests: number; checkedInParticipants: number }>();
+  const counts = new Map<string, { trueVisitors: number; ministryMemberGuests: number; checkedInParticipants: number; firstTimeVisitors: number }>();
   for (const id of attendanceIds) {
-    counts.set(id, { trueVisitors: 0, ministryMemberGuests: 0, checkedInParticipants: 0 });
+    counts.set(id, { trueVisitors: 0, ministryMemberGuests: 0, checkedInParticipants: 0, firstTimeVisitors: 0 });
   }
 
   for (const participant of participants) {
@@ -538,7 +539,10 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
     });
 
     if (matchedMinistryMember) rowCounts.ministryMemberGuests += 1;
-    else rowCounts.trueVisitors += 1;
+    else {
+      rowCounts.trueVisitors += 1;
+      if (participant.guestFirstTime) rowCounts.firstTimeVisitors += 1;
+    }
   }
 
   return records.map(record => ({
@@ -546,6 +550,7 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
     checkedInParticipants: counts.get(record.id)?.checkedInParticipants ?? 0,
     trueVisitors: counts.get(record.id)?.trueVisitors ?? 0,
     ministryMemberGuests: counts.get(record.id)?.ministryMemberGuests ?? 0,
+    firstTimeVisitors: counts.get(record.id)?.firstTimeVisitors ?? 0,
   }));
 }
 
