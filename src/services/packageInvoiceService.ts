@@ -2,7 +2,7 @@ import prisma from '../lib/prisma';
 import crypto from 'crypto';
 
 export type PackageInvoiceStatus = 'draft' | 'sent' | 'partially_paid' | 'paid' | 'overdue' | 'cancelled';
-const PUBLIC_INVOICE_PAYMENT_MONTHS = [1, 3, 6, 12];
+const PUBLIC_INVOICE_PAYMENT_MONTHS = Array.from({ length: 12 }, (_, index) => index + 1);
 
 export function parseNumber(value: unknown, fallback = 0): number {
   const numeric = Number(value);
