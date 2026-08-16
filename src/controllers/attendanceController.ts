@@ -342,6 +342,8 @@ async function findLinkedMemberByContact(attendance: any, email?: string | null,
     where: {
       churchId: { in: linkedChurchIds },
       status: 'active',
+      loginEnabled: true,
+      memberType: { not: 'child' },
       OR: contactWhere,
     },
     select: {
@@ -485,6 +487,8 @@ async function enrichAttendanceRecordsWithParticipantCounts(records: any[]) {
     ? await prisma.user.findMany({
         where: {
           status: 'active',
+          loginEnabled: true,
+          memberType: { not: 'child' },
           OR: [
             ...(guestEmails.length ? [{ email: { in: guestEmails } }] : []),
             ...(guestPhones.length ? [{ phone: { in: guestPhones } }] : []),
@@ -1131,6 +1135,8 @@ export async function getAttendanceParticipants(req: Request, res: Response): Pr
           },
         ],
         status: 'active',
+        loginEnabled: true,
+        memberType: { not: 'child' },
       },
       select: {
         id: true,
@@ -1746,10 +1752,11 @@ export async function scanMemberAttendanceQr(req: Request, res: Response): Promi
       gender: true,
       dateOfBirth: true,
       status: true,
+      loginEnabled: true,
     },
   });
 
-  if (!member || member.status !== 'active') {
+  if (!member || member.status !== 'active' || member.loginEnabled === false) {
     res.status(404).json({ success: false, message: 'Member QR not found or inactive' });
     return;
   }
@@ -1863,6 +1870,13 @@ export async function scanEventTicketAttendance(req: Request, res: Response): Pr
     },
   });
   if (existingByTicket) {
+    if (existingByTicket.attendanceId !== attendanceId) {
+      res.status(409).json({
+        success: false,
+        message: 'This ticket was already checked in on another attendance record',
+      });
+      return;
+    }
     res.json({ success: true, data: existingByTicket, alreadyCheckedIn: true });
     return;
   }

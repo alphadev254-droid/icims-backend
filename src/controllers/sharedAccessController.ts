@@ -767,6 +767,30 @@ function extractQrToken(value: string) {
   return decodeURIComponent(match?.[1] || trimmed);
 }
 
+function eventChurchIds(event: any): string[] {
+  const ids = new Set<string>();
+  if (event?.churchId) ids.add(event.churchId);
+  for (const link of event?.linkedChurches || []) {
+    if (link.churchId) ids.add(link.churchId);
+  }
+  return Array.from(ids);
+}
+
+async function getAttendanceLinkedChurchIds(attendance: any) {
+  if (!attendance.eventId) return [attendance.churchId].filter(Boolean);
+  const event = await (prisma.event as any).findUnique({
+    where: { id: attendance.eventId },
+    include: { linkedChurches: { select: { churchId: true } } },
+  });
+  return event ? eventChurchIds(event) : [attendance.churchId].filter(Boolean);
+}
+
+async function attendanceAcceptsChurch(attendance: any, churchId?: string | null) {
+  if (!churchId) return false;
+  const linkedChurchIds = await getAttendanceLinkedChurchIds(attendance);
+  return linkedChurchIds.includes(churchId);
+}
+
 async function verifyCodeIfNeeded(link: any, code?: string) {
   if (!link.accessCode) return true;
   if (!code) return false;
@@ -825,9 +849,10 @@ export async function searchMembersByScannerLink(req: Request, res: Response): P
     return;
   }
 
+  const linkedChurchIds = await getAttendanceLinkedChurchIds(attendance);
   const terms = q.split(/\s+/).filter(Boolean);
   const where: any = {
-    churchId: attendance.churchId,
+    churchId: { in: linkedChurchIds },
     status: 'active',
     OR: [
       { firstName: { contains: q } },
@@ -852,7 +877,7 @@ export async function searchMembersByScannerLink(req: Request, res: Response): P
   const [members, total] = await Promise.all([
     prisma.user.findMany({
       where,
-      select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
+      select: { id: true, churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
       orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       skip,
       take: limit,
@@ -889,13 +914,14 @@ export async function addMembersByScannerLink(req: Request, res: Response): Prom
   const { link, attendance } = context;
 
   const userIds = Array.from(new Set(parsed.data.userIds));
+  const linkedChurchIds = await getAttendanceLinkedChurchIds(attendance);
   const members = await prisma.user.findMany({
-    where: { id: { in: userIds }, churchId: attendance.churchId, status: 'active' },
-    select: { id: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
+    where: { id: { in: userIds }, churchId: { in: linkedChurchIds }, status: 'active' },
+    select: { id: true, churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
   });
 
   if (!members.length) {
-    res.status(400).json({ success: false, message: 'No valid members found for this church' });
+    res.status(400).json({ success: false, message: 'No valid members found for this attendance' });
     return;
   }
 
@@ -913,7 +939,12 @@ export async function addMembersByScannerLink(req: Request, res: Response): Prom
 
     for (const member of membersToAdd) {
       rows.push(await (tx as any).attendanceParticipant.create({
-        data: { attendanceId: attendance.id, userId: member.id, checkInMethod: 'shared_scanner_search' },
+        data: {
+          attendanceId: attendance.id,
+          sourceChurchId: member.churchId,
+          userId: member.id,
+          checkInMethod: 'shared_scanner_search',
+        },
         include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
       }));
       const memberIncrement = attendanceIncrementData(member.gender, ageBucketForMember(member));
@@ -961,14 +992,14 @@ export async function scanMemberByScannerLink(req: Request, res: Response): Prom
 
   const member = await prisma.user.findUnique({
     where: { attendanceQrToken: memberToken } as any,
-    select: { id: true, churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true, status: true },
+    select: { id: true, churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true, status: true, loginEnabled: true },
   });
-  if (!member || member.status !== 'active') {
+  if (!member || member.status !== 'active' || member.loginEnabled === false) {
     res.status(404).json({ success: false, message: 'Member QR not found or inactive' });
     return;
   }
-  if (member.churchId !== attendance.churchId) {
-    res.status(403).json({ success: false, message: 'This member belongs to a different church' });
+  if (!(await attendanceAcceptsChurch(attendance, member.churchId))) {
+    res.status(403).json({ success: false, message: 'This member belongs to a church not linked to this attendance' });
     return;
   }
 
@@ -984,7 +1015,12 @@ export async function scanMemberByScannerLink(req: Request, res: Response): Prom
 
   const participant = await prisma.$transaction(async (tx) => {
     const created = await (tx as any).attendanceParticipant.create({
-      data: { attendanceId: attendance.id, userId: member.id, checkInMethod: 'shared_scanner' },
+      data: {
+        attendanceId: attendance.id,
+        sourceChurchId: member.churchId,
+        userId: member.id,
+        checkInMethod: 'shared_scanner',
+      },
       include: { user: { select: { firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true } } },
     });
     await (tx.attendance as any).update({

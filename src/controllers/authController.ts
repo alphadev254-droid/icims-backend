@@ -823,11 +823,15 @@ export async function getAttendanceQr(req: Request, res: Response): Promise<void
 
   const existing = await (prisma.user as any).findUnique({
     where: { id: req.user.userId },
-    select: { id: true, attendanceQrToken: true },
+    select: { id: true, attendanceQrToken: true, loginEnabled: true, memberType: true, status: true },
   });
 
   if (!existing) {
     res.status(404).json({ success: false, message: 'User not found' });
+    return;
+  }
+  if (existing.status !== 'active' || existing.loginEnabled === false || existing.memberType === 'child') {
+    res.status(403).json({ success: false, message: 'Attendance QR is only available for active member accounts' });
     return;
   }
 
