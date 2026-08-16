@@ -181,6 +181,7 @@ const invoiceSchema = z.object({
   ministryAdminId: z.string().min(1),
   packageId: z.string().min(1),
   billingCycle: z.enum(['monthly', 'yearly', 'custom']).default('monthly'),
+  months: z.coerce.number().int().positive().optional(),
   amount: z.number().positive().optional(),
   currency: z.enum(['MWK', 'KES']).optional(),
   invoiceDate: z.string().optional(),
@@ -207,13 +208,17 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
   if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
 
   const servicePeriodStart = parseDate(parsed.data.servicePeriodStart, 'servicePeriodStart');
-  const servicePeriodEnd = parsed.data.servicePeriodEnd
-    ? parseDate(parsed.data.servicePeriodEnd, 'servicePeriodEnd')
-    : addBillingCycle(servicePeriodStart, parsed.data.billingCycle);
+  const invoiceMonths = parsed.data.billingCycle === 'yearly' ? 12 : Math.max(1, parsed.data.months || 1);
+  const servicePeriodEnd = addBillingCycle(servicePeriodStart, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly');
+  if (parsed.data.billingCycle !== 'yearly') {
+    servicePeriodEnd.setTime(servicePeriodStart.getTime());
+    servicePeriodEnd.setMonth(servicePeriodEnd.getMonth() + invoiceMonths);
+    servicePeriodEnd.setDate(servicePeriodEnd.getDate() - 1);
+  }
   const invoiceDate = parsed.data.invoiceDate ? parseDate(parsed.data.invoiceDate, 'invoiceDate') : new Date();
   const dueDate = parseDate(parsed.data.dueDate, 'dueDate');
   const currency = parsed.data.currency || getCurrencyForCountry(admin.accountCountry);
-  const amount = parsed.data.amount ?? defaultPackageAmount(pkg, parsed.data.billingCycle, admin.accountCountry);
+  const amount = defaultPackageAmount(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry) * (parsed.data.billingCycle === 'yearly' ? 1 : invoiceMonths);
 
   const invoice = await prisma.packageInvoice.create({
     data: {
