@@ -12,7 +12,7 @@ import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
-import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from '../services/packageInvoiceService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function safeJsonParse(value: string): any {
@@ -308,7 +308,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
   });
 
   const checkoutData = getPaychanguCheckoutData(verifyPayload, payload);
-  await prisma.payment.create({
+  const payment = await prisma.payment.create({
     data: {
       ministryAdminId: metadata.ministryAdminId,
       packageId: metadata.packageId,
@@ -338,7 +338,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
   });
 
   if (metadata.invoiceId) {
-    await recalculatePackageInvoice(metadata.invoiceId);
+    await applyPackagePaymentToInvoices(payment.id, metadata);
   } else {
     await activateSubscriptionFromInvoice({
       ministryAdminId: metadata.ministryAdminId,

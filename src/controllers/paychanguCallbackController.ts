@@ -6,7 +6,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
-import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from '../services/packageInvoiceService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
@@ -156,7 +156,7 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
       console.log(`[${traceId}] Payment record created: ${payment.id}`);
 
       if (metadata.invoiceId) {
-        await recalculatePackageInvoice(metadata.invoiceId);
+        await applyPackagePaymentToInvoices(payment.id, metadata);
       } else {
         await activateSubscriptionFromInvoice({
           ministryAdminId: metadata.ministryAdminId,

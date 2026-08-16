@@ -2,6 +2,7 @@ import prisma from '../lib/prisma';
 import crypto from 'crypto';
 
 export type PackageInvoiceStatus = 'draft' | 'sent' | 'partially_paid' | 'paid' | 'overdue' | 'cancelled';
+const PUBLIC_INVOICE_PAYMENT_MONTHS = [1, 3, 6, 12];
 
 export function parseNumber(value: unknown, fallback = 0): number {
   const numeric = Number(value);
@@ -14,6 +15,71 @@ export function addBillingCycle(start: Date, billingCycle: string): Date {
   else end.setMonth(end.getMonth() + 1);
   end.setDate(end.getDate() - 1);
   return end;
+}
+
+export function allowedPublicInvoicePaymentMonths(invoice?: { billingCycle?: string | null; servicePeriodStart?: Date; servicePeriodEnd?: Date }) {
+  if (invoice?.billingCycle === 'yearly') return [12];
+  const invoiceMonths = invoice?.servicePeriodStart && invoice?.servicePeriodEnd
+    ? invoiceCoveredMonths(invoice as { billingCycle?: string | null; servicePeriodStart: Date; servicePeriodEnd: Date })
+    : 1;
+  return Array.from(new Set([...PUBLIC_INVOICE_PAYMENT_MONTHS, invoiceMonths]))
+    .filter(months => months >= invoiceMonths)
+    .sort((a, b) => a - b);
+}
+
+export function invoiceCoveredMonths(invoice: { billingCycle?: string | null; servicePeriodStart: Date; servicePeriodEnd: Date }) {
+  if (invoice.billingCycle === 'yearly') return 12;
+  const start = new Date(invoice.servicePeriodStart);
+  const end = new Date(invoice.servicePeriodEnd);
+  const monthDiff = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
+  return Math.max(1, monthDiff);
+}
+
+export function addMonthsPeriod(start: Date, months: number) {
+  const periodStart = new Date(start);
+  const periodEnd = new Date(periodStart);
+  periodEnd.setMonth(periodEnd.getMonth() + months);
+  periodEnd.setDate(periodEnd.getDate() - 1);
+  return { periodStart, periodEnd };
+}
+
+export function publicInvoicePaymentQuote(invoice: {
+  amount: number;
+  balanceDue: number;
+  billingCycle?: string | null;
+  servicePeriodStart: Date;
+  servicePeriodEnd: Date;
+}, selectedMonths: number) {
+  const allowedMonths = allowedPublicInvoicePaymentMonths(invoice);
+  if (!allowedMonths.includes(selectedMonths)) {
+    throw new Error(`Payment months must be one of: ${allowedMonths.join(', ')}`);
+  }
+
+  const originalInvoiceMonths = invoiceCoveredMonths(invoice);
+  if (selectedMonths < originalInvoiceMonths) {
+    throw new Error(`This invoice covers ${originalInvoiceMonths} month${originalInvoiceMonths === 1 ? '' : 's'}, so payment cannot be less than that period`);
+  }
+
+  const monthlyAmount = parseNumber(invoice.amount) / originalInvoiceMonths;
+  const extraMonths = Math.max(0, selectedMonths - originalInvoiceMonths);
+  const originalAmountDue = Math.max(0, parseNumber(invoice.balanceDue, invoice.amount));
+  const extraAmount = Math.round(monthlyAmount * extraMonths * 100) / 100;
+  const baseAmount = Math.round((originalAmountDue + extraAmount) * 100) / 100;
+  const extraPeriodStart = new Date(invoice.servicePeriodEnd);
+  extraPeriodStart.setDate(extraPeriodStart.getDate() + 1);
+  const extraPeriod = extraMonths > 0 ? addMonthsPeriod(extraPeriodStart, extraMonths) : null;
+
+  return {
+    selectedMonths,
+    originalInvoiceMonths,
+    extraMonths,
+    monthlyAmount: Math.round(monthlyAmount * 100) / 100,
+    originalAmountDue,
+    extraAmount,
+    baseAmount,
+    extraPeriodStart: extraPeriod?.periodStart ?? null,
+    extraPeriodEnd: extraPeriod?.periodEnd ?? null,
+  };
 }
 
 export async function generateInvoiceNumber(): Promise<string> {
@@ -53,12 +119,21 @@ export async function recalculatePackageInvoice(invoiceId: string) {
   const invoice = await prisma.packageInvoice.findUnique({ where: { id: invoiceId } });
   if (!invoice) return null;
 
-  const paidAgg = await prisma.payment.aggregate({
-    where: { invoiceId, status: 'completed' },
-    _sum: { baseAmount: true, amount: true },
-  });
+  const [legacyPaidAgg, linkedPaidAgg] = await Promise.all([
+    prisma.payment.aggregate({
+      where: { invoiceId, status: 'completed' },
+      _sum: { baseAmount: true, amount: true },
+    }),
+    prisma.packagePaymentInvoice.aggregate({
+      where: { invoiceId, payment: { status: 'completed' } },
+      _sum: { amount: true },
+    }),
+  ]);
 
-  const amountPaid = parseNumber(paidAgg._sum?.baseAmount, parseNumber(paidAgg._sum?.amount));
+  const amountPaid = Math.max(
+    parseNumber(legacyPaidAgg._sum?.baseAmount, parseNumber(legacyPaidAgg._sum?.amount)),
+    parseNumber(linkedPaidAgg._sum?.amount),
+  );
   const balanceDue = Math.max(0, invoice.amount - amountPaid);
   const now = new Date();
   const status: PackageInvoiceStatus = invoice.status === 'cancelled'
@@ -89,6 +164,111 @@ export async function recalculatePackageInvoice(invoiceId: string) {
   }
 
   return updated;
+}
+
+export async function applyPackagePaymentToInvoices(paymentId: string, metadata: any = {}) {
+  const invoiceId = metadata.invoiceId;
+  if (!invoiceId) {
+    return null;
+  }
+
+  const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+  const invoice = await prisma.packageInvoice.findUnique({ where: { id: invoiceId } });
+  if (!payment || !invoice) return null;
+
+  const selectedMonths = parseNumber(metadata.invoicePaymentMonths, invoiceCoveredMonths(invoice));
+  const originalInvoiceMonths = parseNumber(metadata.originalInvoiceMonths, invoiceCoveredMonths(invoice));
+  const extraMonths = Math.max(0, parseNumber(metadata.extraInvoiceMonths, selectedMonths - originalInvoiceMonths));
+  const originalAmount = Math.min(invoice.amount, parseNumber(metadata.originalInvoiceAmountDue, invoice.balanceDue || invoice.amount));
+  const extraAmount = parseNumber(metadata.extraInvoiceAmount, 0);
+
+  await prisma.packagePaymentInvoice.upsert({
+    where: { paymentId_invoiceId: { paymentId, invoiceId: invoice.id } },
+    create: {
+      paymentId,
+      invoiceId: invoice.id,
+      amount: originalAmount,
+      currency: invoice.currency,
+      role: 'primary',
+      months: originalInvoiceMonths,
+    },
+    update: {
+      amount: originalAmount,
+      currency: invoice.currency,
+      role: 'primary',
+      months: originalInvoiceMonths,
+    },
+  });
+
+  let extensionInvoice: any = null;
+  if (extraMonths > 0 && extraAmount > 0) {
+    const extensionPeriodStart = metadata.extraInvoiceServicePeriodStart
+      ? new Date(metadata.extraInvoiceServicePeriodStart)
+      : new Date(invoice.servicePeriodEnd);
+    if (!metadata.extraInvoiceServicePeriodStart) extensionPeriodStart.setDate(extensionPeriodStart.getDate() + 1);
+    const extensionPeriodEnd = metadata.extraInvoiceServicePeriodEnd
+      ? new Date(metadata.extraInvoiceServicePeriodEnd)
+      : addMonthsPeriod(extensionPeriodStart, extraMonths).periodEnd;
+
+    extensionInvoice = await prisma.packageInvoice.create({
+      data: {
+        invoiceNumber: await generateInvoiceNumber(),
+        ministryAdminId: invoice.ministryAdminId,
+        packageId: invoice.packageId,
+        packageName: invoice.packageName,
+        billingCycle: 'custom',
+        currency: invoice.currency,
+        amount: extraAmount,
+        amountPaid: extraAmount,
+        balanceDue: 0,
+        status: 'paid',
+        invoiceDate: new Date(),
+        dueDate: invoice.dueDate,
+        servicePeriodStart: extensionPeriodStart,
+        servicePeriodEnd: extensionPeriodEnd,
+        notes: `Subscription extension paid together with invoice ${invoice.invoiceNumber}.`,
+        terms: invoice.terms,
+        lineItems: JSON.stringify([{
+          description: `${invoice.packageName} subscription extension`,
+          months: extraMonths,
+          amount: extraAmount,
+          parentInvoiceId: invoice.id,
+          parentInvoiceNumber: invoice.invoiceNumber,
+        }]),
+        paidAt: payment.paidAt || new Date(),
+        createdById: invoice.createdById,
+      },
+    });
+
+    await prisma.packagePaymentInvoice.upsert({
+      where: { paymentId_invoiceId: { paymentId, invoiceId: extensionInvoice.id } },
+      create: {
+        paymentId,
+        invoiceId: extensionInvoice.id,
+        amount: extraAmount,
+        currency: invoice.currency,
+        role: 'extension',
+        months: extraMonths,
+      },
+      update: {
+        amount: extraAmount,
+        currency: invoice.currency,
+        role: 'extension',
+        months: extraMonths,
+      },
+    });
+  }
+
+  const updatedPrimary = await recalculatePackageInvoice(invoice.id);
+  const subscriptionEnd = extensionInvoice?.servicePeriodEnd || updatedPrimary?.servicePeriodEnd || invoice.servicePeriodEnd;
+  await activateSubscriptionFromInvoice({
+    ministryAdminId: invoice.ministryAdminId,
+    packageId: invoice.packageId,
+    servicePeriodStart: invoice.servicePeriodStart,
+    servicePeriodEnd: subscriptionEnd,
+  });
+
+  return { invoice: updatedPrimary, extensionInvoice };
 }
 
 export async function activateSubscriptionFromInvoice(invoice: {
@@ -144,6 +324,25 @@ export const packageInvoiceInclude = {
       paidAt: true,
       createdAt: true,
       gateway: true,
+    },
+  },
+  paymentLinks: {
+    include: {
+      payment: {
+        select: {
+          id: true,
+          amount: true,
+          baseAmount: true,
+          currency: true,
+          status: true,
+          paymentMethod: true,
+          reference: true,
+          notes: true,
+          paidAt: true,
+          createdAt: true,
+          gateway: true,
+        },
+      },
     },
   },
 };

@@ -936,6 +936,7 @@ model Payment {
 
   package         Package? @relation(fields: [packageId], references: [id])
   invoice         PackageInvoice? @relation(fields: [invoiceId], references: [id])
+  invoiceLinks    PackagePaymentInvoice[]
   createdBy       User? @relation("PackageInvoicePaymentCreator", fields: [createdById], references: [id])
 
   @@index([ministryAdminId])
@@ -978,6 +979,7 @@ model PackageInvoice {
   package       Package @relation(fields: [packageId], references: [id])
   createdBy     User?   @relation("PackageInvoiceCreator", fields: [createdById], references: [id])
   payments      Payment[]
+  paymentLinks  PackagePaymentInvoice[]
 
   @@index([ministryAdminId, status])
   @@index([packageId])
@@ -989,6 +991,25 @@ model PackageInvoice {
 
 
 // ─── Wallet System (Malawi only) ──────────────────────────────────────────────
+
+model PackagePaymentInvoice {
+  id        String   @id @default(cuid())
+  paymentId String
+  invoiceId String
+  amount    Float
+  currency  String   @default("MWK")
+  role      String   @default("primary") // primary | extension
+  months    Int      @default(1)
+  createdAt DateTime @default(now())
+
+  payment Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice PackageInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+  @@index([paymentId])
+  @@map("package_payment_invoices")
+}
 
 model Wallet {
   id              String   @id @default(cuid())

@@ -8,7 +8,7 @@ import { generateReceiptPDF } from '../lib/receiptPDF';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
-import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from '../services/packageInvoiceService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
@@ -169,7 +169,7 @@ export async function processPaystackPayment(payload: any, traceId: string): Pro
       console.log(`[${traceId}] Payment record created: ${payment.id}`);
 
       if (metadata.invoiceId) {
-        await recalculatePackageInvoice(metadata.invoiceId);
+        await applyPackagePaymentToInvoices(payment.id, metadata);
       } else {
         await activateSubscriptionFromInvoice({
           ministryAdminId: metadata.ministryAdminId,

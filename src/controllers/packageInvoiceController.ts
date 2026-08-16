@@ -8,12 +8,15 @@ import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
 import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
 import {
   addBillingCycle,
+  allowedPublicInvoicePaymentMonths,
   ensureInvoicePublicToken,
   generateInvoiceNumber,
   generateInvoicePublicToken,
+  invoiceCoveredMonths,
   packageInvoiceInclude,
   packageInvoiceListInclude,
   parseNumber,
+  publicInvoicePaymentQuote,
   recalculatePackageInvoice,
 } from '../services/packageInvoiceService';
 
@@ -52,9 +55,26 @@ const listSchema = z.object({
 });
 
 function serializeInvoice(invoice: any) {
+  const linkedPayments = (invoice.paymentLinks || []).map((link: any) => ({
+    ...link.payment,
+    amount: link.amount,
+    baseAmount: link.amount,
+    currency: link.currency,
+    invoiceLinkRole: link.role,
+    invoiceLinkMonths: link.months,
+  }));
+  const directPayments = invoice.payments || [];
+  const paymentsById = new Map<string, any>();
+  [...directPayments, ...linkedPayments].forEach(payment => {
+    if (payment?.id) paymentsById.set(payment.id, payment);
+  });
   return {
     ...invoice,
     lineItems: invoice.lineItems ? JSON.parse(invoice.lineItems) : null,
+    payments: Array.from(paymentsById.values()).sort((a, b) =>
+      new Date(b.paidAt || b.createdAt || 0).getTime() - new Date(a.paidAt || a.createdAt || 0).getTime()
+    ),
+    paymentLinks: undefined,
   };
 }
 
@@ -146,6 +166,13 @@ export async function getPublicPackageInvoice(req: Request, res: Response): Prom
   }
 
   const data = serializeInvoice(invoice);
+  const invoiceMonths = invoiceCoveredMonths(invoice);
+  data.paymentOptions = {
+    allowedMonths: allowedPublicInvoicePaymentMonths(invoice),
+    invoiceMonths,
+    defaultMonths: invoiceMonths,
+    monthlyAmount: publicInvoicePaymentQuote(invoice, invoiceMonths).monthlyAmount,
+  };
   delete data.publicToken;
   res.json({ success: true, data });
 }
@@ -350,7 +377,7 @@ export async function recordAdminPackageInvoicePayment(req: Request, res: Respon
   const parsed = recordPaymentSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  await prisma.payment.create({
+  const payment = await prisma.payment.create({
     data: {
       invoiceId: invoice.id,
       ministryAdminId: invoice.ministryAdminId,
@@ -367,6 +394,24 @@ export async function recordAdminPackageInvoicePayment(req: Request, res: Respon
       notes: parsed.data.notes,
       paidAt: parsed.data.paidAt ? parseDate(parsed.data.paidAt, 'paidAt') : new Date(),
       createdById: req.user!.userId,
+    },
+  });
+
+  await prisma.packagePaymentInvoice.upsert({
+    where: { paymentId_invoiceId: { paymentId: payment.id, invoiceId: invoice.id } },
+    create: {
+      paymentId: payment.id,
+      invoiceId: invoice.id,
+      amount: parsed.data.amount,
+      currency: invoice.currency,
+      role: 'primary',
+      months: 1,
+    },
+    update: {
+      amount: parsed.data.amount,
+      currency: invoice.currency,
+      role: 'primary',
+      months: 1,
     },
   });
 

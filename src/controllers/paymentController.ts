@@ -13,7 +13,12 @@ import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { displayName, maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
-import { activateSubscriptionFromInvoice, recalculatePackageInvoice } from '../services/packageInvoiceService';
+import {
+  activateSubscriptionFromInvoice,
+  applyPackagePaymentToInvoices,
+  invoiceCoveredMonths,
+  publicInvoicePaymentQuote,
+} from '../services/packageInvoiceService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
@@ -269,6 +274,7 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
 export async function initiatePublicInvoicePayment(req: Request, res: Response): Promise<void> {
   const traceId = `INV-PUBLIC-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const token = String(req.params.token || req.body?.token || '');
+  const requestedMonths = req.body?.months !== undefined ? Number(req.body.months) : undefined;
 
   if (!token || token.length < 24) {
     res.status(404).json({ success: false, message: 'Invoice not found' });
@@ -305,7 +311,15 @@ export async function initiatePublicInvoicePayment(req: Request, res: Response):
     return;
   }
 
-  const baseAmount = Math.max(0, invoice.balanceDue || invoice.amount);
+  let invoiceQuote: ReturnType<typeof publicInvoicePaymentQuote>;
+  try {
+    const selectedMonths = requestedMonths || invoiceCoveredMonths(invoice);
+    invoiceQuote = publicInvoicePaymentQuote(invoice, selectedMonths);
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message || 'Invalid invoice payment months' });
+    return;
+  }
+  const baseAmount = invoiceQuote.baseAmount;
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
   const expiresAt = new Date();
   expiresAt.setHours(expiresAt.getHours() + 1);
@@ -331,7 +345,17 @@ export async function initiatePublicInvoicePayment(req: Request, res: Response):
         invoiceId: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
         invoiceServicePeriodStart: invoice.servicePeriodStart,
-        invoiceServicePeriodEnd: invoice.servicePeriodEnd,
+        invoiceServicePeriodEnd: invoiceQuote.extraPeriodEnd || invoice.servicePeriodEnd,
+        originalInvoiceServicePeriodStart: invoice.servicePeriodStart,
+        originalInvoiceServicePeriodEnd: invoice.servicePeriodEnd,
+        invoicePaymentMonths: invoiceQuote.selectedMonths,
+        originalInvoiceMonths: invoiceQuote.originalInvoiceMonths,
+        extraInvoiceMonths: invoiceQuote.extraMonths,
+        invoiceMonthlyAmount: invoiceQuote.monthlyAmount,
+        originalInvoiceAmountDue: invoiceQuote.originalAmountDue,
+        extraInvoiceAmount: invoiceQuote.extraAmount,
+        extraInvoiceServicePeriodStart: invoiceQuote.extraPeriodStart,
+        extraInvoiceServicePeriodEnd: invoiceQuote.extraPeriodEnd,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,
@@ -709,7 +733,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         console.log(`[${traceId}] Payment — amount: ${payment.amount}, currency: ${payment.currency}, gateway: ${payment.gateway}, gatewayCharge: ${payment.gatewayCharge}`);
 
         if (pendingMetadata.invoiceId) {
-          await recalculatePackageInvoice(pendingMetadata.invoiceId);
+          await applyPackagePaymentToInvoices(payment.id, pendingMetadata);
         } else {
           // Create or update subscription and reset email tracking
           await activateSubscriptionFromInvoice({
