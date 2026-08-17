@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 
@@ -11,8 +12,18 @@ type EmailAttachment = {
 };
 
 const ICIMS_LOGO_CID = 'icims-logo';
+const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || 'hostinger').toLowerCase();
 
-console.log('[EMAIL] SMTP config - host:', process.env.SMTP_HOST, 'port:', process.env.SMTP_PORT, 'secure:', process.env.SMTP_SECURE, 'user:', process.env.SMTP_USER ? process.env.SMTP_USER : 'NOT SET');
+console.log(
+  '[EMAIL] Provider:',
+  EMAIL_PROVIDER,
+  'SMTP host:',
+  process.env.SMTP_HOST || 'NOT SET',
+  'SMTP user:',
+  process.env.SMTP_USER ? process.env.SMTP_USER : 'NOT SET',
+  'Resend:',
+  process.env.RESEND_API_KEY ? 'CONFIGURED' : 'NOT SET',
+);
 
 function getLogoAttachment(): EmailAttachment | null {
   const logoPath = [
@@ -76,6 +87,70 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+function defaultFromAddress() {
+  if (EMAIL_PROVIDER === 'resend') {
+    return process.env.RESEND_FROM || process.env.EMAIL_FROM || `"${process.env.SYSTEM || 'ICIMS'}" <no-reply@churchcentral.church>`;
+  }
+
+  return process.env.SMTP_FROM || `"${process.env.SYSTEM || 'ICIMS'}" <${process.env.SMTP_USER}>`;
+}
+
+function htmlToText(html: string) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function sendWithResend(
+  to: string | string[],
+  subject: string,
+  html: string,
+  attachments?: EmailAttachment[],
+) {
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY is required when EMAIL_PROVIDER=resend');
+  }
+
+  const payload: Record<string, unknown> = {
+    from: defaultFromAddress(),
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html,
+    text: htmlToText(html),
+  };
+
+  if (process.env.EMAIL_REPLY_TO || process.env.RESEND_REPLY_TO) {
+    payload.reply_to = process.env.EMAIL_REPLY_TO || process.env.RESEND_REPLY_TO;
+  }
+
+  if (attachments?.length) {
+    payload.attachments = attachments.map(attachment => ({
+      filename: attachment.filename,
+      content: attachment.content.toString('base64'),
+      content_type: attachment.contentType,
+      content_disposition: attachment.contentDisposition,
+      cid: attachment.cid,
+    }));
+  }
+
+  const response = await axios.post('https://api.resend.com/emails', payload, {
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 30000,
+  });
+
+  return { messageId: response.data?.id };
+}
+
 export async function sendEmail(
   to: string | string[],
   subject: string,
@@ -84,21 +159,24 @@ export async function sendEmail(
 ) {
   const recipients = Array.isArray(to) ? to.join(', ') : to;
   const prepared = prepareBrandedEmail(html, attachments);
-  console.log(`[EMAIL] Attempting to send "${subject}" to ${recipients} - attachments: ${prepared.attachments?.length ?? 0}`);
+  console.log(`[EMAIL] Attempting to send "${subject}" to ${recipients} via ${EMAIL_PROVIDER} - attachments: ${prepared.attachments?.length ?? 0}`);
 
   try {
-    const info: any = await transporter.sendMail({
-      from: `"${process.env.SYSTEM || 'ICIMS'}" <${process.env.SMTP_USER}>`,
-      to: Array.isArray(to) ? to.join(',') : to,
-      subject,
-      html: prepared.html,
-      attachments: prepared.attachments,
-    });
+    const info: any = EMAIL_PROVIDER === 'resend'
+      ? await sendWithResend(to, subject, prepared.html, prepared.attachments)
+      : await transporter.sendMail({
+          from: defaultFromAddress(),
+          to: Array.isArray(to) ? to.join(',') : to,
+          subject,
+          html: prepared.html,
+          attachments: prepared.attachments,
+        });
     console.log(`[EMAIL] Sent to ${recipients} - messageId: ${info.messageId}`);
   } catch (error: any) {
     console.error(`[EMAIL] Failed to send to ${recipients} - subject: "${subject}"`);
-    console.error(`[EMAIL] Error code: ${error.code} message: ${error.message}`);
-    if (error.response) console.error(`[EMAIL] SMTP response: ${error.response}`);
+    console.error(`[EMAIL] Error code: ${error.code || error.response?.status || 'unknown'} message: ${error.message}`);
+    if (error.response?.data) console.error(`[EMAIL] Provider response: ${JSON.stringify(error.response.data)}`);
+    else if (error.response) console.error(`[EMAIL] Provider response: ${error.response}`);
     throw error;
   }
 }
