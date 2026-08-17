@@ -129,7 +129,7 @@ export const registrationTemplate = (data: { firstName: string; lastName: string
 </html>
 `;
 
-export const passwordResetTemplate = (data: { firstName: string; resetToken: string; churchName?: string }) => `
+export const passwordResetTemplate = (data: { firstName: string; resetToken: string; expiresInMinutes?: number; churchName?: string }) => `
 <!DOCTYPE html>
 <html>
 <head>${getBaseStyle()}</head>
@@ -145,7 +145,7 @@ export const passwordResetTemplate = (data: { firstName: string; resetToken: str
       
       <a href="${FRONTEND_URL}/reset-password?token=${data.resetToken}" class="button">Reset Password</a>
       
-      <p>This link will expire in 1 hour for security reasons.</p>
+      <p>This link will expire in ${data.expiresInMinutes || 5} minutes for security reasons.</p>
       
       <p><strong>If you didn't request this,</strong> please ignore this email and your password will remain unchanged.</p>
       

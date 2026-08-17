@@ -6,6 +6,8 @@ import { hashPassword } from '../lib/password';
 import { queueEmail } from '../lib/emailQueue';
 import { passwordResetTemplate, passwordChangedTemplate } from '../lib/emailTemplates';
 
+const PASSWORD_RESET_EXPIRY_MINUTES = 5;
+
 const requestResetSchema = z.object({
   email: z.string().email('Invalid email'),
 });
@@ -34,7 +36,7 @@ export async function requestPasswordReset(req: Request, res: Response): Promise
   }
 
   const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + 3600000);
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_EXPIRY_MINUTES * 60 * 1000);
 
   await prisma.passwordResetToken.create({
     data: { userId: user.id, token, expiresAt },
@@ -45,7 +47,7 @@ export async function requestPasswordReset(req: Request, res: Response): Promise
   queueEmail(
     user.email,
     'Password Reset Request',
-    passwordResetTemplate({ firstName: user.firstName, resetToken: token }),
+    passwordResetTemplate({ firstName: user.firstName, resetToken: token, expiresInMinutes: PASSWORD_RESET_EXPIRY_MINUTES }),
     'password_reset'
   )
     .then(() => console.log(`[PasswordReset] Email queued successfully for ${user.email}`))
