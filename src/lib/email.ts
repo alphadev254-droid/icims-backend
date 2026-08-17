@@ -136,7 +136,7 @@ async function sendWithResend(
       content: attachment.content.toString('base64'),
       content_type: attachment.contentType,
       content_disposition: attachment.contentDisposition,
-      cid: attachment.cid,
+      content_id: attachment.cid,
     }));
   }
 
