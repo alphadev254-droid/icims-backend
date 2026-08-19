@@ -564,7 +564,32 @@ export async function reconcileAdminWithdrawal(req: Request, res: Response): Pro
     return;
   }
   if (!withdrawal.chargeId) {
-    res.status(400).json({ success: false, message: 'Withdrawal has no gateway charge ID to reconcile' });
+    const gatewayResponse = JSON.stringify({
+      previous: safeParseJson(withdrawal.gatewayResponse),
+      reconciliation: {
+        checkedAt: new Date().toISOString(),
+        checkedBy: req.user?.userId,
+        source: 'manual_no_gateway_charge_id',
+        normalizedStatus: 'failed',
+        note: 'No PayChangu payout reference exists for this withdrawal, so gateway lookup cannot be performed.',
+      },
+    });
+    const data = {
+      status: 'failed',
+      failureReason: 'Manual reconciliation: no PayChangu payout reference exists. Marked failed.',
+      gatewayResponse,
+    };
+    const updated = kind === 'ministry'
+      ? await prisma.withdrawal.update({ where: { id }, data: data as any })
+      : await (prisma as any).platformWithdrawal.update({ where: { id }, data });
+
+    res.json({
+      success: true,
+      message: kind === 'ministry'
+        ? 'Withdrawal marked failed. No PayChangu payout reference existed to reconcile.'
+        : 'Platform withdrawal marked failed. No PayChangu payout reference existed to reconcile.',
+      data: updated,
+    });
     return;
   }
 
