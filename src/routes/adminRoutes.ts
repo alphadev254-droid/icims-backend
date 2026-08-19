@@ -33,6 +33,7 @@ import {
 } from '../controllers/packageManagementController';
 import {
   getAdminTreasuryBanks,
+  getAdminTreasuryMinistryWallets,
   getAdminTreasurySummary,
   getAdminTreasuryWithdrawals,
   reconcileAdminWithdrawal,
@@ -71,6 +72,7 @@ router.get('/system-transactions', getAdminSystemTransactions);
 router.get('/system-transactions/:id', getAdminSystemTransaction);
 router.get('/withdrawals', getAdminWithdrawals);
 router.get('/treasury/summary', getAdminTreasurySummary);
+router.get('/treasury/ministry-wallets', getAdminTreasuryMinistryWallets);
 router.get('/treasury/withdrawals', getAdminTreasuryWithdrawals);
 router.get('/treasury/banks', getAdminTreasuryBanks);
 router.post('/treasury/withdraw/otp', sendAdminTreasuryOtp);

@@ -372,6 +372,104 @@ export async function getAdminTreasurySummary(_req: Request, res: Response): Pro
   }
 }
 
+export async function getAdminTreasuryMinistryWallets(req: Request, res: Response): Promise<void> {
+  try {
+    const ministryId = typeof req.query.ministry === 'string' && req.query.ministry !== 'all'
+      ? req.query.ministry
+      : undefined;
+    const ministryAdminRole = await prisma.role.findUnique({
+      where: { name: 'ministry_admin' },
+      select: { id: true },
+    });
+
+    if (!ministryAdminRole) {
+      res.json({ success: true, data: [], summary: { totalBalance: 0, walletCount: 0, ministryCount: 0 } });
+      return;
+    }
+
+    const [ministries, wallets] = await Promise.all([
+      prisma.user.findMany({
+        where: {
+          roleId: ministryAdminRole.id,
+          ...(ministryId ? { id: ministryId } : {}),
+        },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          ministryName: true,
+          accountCountry: true,
+          ownedChurches: { select: { name: true }, take: 1 },
+        },
+        orderBy: [{ ministryName: 'asc' }, { firstName: 'asc' }],
+      }),
+      prisma.wallet.findMany({
+        where: ministryId ? { ministryAdminId: ministryId } : {},
+        select: {
+          id: true,
+          balance: true,
+          currency: true,
+          ministryAdminId: true,
+          updatedAt: true,
+          church: {
+            select: {
+              id: true,
+              name: true,
+              status: true,
+            },
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+      }),
+    ]);
+
+    const walletsByMinistry = new Map<string, typeof wallets>();
+    wallets.forEach((wallet) => {
+      const current = walletsByMinistry.get(wallet.ministryAdminId) ?? [];
+      current.push(wallet);
+      walletsByMinistry.set(wallet.ministryAdminId, current);
+    });
+
+    const data = ministries.map((ministry) => {
+      const ministryWallets = walletsByMinistry.get(ministry.id) ?? [];
+      const totalBalance = ministryWallets.reduce((sum, wallet) => sum + wallet.balance, 0);
+      const currencies = [...new Set(ministryWallets.map((wallet) => wallet.currency || 'MWK'))];
+      const currency = currencies.length === 1 ? currencies[0] : 'mixed';
+      return {
+        ministryId: ministry.id,
+        ministryName: ministry.ministryName ?? ministry.ownedChurches[0]?.name ?? `${ministry.firstName} ${ministry.lastName}`,
+        ministryAdminName: `${ministry.firstName} ${ministry.lastName}`.trim(),
+        ministryAdminEmail: ministry.email,
+        country: ministry.accountCountry ?? null,
+        currency,
+        totalBalance,
+        walletCount: ministryWallets.length,
+        churchCount: new Set(ministryWallets.map((wallet) => wallet.church?.id).filter(Boolean)).size,
+        wallets: ministryWallets.map((wallet) => ({
+          id: wallet.id,
+          balance: wallet.balance,
+          currency: wallet.currency,
+          updatedAt: wallet.updatedAt,
+          church: wallet.church,
+        })),
+      };
+    }).sort((a, b) => b.totalBalance - a.totalBalance);
+
+    res.json({
+      success: true,
+      data,
+      summary: {
+        totalBalance: data.reduce((sum, row) => sum + row.totalBalance, 0),
+        walletCount: data.reduce((sum, row) => sum + row.walletCount, 0),
+        ministryCount: data.length,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to fetch ministry wallet balances', error: error.message });
+  }
+}
+
 export async function getAdminTreasuryWithdrawals(req: Request, res: Response): Promise<void> {
   const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
   const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '50'), 10) || 50));
