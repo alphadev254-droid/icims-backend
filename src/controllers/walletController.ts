@@ -463,6 +463,13 @@ export async function sendWithdrawalOtp(req: Request, res: Response): Promise<vo
     success: true,
     message: `OTP sent to ${user.email}`,
     expiresInSeconds: WITHDRAWAL_OTP_EXPIRY_MINUTES * 60,
+    data: {
+      ...fees,
+      availableBalance: totalBalance,
+      hasEnoughBalance: true,
+      shortfall: 0,
+      currency: selectedWallet.currency,
+    },
   });
 }
 
