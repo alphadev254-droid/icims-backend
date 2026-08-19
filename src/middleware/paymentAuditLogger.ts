@@ -8,7 +8,7 @@ const MAX_STRING_LENGTH = Number(process.env.PAYMENT_AUDIT_MAX_STRING_LENGTH || 
 const SENSITIVE_KEY_PATTERNS = [
   /password/i,
   /passcode/i,
-  /\botp\b/i,
+  /otp/i,
   /pin/i,
   /token/i,
   /secret/i,
@@ -47,6 +47,10 @@ function getClientIp(req: Request) {
   const forwardedFor = req.get('x-forwarded-for');
   if (forwardedFor) return forwardedFor.split(',')[0]?.trim();
   return req.ip || req.socket.remoteAddress;
+}
+
+function auditPath(req: Request) {
+  return (req.originalUrl || req.path || '').split('?')[0] || req.path;
 }
 
 function isSensitiveKey(key: string) {
@@ -99,7 +103,7 @@ function fitForLog(value: unknown) {
 }
 
 function shouldAuditPaymentRequest(req: Request) {
-  const path = req.path;
+  const path = auditPath(req);
   const method = req.method.toUpperCase();
 
   if (path.startsWith('/api/webhooks/paychangu') || path.startsWith('/api/webhooks/paystack')) return true;
@@ -147,14 +151,15 @@ export function paymentAuditLogger(req: Request, res: Response, next: NextFuncti
     const statusCode = res.statusCode;
     const level = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
     const user = req.user;
-    const isWebhook = req.path.startsWith('/api/webhooks/');
+    const path = auditPath(req);
+    const isWebhook = path.startsWith('/api/webhooks/');
 
     logger[level]('payment_api_trace', {
       auditKind: isWebhook ? 'webhook' : 'money_api',
       requestId: req.requestId,
       method: req.method,
-      route: normalizeRoute(req.path),
-      path: req.path,
+      route: normalizeRoute(path),
+      path,
       originalUrl: req.originalUrl,
       statusCode,
       durationMs: Number(durationMs.toFixed(2)),
