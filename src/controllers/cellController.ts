@@ -917,6 +917,25 @@ export async function submitMeetingAttendance(req: Request, res: Response): Prom
   const parsed = attendanceSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
+  const inviterIds = Array.from(new Set(
+    parsed.data.records
+      .filter(record => record.isVisitor && record.invitedByUserId?.trim())
+      .map(record => record.invitedByUserId!.trim()),
+  ));
+  if (inviterIds.length > 0) {
+    const validInviterCount = await prisma.cellMember.count({
+      where: {
+        cellId: meeting.cellId,
+        userId: { in: inviterIds },
+        status: 'active',
+      },
+    });
+    if (validInviterCount !== inviterIds.length) {
+      res.status(400).json({ success: false, message: 'Invited by must be an active member of this cell' });
+      return;
+    }
+  }
+
   // Delete existing and re-insert (idempotent)
   await prisma.cellAttendance.deleteMany({ where: { meetingId } });
 
@@ -925,6 +944,7 @@ export async function submitMeetingAttendance(req: Request, res: Response): Prom
       meetingId,
       cellId: meeting.cellId,
       ...r,
+      invitedByUserId: r.isVisitor && r.invitedByUserId?.trim() ? r.invitedByUserId.trim() : null,
     })),
   });
 
@@ -1442,7 +1462,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   if (givingDateRange.endDate) givingDateFilter.lte = givingDateRange.endDate;
 
   if (cellIds.length === 0) {
-    res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByGiving: [], topByAttendanceRate: [], cellGivingSummary: { currency: 'MWK', totalRaised: 0, startDate: givingDateRange.startDate?.toISOString() ?? null, endDate: givingDateRange.endDate?.toISOString() ?? null, topCampaigns: [] } } });
+    res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByInviters: [], topByGiving: [], topByAttendanceRate: [], cellGivingSummary: { currency: 'MWK', totalRaised: 0, startDate: givingDateRange.startDate?.toISOString() ?? null, endDate: givingDateRange.endDate?.toISOString() ?? null, topCampaigns: [] } } });
     return;
   }
 
@@ -1467,6 +1487,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     allMeetingsForRate,
     // Per-cell visitor counts
     visitorCounts,
+    inviterCounts,
     // Per-cell giving totals
     givingPerCell,
     periodGivingTotal,
@@ -1514,6 +1535,13 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     prisma.cellAttendance.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds }, isVisitor: true },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 5,
+    }),
+    prisma.cellAttendance.groupBy({
+      by: ['invitedByUserId'],
+      where: { cellId: { in: cellIds }, isVisitor: true, invitedByUserId: { not: null } },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
@@ -1568,13 +1596,21 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   };
 
   const campaignIds = topGivingCampaigns.map((c: any) => c.campaignId).filter(Boolean);
+  const inviterIds = inviterCounts.map((row: any) => row.invitedByUserId).filter(Boolean);
   const topCampaignRecords = campaignIds.length > 0
     ? await prisma.givingCampaign.findMany({
         where: { id: { in: campaignIds } },
         select: { id: true, name: true, church: { select: { name: true } } },
       })
     : [];
+  const topInviterRecords = inviterIds.length > 0
+    ? await prisma.user.findMany({
+        where: { id: { in: inviterIds } },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      })
+    : [];
   const campaignMap = new Map(topCampaignRecords.map(c => [c.id, c]));
+  const inviterMap = new Map(topInviterRecords.map(user => [user.id, user]));
   const churchIdsForTopCampaigns = Array.from(new Set(topGivingCampaignChurches.map((row: any) => row.churchId).filter(Boolean)));
   const churchRecordsForTopCampaigns = churchIdsForTopCampaigns.length > 0
     ? await prisma.church.findMany({
@@ -1661,6 +1697,15 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       topByMembers: memberCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByMeetings: meetingCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
       topByVisitors: visitorCounts.map(c => ({ id: c.cellId, name: label(c.cellId), count: c._count.id })),
+      topByInviters: inviterCounts.map((row: any) => {
+        const inviter = inviterMap.get(row.invitedByUserId);
+        return {
+          id: row.invitedByUserId,
+          name: inviter ? `${inviter.firstName ?? ''} ${inviter.lastName ?? ''}`.trim() || inviter.email || row.invitedByUserId : row.invitedByUserId,
+          email: inviter?.email ?? null,
+          count: row._count.id,
+        };
+      }),
       topByGiving: givingPerCell.filter(c => c.cellId).map(c => ({ id: c.cellId!, name: label(c.cellId!), total: c._sum.amount ?? 0 })),
       topByAttendanceRate,
       cellGivingSummary: {
