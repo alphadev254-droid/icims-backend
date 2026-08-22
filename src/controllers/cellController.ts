@@ -1118,7 +1118,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
     activeMembers.map(m => ({ phone: m.user?.phone, email: m.user?.email })),
   );
   // Three separate groupBy queries (phone, email, name) — DB does the counting
-  const [byPhone, byEmail, byName] = await Promise.all([
+  const [byPhone, byEmail, byName, inviterCounts] = await Promise.all([
     prisma.cellAttendance.groupBy({
       by: ['visitorPhone'],
       where: { cellId, isVisitor: true, visitorPhone: { not: null } },
@@ -1142,6 +1142,13 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       having: { id: { _count: { gte: 2 } } },
       orderBy: { _count: { id: 'desc' } },
       take: 10,
+    }),
+    prisma.cellAttendance.groupBy({
+      by: ['invitedByUserId'],
+      where: { cellId, isVisitor: true, invitedByUserId: { not: null } },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 5,
     }),
   ]);
 
@@ -1186,6 +1193,24 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       visits,
     };
   });
+  const inviterIds = inviterCounts.map((row: any) => row.invitedByUserId).filter(Boolean);
+  const inviterRecords = inviterIds.length > 0
+    ? await prisma.user.findMany({
+        where: { id: { in: inviterIds } },
+        select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+      })
+    : [];
+  const inviterMap = new Map(inviterRecords.map(user => [user.id, user]));
+  const topGuestInviters = inviterCounts.map((row: any) => {
+    const inviter = inviterMap.get(row.invitedByUserId);
+    return {
+      id: row.invitedByUserId,
+      name: inviter ? `${inviter.firstName ?? ''} ${inviter.lastName ?? ''}`.trim() || inviter.email || row.invitedByUserId : row.invitedByUserId,
+      email: inviter?.email ?? null,
+      phone: inviter?.phone ?? null,
+      count: row._count.id,
+    };
+  });
 
   res.json({
     success: true,
@@ -1195,6 +1220,7 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
       memberGrowth: { newThisMonth, leftThisMonth, netGrowth, newLastMonth },
       ageDistribution, topAttendees, mostAbsent,
       repeatVisitors,
+      topGuestInviters,
       guestConversion,
     },
   });
