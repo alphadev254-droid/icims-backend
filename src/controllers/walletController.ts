@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { calculateWithdrawalFee } from '../utils/feeCalculations';
-import { debitChurchWallet, refundWithdrawal } from '../utils/walletOperations';
+import { debitWalletsForWithdrawal, refundWithdrawal } from '../utils/walletOperations';
 import axios from 'axios';
 import { queueEmail } from '../lib/emailQueue';
 import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate, withdrawalOtpTemplate } from '../lib/emailTemplates';
@@ -666,6 +666,49 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
       initiatedBy: userId,
     } as any
   });
+  console.log('Withdrawal created:', withdrawal.id);
+
+  let walletDebits: Awaited<ReturnType<typeof debitWalletsForWithdrawal>>;
+  try {
+    walletDebits = await debitWalletsForWithdrawal(
+      wallets.map(wallet => wallet.id),
+      fees.netAmount,
+      withdrawal.id,
+      `Withdrawal request - ${method}`
+    );
+  } catch (error: any) {
+    const failureReason = error.message || 'Unable to reserve wallet funds for withdrawal';
+    await prisma.withdrawal.update({
+      where: { id: withdrawal.id },
+      data: {
+        status: 'failed',
+        failureReason,
+      } as any,
+    });
+    recordWithdrawalEvent(method, 'failed', 'ministry', {
+      requestId: req.requestId,
+      withdrawalId: withdrawal.id,
+      walletId: selectedWallet.id,
+      ministryAdminId: userId,
+      initiatedBy: userId,
+      initiatedByName: req.user?.userName,
+      amount: fees.amount,
+      totalDebited: fees.netAmount,
+      payoutAmount: fees.payoutAmount,
+      fee: fees.fee,
+      gatewayFeeAmount: fees.gatewayFeeAmount,
+      systemFeeAmount: fees.systemFeeAmount,
+      currency: selectedWallet.currency,
+      errorMessage: failureReason,
+      mobileOperator,
+      mobileNumber: maskPhone(mobileNumber),
+    });
+    res.status(400).json({ success: false, message: failureReason });
+    return;
+  }
+
+  console.log('Wallet debited successfully:', walletDebits);
+
   recordWithdrawalEvent(method, 'requested', 'ministry', {
     requestId: req.requestId,
     withdrawalId: withdrawal.id,
@@ -680,21 +723,11 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
     gatewayFeeAmount: fees.gatewayFeeAmount,
     systemFeeAmount: fees.systemFeeAmount,
     currency: selectedWallet.currency,
+    splitWalletCount: walletDebits.length,
+    walletDebits,
     mobileOperator,
     mobileNumber: maskPhone(mobileNumber),
   });
-
-  console.log('Withdrawal created:', withdrawal.id);
-
-  await debitChurchWallet(
-    selectedWallet.id,
-    fees.netAmount,
-    'withdrawal',
-    withdrawal.id,
-    `Withdrawal request - ${method}`
-  );
-
-  console.log('Wallet debited successfully');
 
   // Get user details for email
   const user = await prisma.user.findUnique({
