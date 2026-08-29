@@ -47,6 +47,14 @@ export async function getPricingMarkets(_req: Request, res: Response): Promise<v
     where: { isActive: true },
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     include: {
+      packagePrices: {
+        include: {
+          package: {
+            select: { id: true, name: true, displayName: true, isPrivate: true, isActive: true },
+          },
+        },
+        orderBy: { package: { sortOrder: 'asc' } },
+      },
       _count: { select: { countries: true, packagePrices: true } },
     },
   });
@@ -63,14 +71,22 @@ export async function getCountries(_req: Request, res: Response): Promise<void> 
   res.json({ success: true, data: countries });
 }
 
+const marketPackagePriceSchema = z.object({
+  packageId: z.string(),
+  priceMonthly: z.number().min(0),
+  priceYearly: z.number().min(0),
+});
+const currencySchema = z.enum(['USD', 'KES', 'MWK']);
+
 const pricingMarketSchema = z.object({
   code: z.string().min(2).max(64).regex(/^[a-z0-9_-]+$/i).transform(value => value.trim().toLowerCase()),
   name: z.string().min(2).max(120),
-  currencyCode: z.string().min(2).max(8).transform(value => value.trim().toUpperCase()),
+  currencyCode: currencySchema,
   packageGateway: z.enum(['paystack', 'paychangu']).default('paystack'),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
+  packagePrices: z.array(marketPackagePriceSchema).optional(),
 });
 
 export async function createPricingMarket(req: Request, res: Response): Promise<void> {
@@ -80,11 +96,46 @@ export async function createPricingMarket(req: Request, res: Response): Promise<
     return;
   }
 
+  const { packagePrices, ...marketData } = parsed.data;
+
   const market = await prisma.$transaction(async (tx) => {
-    if (parsed.data.isDefault) {
+    if (marketData.isDefault) {
       await tx.pricingMarket.updateMany({ data: { isDefault: false } });
     }
-    return tx.pricingMarket.create({ data: parsed.data });
+    const created = await tx.pricingMarket.create({ data: marketData });
+
+    if (packagePrices?.length) {
+      const publicPackages = await tx.package.findMany({
+        where: { id: { in: packagePrices.map(price => price.packageId) }, isPrivate: false },
+        select: { id: true },
+      });
+      const publicPackageIds = new Set(publicPackages.map(pkg => pkg.id));
+      const now = new Date();
+      await tx.packageMarketPrice.createMany({
+        data: packagePrices
+          .filter(price => publicPackageIds.has(price.packageId))
+          .map(price => ({
+            packageId: price.packageId,
+            pricingMarketId: created.id,
+            priceMonthly: price.priceMonthly,
+            priceYearly: price.priceYearly,
+            currencyCode: marketData.currencyCode,
+            createdAt: now,
+            updatedAt: now,
+          })),
+      });
+    }
+
+    return tx.pricingMarket.findUnique({
+      where: { id: created.id },
+      include: {
+        packagePrices: {
+          include: { package: { select: { id: true, name: true, displayName: true, isPrivate: true, isActive: true } } },
+          orderBy: { package: { sortOrder: 'asc' } },
+        },
+        _count: { select: { countries: true, packagePrices: true } },
+      },
+    });
   });
 
   res.status(201).json({ success: true, data: market });
@@ -104,11 +155,54 @@ export async function updatePricingMarket(req: Request, res: Response): Promise<
     return;
   }
 
+  const { packagePrices, ...marketData } = parsed.data;
+
   const market = await prisma.$transaction(async (tx) => {
-    if (parsed.data.isDefault) {
+    if (marketData.isDefault) {
       await tx.pricingMarket.updateMany({ where: { id: { not: id } }, data: { isDefault: false } });
     }
-    return tx.pricingMarket.update({ where: { id }, data: parsed.data });
+    const updated = await tx.pricingMarket.update({ where: { id }, data: marketData });
+
+    if (packagePrices !== undefined) {
+      await tx.packageMarketPrice.deleteMany({ where: { pricingMarketId: id } });
+      if (packagePrices.length) {
+        const publicPackages = await tx.package.findMany({
+          where: { id: { in: packagePrices.map(price => price.packageId) }, isPrivate: false },
+          select: { id: true },
+        });
+        const publicPackageIds = new Set(publicPackages.map(pkg => pkg.id));
+        const now = new Date();
+        await tx.packageMarketPrice.createMany({
+          data: packagePrices
+            .filter(price => publicPackageIds.has(price.packageId))
+            .map(price => ({
+              packageId: price.packageId,
+              pricingMarketId: id,
+              priceMonthly: price.priceMonthly,
+              priceYearly: price.priceYearly,
+              currencyCode: updated.currencyCode,
+              createdAt: now,
+              updatedAt: now,
+            })),
+        });
+      }
+    } else if (marketData.currencyCode && marketData.currencyCode !== existing.currencyCode) {
+      await tx.packageMarketPrice.updateMany({
+        where: { pricingMarketId: id },
+        data: { currencyCode: marketData.currencyCode },
+      });
+    }
+
+    return tx.pricingMarket.findUnique({
+      where: { id },
+      include: {
+        packagePrices: {
+          include: { package: { select: { id: true, name: true, displayName: true, isPrivate: true, isActive: true } } },
+          orderBy: { package: { sortOrder: 'asc' } },
+        },
+        _count: { select: { countries: true, packagePrices: true } },
+      },
+    });
   });
 
   res.json({ success: true, data: market });
@@ -168,7 +262,7 @@ const packageSchema = z.object({
   description: z.string().optional(),
   priceMonthly: z.number().min(0).default(0),
   priceYearly: z.number().min(0).default(0),
-  currencyCode: z.string().min(2).max(8).default('USD').transform(value => value.toUpperCase()),
+  currencyCode: currencySchema.default('USD'),
   isActive: z.boolean().default(true),
   isPrivate: z.boolean().default(false),
   sortOrder: z.number().int().default(0),
@@ -196,7 +290,7 @@ const packageSchema = z.object({
     pricingMarketId: z.string(),
     priceMonthly: z.number().min(0),
     priceYearly: z.number().min(0),
-    currencyCode: z.string().min(2).max(8),
+    currencyCode: currencySchema,
   })).optional(),
 });
 
