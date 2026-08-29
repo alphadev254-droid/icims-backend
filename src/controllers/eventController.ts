@@ -10,6 +10,7 @@ import { groupByDateRanges } from '../lib/dateGrouping';
 import { queueChurchPush } from '../lib/notificationQueue';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { eventCreatedTemplate } from '../lib/emailTemplates';
+import { hasFeature } from '../lib/packageChecker';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
 
@@ -187,6 +188,21 @@ function resolveRequestedEventChurchIds(params: {
   if (inaccessible.length > 0) return { error: 'Access denied to one or more selected churches' };
 
   return { churchIds };
+}
+
+async function eventOwnerHasFeature(eventId: string, featureName: string): Promise<boolean> {
+  const event = await prisma.event.findUnique({
+    where: { id: eventId },
+    select: {
+      church: { select: { ministryAdminId: true } },
+    },
+  });
+  const ministryAdminId = event?.church?.ministryAdminId;
+  return ministryAdminId ? hasFeature(ministryAdminId, featureName) : false;
+}
+
+function featureUnavailableMessage(featureName: string) {
+  return `This event feature is not available in the current package. Please enable ${featureName.replace(/_/g, ' ')}.`;
 }
 
 export async function getEventSelect(req: Request, res: Response): Promise<void> {
@@ -414,7 +430,7 @@ export async function getPublicEvent(req: Request, res: Response): Promise<void>
   const event = await prisma.event.findUnique({ 
     where: { id: eventId },
     include: {
-      church: { select: { id: true, name: true } },
+      church: { select: { id: true, name: true, ministryAdminId: true } },
       linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     }
   });
@@ -422,6 +438,11 @@ export async function getPublicEvent(req: Request, res: Response): Promise<void>
   if (!event) { 
     res.status(404).json({ success: false, message: 'Event not found' }); 
     return; 
+  }
+
+  if (!(await eventOwnerHasFeature(event.id, 'event_public_links'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_public_links') });
+    return;
   }
   
   res.json({ success: true, data: decorateEventAvailability(event) });
@@ -464,6 +485,26 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, ...eventData } = parsed.data;
+
+  if (eventData.requiresTicket && !(await hasFeature(userId, 'event_ticketing'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
+    return;
+  }
+  if (eventData.allowPublicTicketing) {
+    if (!(await hasFeature(userId, 'event_public_links'))) {
+      res.status(403).json({ success: false, message: featureUnavailableMessage('event_public_links') });
+      return;
+    }
+    if (!(await hasFeature(userId, 'event_guest_booking'))) {
+      res.status(403).json({ success: false, message: featureUnavailableMessage('event_guest_booking') });
+      return;
+    }
+  }
+  if (eventData.requiresTicket && !eventData.isFree && !(await hasFeature(userId, 'event_online_payments'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_online_payments') });
+    return;
+  }
+
   const accessibleChurchIds = await getAccessibleChurchIds(
     req.user?.role ?? 'member',
     req.user?.churchId,
@@ -562,6 +603,30 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const oldEvent = await prisma.event.findUnique({ where: { id: eventId } });
   if (!oldEvent) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
   const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, ...eventData } = parsed.data;
+  const userId = req.user!.userId;
+  const nextRequiresTicket = eventData.requiresTicket ?? oldEvent.requiresTicket;
+  const nextIsFree = eventData.isFree ?? oldEvent.isFree;
+  const nextAllowPublicTicketing = eventData.allowPublicTicketing ?? oldEvent.allowPublicTicketing;
+
+  if (nextRequiresTicket && !(await hasFeature(userId, 'event_ticketing'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
+    return;
+  }
+  if (nextAllowPublicTicketing) {
+    if (!(await hasFeature(userId, 'event_public_links'))) {
+      res.status(403).json({ success: false, message: featureUnavailableMessage('event_public_links') });
+      return;
+    }
+    if (!(await hasFeature(userId, 'event_guest_booking'))) {
+      res.status(403).json({ success: false, message: featureUnavailableMessage('event_guest_booking') });
+      return;
+    }
+  }
+  if (nextRequiresTicket && !nextIsFree && !(await hasFeature(userId, 'event_online_payments'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_online_payments') });
+    return;
+  }
+
   const hasBodyKey = (key: string) => Object.prototype.hasOwnProperty.call(req.body, key);
   const shouldUpdateScope = hasBodyKey('scopeType') || hasBodyKey('churchId') || hasBodyKey('churchIds');
   let nextEventChurchIds: string[] | undefined;
@@ -694,6 +759,10 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     include: { linkedChurches: { select: { churchId: true } } },
   });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  if (!(await eventOwnerHasFeature(event.id, 'event_ticketing'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
+    return;
+  }
   if (!event.requiresTicket) { res.status(400).json({ success: false, message: 'Event does not require tickets' }); return; }
   if (event.status === 'completed' || event.status === 'cancelled') {
     res.status(400).json({ success: false, message: 'Cannot book tickets for completed or cancelled events' }); return;
@@ -733,6 +802,10 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
 
   let transactionId = null;
   if (!event.isFree && event.ticketPrice) {
+    if (!(await eventOwnerHasFeature(event.id, 'event_online_payments'))) {
+      res.status(403).json({ success: false, message: featureUnavailableMessage('event_online_payments') });
+      return;
+    }
     const transaction = await prisma.transaction.create({
       data: {
         amount: event.ticketPrice,
@@ -949,6 +1022,10 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
     include: { linkedChurches: { select: { churchId: true } } },
   });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  if (!(await eventOwnerHasFeature(event.id, 'event_ticketing'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
+    return;
+  }
   if (!event.requiresTicket) { res.status(400).json({ success: false, message: 'Event does not require tickets' }); return; }
   if (event.status === 'completed' || event.status === 'cancelled') {
     res.status(400).json({ success: false, message: 'Cannot book tickets for completed or cancelled events' }); return;
@@ -999,6 +1076,10 @@ export async function createManualTicket(req: Request, res: Response): Promise<v
     const ticketCurrency = currency || event.currency || 'MWK';
 
     if (ticketAmount > 0) {
+      if (!(await eventOwnerHasFeature(event.id, 'event_manual_payments'))) {
+        res.status(403).json({ success: false, message: featureUnavailableMessage('event_manual_payments') });
+        return;
+      }
       const transaction = await prisma.transaction.create({
         data: {
           amount: ticketAmount,

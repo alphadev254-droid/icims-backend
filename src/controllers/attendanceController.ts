@@ -687,6 +687,10 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   }
 
   const { churchId: requestedChurchId, eventId, visitors, ...data } = parsed.data;
+  if (eventId && !(await hasFeature(userId!, 'event_attendance'))) {
+    res.status(403).json({ success: false, message: 'Your package does not include Event Attendance. Please upgrade to access this feature.' });
+    return;
+  }
 
   // Verify user has access to this church
   const accessibleChurchIds = await getAccessibleChurchIds(
@@ -781,6 +785,10 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
   const parsed = startQrAttendanceSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+  if (parsed.data.eventId && !(await hasFeature(userId!, 'event_attendance'))) {
+    res.status(403).json({ success: false, message: 'Your package does not include Event Attendance. Please upgrade to access this feature.' });
     return;
   }
 

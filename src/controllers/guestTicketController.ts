@@ -7,6 +7,7 @@ import { calculatePaymentFees } from '../utils/feeCalculations';
 import { queueEmail } from '../lib/emailQueue';
 import { ticketPurchaseTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
+import { hasFeature } from '../lib/packageChecker';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -21,6 +22,19 @@ const guestTicketSchema = z.object({
   guestPhone: z.string().optional(),
   quantity: z.number().int().positive().default(1),
 });
+
+async function eventOwnerHasFeature(eventId: string, featureName: string): Promise<boolean> {
+  const event = await prisma.event.findUnique({
+    where: { id: eventId },
+    select: { church: { select: { ministryAdminId: true } } },
+  });
+  const ministryAdminId = event?.church?.ministryAdminId;
+  return ministryAdminId ? hasFeature(ministryAdminId, featureName) : false;
+}
+
+function featureUnavailableMessage(featureName: string) {
+  return `This event feature is not available in the current package. Please enable ${featureName.replace(/_/g, ' ')}.`;
+}
 
 function eventChurchIds(event: { churchId: string; linkedChurches?: Array<{ churchId: string }> }): string[] {
   const ids = event.linkedChurches?.map(link => link.churchId) ?? [];
@@ -169,6 +183,10 @@ export async function getGuestTicketFees(req: Request, res: Response): Promise<v
     res.status(404).json({ success: false, message: 'Event not found' });
     return;
   }
+  if (!(await eventOwnerHasFeature(event.id, 'event_online_payments'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_online_payments') });
+    return;
+  }
   if (!event.ticketPrice) {
     res.status(400).json({ success: false, message: 'Event has no ticket price' });
     return;
@@ -222,6 +240,18 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
     res.status(404).json({ success: false, message: 'Event not found' });
     return;
   }
+  if (!(await eventOwnerHasFeature(event.id, 'event_public_links'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_public_links') });
+    return;
+  }
+  if (!(await eventOwnerHasFeature(event.id, 'event_guest_booking'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_guest_booking') });
+    return;
+  }
+  if (!(await eventOwnerHasFeature(event.id, 'event_ticketing'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
+    return;
+  }
   if (!event.requiresTicket) {
     res.status(400).json({ success: false, message: 'Event does not require tickets' });
     return;
@@ -253,6 +283,11 @@ export async function initiateGuestTicketPurchase(req: Request, res: Response): 
 
   if (event.isFree) {
     await handleFreeGuestTicket({ event, selectedChurch, guestName, guestEmail, guestPhone: guestPhone || null, quantity, traceId, res });
+    return;
+  }
+
+  if (!(await eventOwnerHasFeature(event.id, 'event_online_payments'))) {
+    res.status(403).json({ success: false, message: featureUnavailableMessage('event_online_payments') });
     return;
   }
 

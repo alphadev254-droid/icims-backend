@@ -8,7 +8,7 @@ import { createSubdomain, toSlug } from '../lib/cloudflareDns';
 import { recordLoginAttempt } from '../middleware/metrics';
 import { displayName, logger, maskEmail, maskToken } from '../utils/logger';
 import type { UserRole } from '../types';
-import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
+import { buildSafePackageEntitlement, packageEntitlementInclude } from '../lib/packageEntitlements';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -55,18 +55,8 @@ async function getUserWithPackage(userId: string) {
 
   if (!user) return null;
 
-  const roleName = user.role?.name;
-
-  // Members don't need the package object in the auth response —
-  // hasFeature() queries the DB directly and doesn't use this field.
-  // Returning the full features array for members wastes bandwidth and
-  // exposes subscription details they have no use for.
-  if (roleName === 'member') {
-    return { ...user, package: null };
-  }
-
-  // Any non-member user with ministryAdminId, including custom roles, inherits
-  // the ministry admin's active package.
+  // Every dashboard user inherits module availability from the effective
+  // ministry owner. Permissions and church scope are still checked separately.
   const effectiveMinistryAdminId = await getEffectiveMinistryAdminId(user);
   if (effectiveMinistryAdminId) {
     const subscription = await prisma.subscription.findFirst({
@@ -75,18 +65,9 @@ async function getUserWithPackage(userId: string) {
         package: { include: packageEntitlementInclude },
       },
     });
-    if (subscription?.package) return { ...user, package: buildPackageFeatureLinks(subscription.package) };
-  }
-
-  // For ministry_admin: get their own subscription
-  if (roleName === 'ministry_admin') {
-    const subscription = await prisma.subscription.findFirst({
-      where: { ministryAdminId: userId, status: 'active' },
-      include: {
-        package: { include: packageEntitlementInclude },
-      },
-    });
-    if (subscription?.package) return { ...user, package: buildPackageFeatureLinks(subscription.package) };
+    if (subscription?.package) {
+      return { ...user, package: buildSafePackageEntitlement(subscription.package) };
+    }
   }
 
   // No subscription found
@@ -179,7 +160,8 @@ function safeUser(user: any, permissions: string[]): any {
     accountCountry: user.accountCountry,
   };
 
-  // Members don't need scope fields, package details, or ministry-level data
+  // Members borrow package feature visibility from their ministry, but they
+  // should not receive ministry-level scope/profile fields.
   if (roleName === 'member') {
     const {
       ministryAdminId: _mai,
@@ -190,7 +172,6 @@ function safeUser(user: any, permissions: string[]): any {
       numberOfBranches: _nb,
       currentMembership: _cm,
       subdomain: _sd,
-      package: _pkg,
       ...memberBase
     } = base;
     return memberBase;
@@ -521,7 +502,8 @@ export async function register(req: Request, res: Response): Promise<void> {
   });
   // ─────────────────────────────────────────────────────────────────────────
 
-  const permissions = await getUserPermissions(user);
+  const registeredUserWithPackage = await getUserWithPackage(user.id) ?? user;
+  const permissions = await getUserPermissions(registeredUserWithPackage);
 
   // ── Subdomain creation (async via BullMQ queue) ──────────────────────────
   let subdomainValue: string | null = null;
@@ -565,14 +547,14 @@ export async function register(req: Request, res: Response): Promise<void> {
     role: (user.role?.name || 'member') as UserRole,
     churchId: user.churchId,
     permissions,
-    accountCountry: user.accountCountry ?? undefined,
-    regions: parseJson(user.regions),
-    districts: parseJson(user.districts),
-    traditionalAuthorities: parseJson(user.traditionalAuthorities),
+    accountCountry: registeredUserWithPackage.accountCountry ?? undefined,
+    regions: parseJson(registeredUserWithPackage.regions),
+    districts: parseJson(registeredUserWithPackage.districts),
+    traditionalAuthorities: parseJson(registeredUserWithPackage.traditionalAuthorities),
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.status(201).json({ success: true, user: { ...safeUser(user, permissions), subdomain: subdomainValue } });
+  res.status(201).json({ success: true, user: { ...safeUser(registeredUserWithPackage, permissions), subdomain: subdomainValue } });
 }
 
 export async function registerMember(req: Request, res: Response): Promise<void> {
@@ -659,7 +641,8 @@ export async function registerMember(req: Request, res: Response): Promise<void>
     inviteToken: maskToken(data.inviteToken),
   });
 
-  const permissions = await getUserPermissions(user);
+  const userWithPackage = await getUserWithPackage(user.id) ?? user;
+  const permissions = await getUserPermissions(userWithPackage);
 
   const { queueEmail } = await import('../lib/emailQueue');
   const { memberWelcomeTemplate } = await import('../lib/emailTemplates');
@@ -688,7 +671,7 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.status(201).json({ success: true, user: safeUser(user, permissions) });
+  res.status(201).json({ success: true, user: safeUser(userWithPackage, permissions) });
 }
 
 export async function acceptTerms(req: Request, res: Response): Promise<void> {
@@ -726,7 +709,8 @@ export async function acceptTerms(req: Request, res: Response): Promise<void> {
     privacyVersion: data.privacyVersion || PRIVACY_VERSION,
   });
 
-  res.json({ success: true, user: safeUser(updated, await getUserPermissions(updated)) });
+  const updatedWithPackage = await getUserWithPackage(updated.id) ?? updated;
+  res.json({ success: true, user: safeUser(updatedWithPackage, await getUserPermissions(updatedWithPackage)) });
 }
 
 export function logout(_req: Request, res: Response): void {

@@ -26,6 +26,7 @@ import {
   scanVisitorAttendance,
 } from '../controllers/attendanceController';
 import { authenticate, authenticateOptional, authorizePermission } from '../middleware/auth';
+import { requireFeature } from '../middleware/packageCheck';
 
 const router = Router();
 
@@ -51,7 +52,7 @@ router.post('/:id/qr/activate',            authorizePermission('attendance:updat
 router.post('/:id/qr/close',               authorizePermission('attendance:update'), closeAttendanceQr);
 router.post('/:id/qr/regenerate',          authorizePermission('attendance:update'), regenerateAttendanceQr);
 router.post('/:id/scan-member',            authorizePermission('attendance:update'), scanMemberAttendanceQr);
-router.post('/:id/scan-ticket',            authorizePermission('attendance:update'), scanEventTicketAttendance);
+router.post('/:id/scan-ticket',            requireFeature('event_ticket_scanning'), authorizePermission('attendance:update'), scanEventTicketAttendance);
 router.post('/:id/scan-visitor',           authorizePermission('attendance:update'), scanVisitorAttendance);
 router.get('/:id',                         authorizePermission('attendance:read'),   getAttendanceById);
 router.put('/:id',                         authorizePermission('attendance:update'), updateAttendance);

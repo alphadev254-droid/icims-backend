@@ -77,3 +77,27 @@ export function buildPackageFeatureLinks<TPackage extends Record<string, any>>(
     features: Array.from(featureLinks.values()).sort((a, b) => (a.feature.sortOrder ?? 0) - (b.feature.sortOrder ?? 0)),
   } as unknown as TPackage;
 }
+
+export function buildSafePackageEntitlement<TPackage extends Record<string, any>>(pkg: TPackage | null | undefined) {
+  if (!pkg) return null;
+
+  const effectivePackage = buildPackageFeatureLinks(pkg);
+
+  return {
+    id: effectivePackage.id,
+    name: effectivePackage.name,
+    displayName: effectivePackage.displayName,
+    features: (effectivePackage.features ?? []).map((link: any) => ({
+      featureId: link.featureId,
+      limitValue: link.limitValue ?? null,
+      feature: {
+        id: link.feature?.id,
+        name: link.feature?.name,
+        displayName: link.feature?.displayName,
+        description: link.feature?.description ?? null,
+        category: link.feature?.category,
+        sortOrder: link.feature?.sortOrder ?? 0,
+      },
+    })),
+  };
+}

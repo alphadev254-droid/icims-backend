@@ -4,42 +4,50 @@ const prisma = new PrismaClient();
 
 const FEATURES = [
   // Core Features
-  { name: 'members_management', displayName: 'Members Management', description: 'This module helps you manage an online membership register of all the brethren in the church.', category: 'core', sortOrder: 1 },
-  { name: 'events_management', displayName: 'Events Management', description: 'This module allows you to create church events and share them with all your church members. It also issues tickets for all ticketed events.', category: 'core', sortOrder: 2 },
-  { name: 'giving_tracking', displayName: 'Giving & Donations', description: 'Online giving is made easy! You can now manage your church\'s giving online.', category: 'core', sortOrder: 3 },
-  { name: 'giving_campaigns', displayName: 'Giving Campaigns', description: 'Create and manage giving campaigns.', category: 'giving', sortOrder: 24 },
-  { name: 'giving_manual_records', displayName: 'Manual Giving Records', description: 'Record cash, bank, mobile money, or other manual giving records.', category: 'giving', sortOrder: 25 },
-  { name: 'giving_online_payments', displayName: 'Online Giving Payments', description: 'Accept online giving payments through configured payment providers.', category: 'giving', sortOrder: 26 },
-  { name: 'giving_public_links', displayName: 'Public Giving Links', description: 'Generate public giving links for campaigns.', category: 'giving', sortOrder: 27 },
-  { name: 'giving_qr_codes', displayName: 'Giving QR Codes', description: 'Generate QR codes for public giving links.', category: 'giving', sortOrder: 28 },
+  { name: 'members_management', displayName: 'Members Management', description: 'Create, update, search, and manage church member records.', category: 'core', sortOrder: 1 },
+  { name: 'events_management', displayName: 'Events Management', description: 'Create and manage church events, dates, venues, and linked churches.', category: 'core', sortOrder: 2 },
+  { name: 'giving_tracking', displayName: 'Giving Overview', description: 'View giving campaigns, totals, and collection activity.', category: 'core', sortOrder: 3 },
+  { name: 'giving_campaigns', displayName: 'Giving Campaigns', description: 'Create and manage giving campaigns across selected churches.', category: 'giving', sortOrder: 24 },
+  { name: 'giving_manual_records', displayName: 'Manual Giving Records', description: 'Record offline cash, bank, mobile money, and other manual giving payments.', category: 'giving', sortOrder: 25 },
+  { name: 'giving_online_payments', displayName: 'Online Giving Payments', description: 'Accept giving payments through the configured online checkout.', category: 'giving', sortOrder: 26 },
+  { name: 'giving_public_links', displayName: 'Public Giving Links', description: 'Create shareable campaign links for public giving.', category: 'giving', sortOrder: 27 },
+  { name: 'giving_qr_codes', displayName: 'Giving QR Codes', description: 'Generate QR codes for campaign giving links.', category: 'giving', sortOrder: 28 },
   { name: 'giving_wallets', displayName: 'Wallets', description: 'Track ministry and church wallet balances from giving, event, and other collection flows.', category: 'giving', sortOrder: 29 },
   { name: 'giving_withdrawals', displayName: 'Withdrawals', description: 'Request withdrawals from ministry and church wallet balances.', category: 'giving', sortOrder: 30 },
   { name: 'giving_cell_offering', displayName: 'Cell/Fellowship Offering', description: 'Track giving connected to cell and fellowship offerings.', category: 'giving', sortOrder: 31 },
-  { name: 'attendance_tracking', displayName: 'Attendance Tracking', description: 'Report every church meeting and retrieve the data at any time in the future.', category: 'core', sortOrder: 4 },
-  { name: 'resources_library', displayName: 'Resources Library', description: 'This module gives you a platform to keep resource materials that can be accessed by all church members.', category: 'core', sortOrder: 5 },
-  { name: 'churches_management', displayName: 'Churches Management', description: 'Create your church and manage how data flows from the churches under you in this module.', category: 'core', sortOrder: 6 },
-  { name: 'transactions_view', displayName: 'Transactions View', description: 'View all the giving transactions on your account as they happen.', category: 'core', sortOrder: 7 },
+  { name: 'attendance_tracking', displayName: 'Attendance Tracking', description: 'Create attendance records, scan check-ins, and view attendance summaries.', category: 'core', sortOrder: 4 },
+  { name: 'resources_library', displayName: 'Resources Library', description: 'Publish resources and documents for church members.', category: 'core', sortOrder: 5 },
+  { name: 'churches_management', displayName: 'Churches Management', description: 'Create and manage ministry churches and their hierarchy.', category: 'core', sortOrder: 6 },
+  { name: 'transactions_view', displayName: 'Transactions View', description: 'View giving, ticket, package, and wallet transaction records.', category: 'core', sortOrder: 7 },
   
   // Management Features
-  { name: 'users_management', displayName: 'Users Management', description: 'Manage the users using this module.', category: 'management', sortOrder: 8 },
-  { name: 'roles_permissions', displayName: 'Roles & Permissions', description: 'Assign roles and permissions to the users using this module.', category: 'management', sortOrder: 9 },
+  { name: 'users_management', displayName: 'Users Management', description: 'Create, edit, activate, and manage system users.', category: 'management', sortOrder: 8 },
+  { name: 'roles_permissions', displayName: 'Roles & Permissions', description: 'Create roles, assign permissions, and control data scope.', category: 'management', sortOrder: 9 },
   
   // Communication Features
-  { name: 'communication', displayName: 'Communication & Announcements', description: 'This module helps you manage your communication within the church. You communicate directly with your targeted audience in the church/ministry.', category: 'communication', sortOrder: 10 },
-  { name: 'teams_management', displayName: 'Teams Management', description: 'Assign your church members to teams to ensure they are engaged in the ministry\'s work.', category: 'communication', sortOrder: 11 },
-  { name: 'reminders_management', displayName: 'Reminders Management', description: 'This module reminds you of special days, including anniversaries, birthdays, and ministry events, so that you do not miss any.', category: 'communication', sortOrder: 12 },
+  { name: 'communication', displayName: 'Communication & Announcements', description: 'Send targeted church and ministry announcements.', category: 'communication', sortOrder: 10 },
+  { name: 'teams_management', displayName: 'Teams Management', description: 'Create teams and assign members for ministry work.', category: 'communication', sortOrder: 11 },
+  { name: 'reminders_management', displayName: 'Reminders Management', description: 'Track birthdays, anniversaries, ministry dates, and scheduled reminders.', category: 'communication', sortOrder: 12 },
   
   // Reporting Features
-  { name: 'reports_analytics', displayName: 'Reports & Analytics', description: 'Access all your giving, attendance, and membership reports using this module.', category: 'reporting', sortOrder: 13 },
-  { name: 'performance_dashboard', displayName: 'Performance Dashboard', description: 'Track all your Key Performance Indicators using this module.', category: 'reporting', sortOrder: 14 },
-  { name: 'advanced_reports', displayName: 'Advanced Reports', description: 'Export and analyze your data using other analytical softwares.', category: 'reporting', sortOrder: 15 },
+  { name: 'reports_analytics', displayName: 'Reports & Analytics', description: 'View ministry reports for giving, attendance, events, and members.', category: 'reporting', sortOrder: 13 },
+  { name: 'performance_dashboard', displayName: 'Performance Dashboard', description: 'View KPI dashboards and ministry performance trends.', category: 'reporting', sortOrder: 14 },
+  { name: 'advanced_reports', displayName: 'Advanced Reports', description: 'Export detailed data for deeper analysis.', category: 'reporting', sortOrder: 15 },
   
   // Event Features
-  { name: 'event_ticketing', displayName: 'Event Ticketing', description: 'Issue tickets for your events using this module.', category: 'events', sortOrder: 16 },
-  { name: 'event_attendance', displayName: 'Event Attendance Tracking', description: 'Report your service attendance using this module.', category: 'events', sortOrder: 17 },
+  { name: 'event_ticketing', displayName: 'Event Ticketing', description: 'Create and manage tickets for events.', category: 'events', sortOrder: 16 },
+  { name: 'event_attendance', displayName: 'Event Attendance Tracking', description: 'Create event attendance records and connect tickets to attendance.', category: 'events', sortOrder: 17 },
+  { name: 'event_public_links', displayName: 'Event Public Links', description: 'Generate public event links for registration and ticket booking.', category: 'events', sortOrder: 32 },
+  { name: 'event_qr_codes', displayName: 'Event QR Codes', description: 'Generate QR codes for public event links.', category: 'events', sortOrder: 33 },
+  { name: 'event_member_booking', displayName: 'Member Event Booking', description: 'Allow signed-in members to book their own event tickets.', category: 'events', sortOrder: 34 },
+  { name: 'event_guest_booking', displayName: 'Guest Event Booking', description: 'Allow guests to register or buy tickets from public event pages.', category: 'events', sortOrder: 35 },
+  { name: 'event_online_payments', displayName: 'Event Online Payments', description: 'Accept online payments for paid event tickets.', category: 'events', sortOrder: 36 },
+  { name: 'event_manual_payments', displayName: 'Event Manual Payments', description: 'Record manual cash, bank, mobile money, or other ticket payments.', category: 'events', sortOrder: 37 },
+  { name: 'event_ticket_scanning', displayName: 'Event Ticket Scanning', description: 'Scan booked tickets into event attendance records.', category: 'events', sortOrder: 38 },
+  { name: 'event_reports', displayName: 'Event Reports', description: 'View event ticket lists, attendance summaries, and event exports.', category: 'events', sortOrder: 39 },
   
   // Cell / Fellowship Management
-  { name: 'cell_management', displayName: 'Cell & Fellowship Management', description: 'Manage cells and home fellowships using this module.', category: 'management', sortOrder: 21 },
+  { name: 'cell_management', displayName: 'Cell & Fellowship Management', description: 'Manage cells, fellowships, meetings, attendance, and member assignments.', category: 'management', sortOrder: 21 },
 
   // Pledges
   { name: 'pledges_management', displayName: 'Pledge Management', description: 'Allow members to make giving pledges against campaigns and track fulfillment over time.', category: 'core', sortOrder: 22 },
@@ -101,10 +109,22 @@ const MODULE_BUNDLES = [
   {
     key: 'events_full',
     name: 'Events Full',
-    description: 'Event management, ticketing, and event attendance.',
+    description: 'Event management, public links, QR codes, member and guest booking, ticket payments, scanning, and event reports.',
     category: 'events',
     sortOrder: 5,
-    features: ['events_management', 'event_ticketing', 'event_attendance'],
+    features: [
+      'events_management',
+      'event_public_links',
+      'event_qr_codes',
+      'event_member_booking',
+      'event_guest_booking',
+      'event_ticketing',
+      'event_online_payments',
+      'event_manual_payments',
+      'event_attendance',
+      'event_ticket_scanning',
+      'event_reports',
+    ],
   },
   {
     key: 'communication_full',
