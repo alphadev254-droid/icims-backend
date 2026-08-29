@@ -3,7 +3,7 @@
 // For now, using approximate rates as of 2024
 const EXCHANGE_RATES = {
   MWK: parseFloat(process.env.USD_TO_MWK_RATE || '1730'), // 1 USD = 1730 MWK
-  KES: parseFloat(process.env.USD_TO_KES_RATE || '129'),  // 1 USD = 129 KES
+  KES: parseFloat(process.env.USD_TO_KES_RATE || process.env.USD_TO_KSH_RATE || '129'),  // 1 USD = 129 KES
 };
 
 /**

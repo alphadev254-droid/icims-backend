@@ -42,6 +42,124 @@ export async function getModuleBundles(_req: Request, res: Response): Promise<vo
   res.json({ success: true, data: bundles });
 }
 
+export async function getPricingMarkets(_req: Request, res: Response): Promise<void> {
+  const markets = await prisma.pricingMarket.findMany({
+    where: { isActive: true },
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    include: {
+      _count: { select: { countries: true, packagePrices: true } },
+    },
+  });
+
+  res.json({ success: true, data: markets });
+}
+
+export async function getCountries(_req: Request, res: Response): Promise<void> {
+  const countries = await prisma.country.findMany({
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    include: { pricingMarket: true },
+  });
+
+  res.json({ success: true, data: countries });
+}
+
+const pricingMarketSchema = z.object({
+  code: z.string().min(2).max(64).regex(/^[a-z0-9_-]+$/i).transform(value => value.trim().toLowerCase()),
+  name: z.string().min(2).max(120),
+  currencyCode: z.string().min(2).max(8).transform(value => value.trim().toUpperCase()),
+  packageGateway: z.enum(['paystack', 'paychangu']).default('paystack'),
+  isDefault: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+  sortOrder: z.number().int().default(0),
+});
+
+export async function createPricingMarket(req: Request, res: Response): Promise<void> {
+  const parsed = pricingMarketSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const market = await prisma.$transaction(async (tx) => {
+    if (parsed.data.isDefault) {
+      await tx.pricingMarket.updateMany({ data: { isDefault: false } });
+    }
+    return tx.pricingMarket.create({ data: parsed.data });
+  });
+
+  res.status(201).json({ success: true, data: market });
+}
+
+export async function updatePricingMarket(req: Request, res: Response): Promise<void> {
+  const parsed = pricingMarketSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const id = String(req.params.id);
+  const existing = await prisma.pricingMarket.findUnique({ where: { id } });
+  if (!existing) {
+    res.status(404).json({ success: false, message: 'Pricing market not found' });
+    return;
+  }
+
+  const market = await prisma.$transaction(async (tx) => {
+    if (parsed.data.isDefault) {
+      await tx.pricingMarket.updateMany({ where: { id: { not: id } }, data: { isDefault: false } });
+    }
+    return tx.pricingMarket.update({ where: { id }, data: parsed.data });
+  });
+
+  res.json({ success: true, data: market });
+}
+
+export async function deletePricingMarket(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+  const market = await prisma.pricingMarket.findUnique({ where: { id } });
+  if (!market) {
+    res.status(404).json({ success: false, message: 'Pricing market not found' });
+    return;
+  }
+  if (market.isDefault) {
+    res.status(400).json({ success: false, message: 'Default pricing market cannot be removed' });
+    return;
+  }
+
+  await prisma.pricingMarket.update({ where: { id }, data: { isActive: false } });
+  res.json({ success: true, message: 'Pricing market disabled' });
+}
+
+const countryMarketSchema = z.object({
+  pricingMarketId: z.string().nullable().optional(),
+});
+
+export async function updateCountryPricingMarket(req: Request, res: Response): Promise<void> {
+  const parsed = countryMarketSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  if (parsed.data.pricingMarketId) {
+    const market = await prisma.pricingMarket.findFirst({
+      where: { id: parsed.data.pricingMarketId, isActive: true },
+    });
+    if (!market) {
+      res.status(400).json({ success: false, message: 'Selected pricing market is not available' });
+      return;
+    }
+  }
+
+  const country = await prisma.country.update({
+    where: { id: String(req.params.id) },
+    data: { pricingMarketId: parsed.data.pricingMarketId ?? null },
+    include: { pricingMarket: true },
+  });
+
+  res.json({ success: true, data: country });
+}
+
 // ─── POST /api/admin/packages ─────────────────────────────────────────────────
 
 const packageSchema = z.object({
@@ -50,6 +168,7 @@ const packageSchema = z.object({
   description: z.string().optional(),
   priceMonthly: z.number().min(0).default(0),
   priceYearly: z.number().min(0).default(0),
+  currencyCode: z.string().min(2).max(8).default('USD').transform(value => value.toUpperCase()),
   isActive: z.boolean().default(true),
   isPrivate: z.boolean().default(false),
   sortOrder: z.number().int().default(0),
@@ -73,6 +192,12 @@ const packageSchema = z.object({
     limitValue: z.number().int().optional().nullable(),
     reason: z.string().optional().nullable(),
   })).optional(),
+  marketPrices: z.array(z.object({
+    pricingMarketId: z.string(),
+    priceMonthly: z.number().min(0),
+    priceYearly: z.number().min(0),
+    currencyCode: z.string().min(2).max(8),
+  })).optional(),
 });
 
 export async function createPackage(req: Request, res: Response): Promise<void> {
@@ -82,7 +207,8 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const { features, moduleBundles, bundleFeatureOverrides, ...data } = parsed.data;
+  const { features, moduleBundles, bundleFeatureOverrides, marketPrices, ...data } = parsed.data;
+  const effectiveMarketPrices = data.isPrivate ? [] : (marketPrices ?? []);
 
   const pkg = await prisma.$transaction(async (tx) => {
     const now = new Date();
@@ -114,6 +240,16 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
             updatedAt: now,
           })),
         } : undefined,
+        marketPrices: effectiveMarketPrices.length > 0 ? {
+          create: effectiveMarketPrices.map(price => ({
+            pricingMarketId: price.pricingMarketId,
+            priceMonthly: price.priceMonthly,
+            priceYearly: price.priceYearly,
+            currencyCode: price.currencyCode,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        } : undefined,
       },
     });
 
@@ -137,7 +273,8 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const { features, moduleBundles, bundleFeatureOverrides, ...data } = parsed.data;
+  const { features, moduleBundles, bundleFeatureOverrides, marketPrices, ...data } = parsed.data;
+  const effectiveMarketPrices = data.isPrivate ? [] : marketPrices;
 
   const updated = await prisma.$transaction(async (tx) => {
     await tx.package.update({
@@ -187,6 +324,24 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
             enabled: override.enabled,
             limitValue: override.limitValue ?? null,
             reason: override.reason ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        });
+      }
+    }
+
+    if (effectiveMarketPrices !== undefined) {
+      await tx.packageMarketPrice.deleteMany({ where: { packageId: id } });
+      if (effectiveMarketPrices.length > 0) {
+        const now = new Date();
+        await tx.packageMarketPrice.createMany({
+          data: effectiveMarketPrices.map(price => ({
+            packageId: id,
+            pricingMarketId: price.pricingMarketId,
+            priceMonthly: price.priceMonthly,
+            priceYearly: price.priceYearly,
+            currencyCode: price.currencyCode,
             createdAt: now,
             updatedAt: now,
           })),
@@ -265,5 +420,6 @@ export async function getConversionRates(_req: Request, res: Response): Promise<
   const kesRate = parseFloat(process.env.USD_TO_KSH_RATE || '129');
   const malawiDiscount = parseFloat(process.env.MALAWI_PACKAGE_DISCOUNT || '0.5');
   const kenyaDiscount = parseFloat(process.env.KENYA_PACKAGE_DISCOUNT || '1');
-  res.json({ success: true, data: { mwkRate, kesRate, malawiDiscount, kenyaDiscount } });
+  const generalDiscount = parseFloat(process.env.GENERAL_PACKAGE_DISCOUNT || '1');
+  res.json({ success: true, data: { mwkRate, kesRate, malawiDiscount, kenyaDiscount, generalDiscount } });
 }

@@ -16,6 +16,9 @@ export const packageEntitlementInclude = {
   bundleFeatureOverrides: {
     include: { feature: true },
   },
+  marketPrices: {
+    include: { pricingMarket: true },
+  },
 } as const;
 
 export function buildPackageFeatureLinks<TPackage extends Record<string, any>>(

@@ -838,6 +838,7 @@ model Package {
   description  String?  @db.Text
   priceMonthly Float    @default(0)
   priceYearly  Float    @default(0)
+  currencyCode String   @default("USD")
   isActive     Boolean  @default(true)
   isPrivate    Boolean  @default(false) // private packages hidden from public listing
   sortOrder    Int      @default(0)
@@ -853,11 +854,69 @@ model Package {
   features               PackageFeatureLink[]
   moduleBundles          PackageModuleBundle[]
   bundleFeatureOverrides PackageBundleFeatureOverride[]
+  marketPrices           PackageMarketPrice[]
   payments               Payment[]
   subscriptions          Subscription[]
   invoices               PackageInvoice[]
 
   @@map("packages")
+}
+
+model PricingMarket {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  name           String
+  currencyCode   String   @default("KES")
+  packageGateway String   @default("paystack")
+  isDefault      Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  countries     Country[]
+  packagePrices PackageMarketPrice[]
+
+  @@index([isActive, sortOrder])
+  @@map("pricing_markets")
+}
+
+model Country {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  iso2            String   @unique
+  iso3            String?
+  phoneCode       String?
+  currencyCode    String?
+  pricingMarketId String?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  pricingMarket PricingMarket? @relation(fields: [pricingMarketId], references: [id], onDelete: SetNull)
+
+  @@index([pricingMarketId])
+  @@index([isActive, name])
+  @@map("countries")
+}
+
+model PackageMarketPrice {
+  id              String   @id @default(cuid())
+  packageId       String
+  pricingMarketId String
+  priceMonthly    Float
+  priceYearly     Float
+  currencyCode    String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  package       Package       @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  pricingMarket PricingMarket @relation(fields: [pricingMarketId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, pricingMarketId], map: "pkg_market_price_key")
+  @@index([pricingMarketId])
+  @@map("package_market_prices")
 }
 
 model PackageFeature {

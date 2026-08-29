@@ -7,6 +7,7 @@ import {
   setPackageFeatures,
   calculateFees,
   getPayments, createPayment, updatePayment,
+  getCountries,
 } from '../controllers/packageController';
 import { getMyPackageInvoice, getMyPackageInvoices, getPublicPackageInvoice } from '../controllers/packageInvoiceController';
 import { Request, Response } from 'express';
@@ -30,6 +31,7 @@ const router = Router();
 router.get('/',         authenticateOptional, getPackages);   // Public pricing page + dashboard
 router.get('/features', authenticateOptional, getFeatures);  // Public feature list
 router.get('/rates',    getRates);                           // Public conversion rates
+router.get('/countries', getCountries);                       // Public country list for signup
 router.get('/invoices/public/:token', getPublicPackageInvoice);
 
 // All other routes require authentication

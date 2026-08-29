@@ -27,6 +27,12 @@ import {
   getPackages,
   getAllFeatures,
   getModuleBundles,
+  getPricingMarkets,
+  getCountries,
+  createPricingMarket,
+  updatePricingMarket,
+  deletePricingMarket,
+  updateCountryPricingMarket,
   createPackage,
   updatePackage,
   deletePackage,
@@ -90,6 +96,12 @@ router.put('/church-users/:id', updateAdminChurchUser);
 router.get('/packages/rates', getConversionRates);
 router.get('/packages', getPackages);
 router.get('/packages/module-bundles', getModuleBundles);
+router.get('/packages/pricing-markets', getPricingMarkets);
+router.post('/packages/pricing-markets', createPricingMarket);
+router.put('/packages/pricing-markets/:id', updatePricingMarket);
+router.delete('/packages/pricing-markets/:id', deletePricingMarket);
+router.get('/packages/countries', getCountries);
+router.put('/packages/countries/:id/market', updateCountryPricingMarket);
 router.post('/packages', createPackage);
 router.put('/packages/:id', updatePackage);
 router.delete('/packages/:id', deletePackage);

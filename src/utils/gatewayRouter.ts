@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma';
+import { currencyForGateway, gatewayForCountry, gatewayMarketLabel, PaymentGateway } from './pricingMarkets';
 
-export async function getPaymentGateway(userId: string): Promise<'paystack' | 'paychangu'> {
+export async function getPaymentGateway(userId: string): Promise<PaymentGateway> {
   console.log(`[GATEWAY] Getting payment gateway for userId: ${userId}`);
   
   const user = await prisma.user.findUnique({
@@ -43,13 +44,13 @@ export async function getPaymentGateway(userId: string): Promise<'paystack' | 'p
     }
   }
 
-  const gateway = country === 'Malawi' ? 'paychangu' : 'paystack';
+  const gateway = gatewayForCountry(country);
   console.log(`[GATEWAY] Final decision - Country: ${country}, Gateway: ${gateway}`);
   
   return gateway;
 }
 
-export async function getPaymentGatewayByChurch(churchId: string): Promise<'paystack' | 'paychangu'> {
+export async function getPaymentGatewayByChurch(churchId: string): Promise<PaymentGateway> {
   console.log(`[GATEWAY] Getting payment gateway for churchId: ${churchId}`);
 
   const church = await prisma.church.findUnique({
@@ -67,15 +68,15 @@ export async function getPaymentGatewayByChurch(churchId: string): Promise<'pays
     country = ministryAdmin?.accountCountry;
   }
 
-  const gateway = country === 'Malawi' ? 'paychangu' : 'paystack';
+  const gateway = gatewayForCountry(country);
   console.log(`[GATEWAY] Church gateway - Country: ${country}, Gateway: ${gateway}`);
   return gateway;
 }
 
-export function getCurrency(gateway: 'paystack' | 'paychangu'): string {
-  return gateway === 'paychangu' ? 'MWK' : 'KES';
+export function getCurrency(gateway: PaymentGateway): string {
+  return currencyForGateway(gateway);
 }
 
-export function getGatewayCountry(gateway: 'paystack' | 'paychangu'): string {
-  return gateway === 'paychangu' ? 'Malawi' : 'Kenya';
+export function getGatewayCountry(gateway: PaymentGateway): string {
+  return gatewayMarketLabel(gateway);
 }

@@ -299,7 +299,7 @@ const registerSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
   phone: z.string().min(1, 'Phone number is required'),
   gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
-  accountCountry: z.enum(['Malawi', 'Kenya'], { required_error: 'Country is required' }).optional(),
+  accountCountry: z.string({ required_error: 'Country is required' }).trim().min(2, 'Country is required').max(80).optional(),
   anniversary: z.string().optional(),
   // Member-specific fields (sent when registering via invite link)
   dateOfBirth: z.string().optional(),

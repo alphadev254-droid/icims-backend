@@ -2,6 +2,15 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
+import {
+  countryFromRequestHeaders,
+  findPackageMarketPrice,
+  packageDiscountFallbackForMarket,
+  packageDiscountKeyForMarket,
+  packageAvailableInMarket,
+  packageRateKeyForMarket,
+  resolvePricingMarket,
+} from '../utils/pricingMarkets';
 
 // ─── Packages (tiers) ─────────────────────────────────────────────────────────
 
@@ -16,12 +25,11 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     include: packageEntitlementInclude,
   });
 
-  // Determine account country
-  let accountCountry = 'Kenya';
-  // Allow public pricing page to request a specific country
-  if (req.query.country === 'Malawi' || req.query.country === 'Kenya') {
-    accountCountry = req.query.country as string;
-  } else if (userId) {
+  let accountCountry = typeof req.query.country === 'string'
+    ? req.query.country
+    : countryFromRequestHeaders(req.headers);
+
+  if (!accountCountry && userId) {
     // For ministry_admin: read their own accountCountry directly
     if (role === 'ministry_admin') {
       const admin = await prisma.user.findUnique({
@@ -50,22 +58,33 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     }
   }
 
-  const isMalawi = accountCountry === 'Malawi';
-  const currency = isMalawi ? 'MWK' : 'KES';
-  const rateKey = isMalawi ? 'USD_TO_MWK_RATE' : 'USD_TO_KSH_RATE';
+  const market = await resolvePricingMarket(accountCountry);
+  const currency = market.currencyCode;
+  const rateKey = packageRateKeyForMarket(market.code);
   const rateVal = process.env[rateKey];
   if (!rateVal || isNaN(parseFloat(rateVal))) throw new Error('Payment configuration is not available. Please contact support.');
   const rate = parseFloat(rateVal);
-  const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
-  const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
+  const discountKey = packageDiscountKeyForMarket(market.code);
+  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
 
-  const convertedPackages = packages.map(rawPackage => {
+  const convertedPackages = packages
+  .map(rawPackage => {
     const pkg = buildPackageFeatureLinks(rawPackage);
+    if (!packageAvailableInMarket(pkg, market.id)) return null;
+    const marketPrice = findPackageMarketPrice(pkg, market.id);
+    const priceMonthly = marketPrice ? marketPrice.priceMonthly : Math.round(pkg.priceMonthly * rate * discount);
+    const priceYearly = marketPrice ? marketPrice.priceYearly : Math.round(pkg.priceYearly * rate * discount);
     return {
     ...pkg,
-    priceMonthly: Math.round(pkg.priceMonthly * rate * discount),
-    priceYearly: Math.round(pkg.priceYearly * rate * discount),
-    currency,
+    priceMonthly,
+    priceYearly,
+    currency: marketPrice?.currencyCode ?? currency,
+    pricingMarket: {
+      code: market.code,
+      name: market.name,
+      country: market.country,
+      gateway: market.packageGateway,
+    },
     // Only return non-limit features (no limitValue exposed)
     features: pkg.features
       .filter(f => f.feature.category !== 'limit')
@@ -73,9 +92,41 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     // Keep direct limit fields for display — these are the authoritative limits
     // maxChurches, maxMembers, maxEvents, maxGivings, maxCells stay in response
     };
+  })
+  .filter(Boolean);
+
+  res.json({
+    success: true,
+    data: convertedPackages,
+    pricing: {
+      market: market.code,
+      marketName: market.name,
+      country: market.country,
+      currency,
+      gateway: market.packageGateway,
+    },
+  });
+}
+
+/** GET /api/packages/countries — countries available during public registration */
+export async function getCountries(_req: Request, res: Response): Promise<void> {
+  const countries = await prisma.country.findMany({
+    where: { isActive: true },
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    select: {
+      id: true,
+      name: true,
+      iso2: true,
+      iso3: true,
+      phoneCode: true,
+      currencyCode: true,
+      pricingMarket: {
+        select: { code: true, name: true, currencyCode: true, packageGateway: true },
+      },
+    },
   });
 
-  res.json({ success: true, data: convertedPackages });
+  res.json({ success: true, data: countries });
 }
 
 /** GET /api/packages/current — current user's package with feature access */
@@ -184,7 +235,11 @@ export async function deleteFeature(req: Request, res: Response): Promise<void> 
 /** PUT /api/packages/:id/features — set which features belong to this package */
 export async function setPackageFeatures(req: Request, res: Response): Promise<void> {
   const packageId = String(req.params.id);
-  const pkg = await prisma.package.findUnique({ where: { id: packageId } });
+  const rawPkg = await prisma.package.findUnique({
+    where: { id: packageId },
+    include: { marketPrices: true },
+  });
+  const pkg = rawPkg ? buildPackageFeatureLinks(rawPkg) : null;
   if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
 
   const { featureIds } = z.object({ featureIds: z.array(z.string()) }).parse(req.body);
@@ -219,7 +274,10 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const pkg = await prisma.package.findUnique({ where: { id: packageId } });
+  const pkg = await prisma.package.findUnique({
+    where: { id: packageId },
+    include: { marketPrices: true },
+  });
   if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
 
   // Resolve ministryAdminId to get accountCountry
@@ -231,25 +289,52 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
   const admin = ministryAdminId
     ? await prisma.user.findUnique({ where: { id: ministryAdminId }, select: { accountCountry: true } })
     : null;
-  const country = admin?.accountCountry || 'Kenya';
-
-  const isMalawi = country === 'Malawi';
-  const currency = isMalawi ? 'MWK' : 'KES';
-  const usdRateKey = isMalawi ? 'USD_TO_MWK_RATE' : 'USD_TO_KSH_RATE';
+  if (pkg.isPrivate) {
+    if (!ministryAdminId) {
+      res.status(403).json({ success: false, message: 'This private package is not available for this account.' });
+      return;
+    }
+    const assignedPrivatePackage = await prisma.subscription.findFirst({
+      where: { ministryAdminId, packageId: pkg.id },
+      select: { id: true },
+    });
+    if (!assignedPrivatePackage) {
+      res.status(403).json({ success: false, message: 'This private package is not assigned to your ministry account.' });
+      return;
+    }
+  }
+  const market = await resolvePricingMarket(admin?.accountCountry);
+  const currency = pkg.isPrivate ? (pkg.currencyCode || market.currencyCode) : market.currencyCode;
+  const usdRateKey = packageRateKeyForMarket(market.code);
   const usdRateVal = process.env[usdRateKey];
   if (!usdRateVal || isNaN(parseFloat(usdRateVal))) throw new Error('Payment configuration is not available. Please contact support.');
   const usdRate = parseFloat(usdRateVal);
 
   const baseUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
-  const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
-  const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
+  const marketPrice = pkg.isPrivate ? null : findPackageMarketPrice(pkg, market.id);
+  if (!pkg.isPrivate && !packageAvailableInMarket(pkg, market.id)) {
+    res.status(400).json({ success: false, message: 'This package is not available for your country or market.' });
+    return;
+  }
+  const discountKey = packageDiscountKeyForMarket(market.code);
+  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
-  const fees = calculatePaymentFees(parseFloat((baseUSD * usdRate * discount).toFixed(2)), country);
+  const baseAmount = pkg.isPrivate
+    ? Number(billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly)
+    : marketPrice
+    ? Number(billingCycle === 'monthly' ? marketPrice.priceMonthly : marketPrice.priceYearly)
+    : parseFloat((baseUSD * usdRate * discount).toFixed(2));
+  const fees = calculatePaymentFees(baseAmount, market.name);
 
   res.json({
     success: true,
     data: {
-      currency,
+      currency: pkg.isPrivate ? currency : (marketPrice?.currencyCode ?? currency),
+      pricingMarket: {
+        code: market.code,
+        name: market.name,
+        gateway: market.packageGateway,
+      },
       baseAmount: fees.baseAmount,
       convenienceFee: fees.convenienceFee,
       systemFeeAmount: fees.systemFeeAmount,

@@ -1,3 +1,5 @@
+import { gatewayUsesPaystack } from './pricingMarkets';
+
 interface PaymentFees {
   baseAmount: number;
   convenienceFee: number;
@@ -31,13 +33,14 @@ export function calculatePaymentFees(baseAmount: number, country?: string): Paym
   const PAYSTACK_FEE_RATE  = requireEnv('PAYSTACK_FEE_RATE') / 100;
   const PAYCHANGU_FEE_RATE = requireEnv('PAYMENT_CONVENIENCE_FEE_PERCENTAGE') / 100;
 
-  const gatewayFeeRate = country === 'Kenya' ? PAYSTACK_FEE_RATE : PAYCHANGU_FEE_RATE;
+  const usePaystack = gatewayUsesPaystack(country);
+  const gatewayFeeRate = usePaystack ? PAYSTACK_FEE_RATE : PAYCHANGU_FEE_RATE;
   const exactConvenienceFee = baseAmount * gatewayFeeRate;
   const convenienceFee = ceilMoney(exactConvenienceFee);
 
   const KENYA_SYSTEM_FEE_RATE  = requireEnv('CONVENIENCE_RATE_KENYA') / 100;
   const MALAWI_SYSTEM_FEE_RATE = requireEnv('CONVENIENCE_RATE_MALAWI') / 100;
-  const systemFeeRate   = country === 'Kenya' ? KENYA_SYSTEM_FEE_RATE : MALAWI_SYSTEM_FEE_RATE;
+  const systemFeeRate   = usePaystack ? KENYA_SYSTEM_FEE_RATE : MALAWI_SYSTEM_FEE_RATE;
   const exactSystemFeeAmount = baseAmount * systemFeeRate;
   const systemFeeAmount = ceilMoney(exactSystemFeeAmount);
 

@@ -470,7 +470,7 @@ const updateUserSchema = z.object({
   email: z.string().email().optional(),
   phone: z.string().nullable().optional(),
   status: z.enum(['active', 'suspended', 'inactive', 'cancelled']).optional(),
-  accountCountry: z.enum(['Malawi', 'Kenya']).nullable().optional(),
+  accountCountry: z.string().trim().min(2).max(80).nullable().optional(),
   title: z.string().nullable().optional(),
   titleOther: z.string().nullable().optional(),
   ministryName: z.string().nullable().optional(),

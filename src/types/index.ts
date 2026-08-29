@@ -15,7 +15,7 @@ export interface JwtPayload {
   role: UserRole;         // convenience role name string
   churchId: string | null;
   permissions: string[];
-  accountCountry?: string;           // 'Malawi' | 'Kenya' — for currency + gateway routing
+  accountCountry?: string;           // Country name used to resolve pricing markets and gateway routing
   // Geographic scope — determines which churches this user accesses
   regions?: string[];
   districts?: string[];

@@ -2,6 +2,13 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { convertUSDToLocal } from '../utils/currencyConversion';
+import {
+  findPackageMarketPrice,
+  packageDiscountFallbackForMarket,
+  packageDiscountKeyForMarket,
+  packageRateKeyForMarket,
+  resolvePricingMarket,
+} from '../utils/pricingMarkets';
 import { queueEmail } from '../lib/emailQueue';
 import { packageInvoiceTemplate } from '../lib/emailTemplates';
 import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
@@ -22,19 +29,32 @@ import {
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
 
-function getDiscountForCountry(country?: string | null) {
-  const isMalawi = (country || 'Kenya') === 'Malawi';
-  return parseFloat(process.env[isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT'] || (isMalawi ? '0.5' : '1'));
-}
+async function defaultPackagePricing(pkg: any, billingCycle: string, country?: string | null) {
+  if (pkg.isPrivate) {
+    return {
+      amount: Number(billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly),
+      currency: pkg.currencyCode || 'KES',
+    };
+  }
 
-function getCurrencyForCountry(country?: string | null) {
-  return (country || 'Kenya') === 'Malawi' ? 'MWK' : 'KES';
-}
+  const market = await resolvePricingMarket(country);
+  const marketPrice = findPackageMarketPrice(pkg, market.id);
+  if (marketPrice) {
+    return {
+      amount: Number(billingCycle === 'yearly' ? marketPrice.priceYearly : marketPrice.priceMonthly),
+      currency: marketPrice.currencyCode || market.currencyCode,
+    };
+  }
 
-function defaultPackageAmount(pkg: any, billingCycle: string, country?: string | null) {
-  const currency = getCurrencyForCountry(country);
+  const rateKey = packageRateKeyForMarket(market.code);
+  const rate = parseFloat(process.env[rateKey] || (market.code === 'malawi' ? '1730' : '129'));
+  const discountKey = packageDiscountKeyForMarket(market.code);
+  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
   const usdAmount = billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly;
-  return Math.round(convertUSDToLocal(usdAmount, currency as 'MWK' | 'KES') * getDiscountForCountry(country));
+  return {
+    amount: Math.round(convertUSDToLocal(usdAmount, market.currencyCode as 'MWK' | 'KES') * discount),
+    currency: market.currencyCode,
+  };
 }
 
 function parseDate(value: string, field: string) {
@@ -204,7 +224,10 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
     return;
   }
 
-  const pkg = await prisma.package.findUnique({ where: { id: parsed.data.packageId } });
+  const pkg = await prisma.package.findUnique({
+    where: { id: parsed.data.packageId },
+    include: { marketPrices: true },
+  });
   if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
 
   const servicePeriodStart = parseDate(parsed.data.servicePeriodStart, 'servicePeriodStart');
@@ -217,8 +240,9 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
   }
   const invoiceDate = parsed.data.invoiceDate ? parseDate(parsed.data.invoiceDate, 'invoiceDate') : new Date();
   const dueDate = parseDate(parsed.data.dueDate, 'dueDate');
-  const currency = parsed.data.currency || getCurrencyForCountry(admin.accountCountry);
-  const amount = defaultPackageAmount(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry) * (parsed.data.billingCycle === 'yearly' ? 1 : invoiceMonths);
+  const defaultPricing = await defaultPackagePricing(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry);
+  const currency = parsed.data.currency || defaultPricing.currency;
+  const amount = defaultPricing.amount * (parsed.data.billingCycle === 'yearly' ? 1 : invoiceMonths);
 
   const invoice = await prisma.packageInvoice.create({
     data: {
