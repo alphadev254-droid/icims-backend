@@ -48,6 +48,7 @@ function ministryLabel(row: SubscriptionRow) {
 
 async function main() {
   const hasPackageCurrency = await columnExists('packages', 'currencyCode');
+  const hasUserAccountCountry = await columnExists('users', 'account_country');
   const packages = await prisma.$queryRawUnsafe<PackageRow[]>(`
     SELECT
       id,
@@ -72,7 +73,7 @@ async function main() {
       u.lastName,
       u.email,
       u.ministryName,
-      u.accountCountry
+      ${hasUserAccountCountry ? 'u.account_country' : 'NULL'} AS accountCountry
     FROM subscriptions s
     LEFT JOIN users u ON u.id = s.ministryAdminId
     WHERE s.status = 'active'
@@ -81,6 +82,7 @@ async function main() {
 
   console.log('Package market readiness audit');
   console.log(`Package currency column present: ${hasPackageCurrency ? 'yes' : 'no'}`);
+  console.log(`User account country column present: ${hasUserAccountCountry ? 'yes' : 'no'}`);
   console.log(`Packages found: ${packages.length}`);
   console.log(`Active subscriptions found: ${subscriptions.length}`);
 
