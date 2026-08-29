@@ -49,7 +49,7 @@ CREATE TABLE `package_bundle_feature_overrides` (
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
-    UNIQUE INDEX `package_bundle_feature_overrides_packageId_bundleId_featureId_key`(`packageId`, `bundleId`, `featureId`),
+    UNIQUE INDEX `pkg_bundle_feature_override_key`(`packageId`, `bundleId`, `featureId`),
     INDEX `package_bundle_feature_overrides_bundleId_idx`(`bundleId`),
     INDEX `package_bundle_feature_overrides_featureId_idx`(`featureId`),
     PRIMARY KEY (`id`)

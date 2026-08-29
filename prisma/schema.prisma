@@ -955,7 +955,7 @@ model PackageBundleFeatureOverride {
   bundle  ModuleBundle   @relation(fields: [bundleId], references: [id], onDelete: Cascade)
   feature PackageFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
 
-  @@unique([packageId, bundleId, featureId])
+  @@unique([packageId, bundleId, featureId], map: "pkg_bundle_feature_override_key")
   @@index([bundleId])
   @@index([featureId])
   @@map("package_bundle_feature_overrides")
