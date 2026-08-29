@@ -34,8 +34,8 @@ const FEATURES = [
   { name: 'giving_online_payments', displayName: 'Online Giving Payments', description: 'Accept online giving payments through configured payment providers.', category: 'giving', sortOrder: 26 },
   { name: 'giving_public_links', displayName: 'Public Giving Links', description: 'Generate public giving links for campaigns.', category: 'giving', sortOrder: 27 },
   { name: 'giving_qr_codes', displayName: 'Giving QR Codes', description: 'Generate QR codes for public giving links.', category: 'giving', sortOrder: 28 },
-  { name: 'giving_wallets', displayName: 'Giving Wallets', description: 'Track ministry and church wallet balances from giving collections.', category: 'giving', sortOrder: 29 },
-  { name: 'giving_withdrawals', displayName: 'Giving Withdrawals', description: 'Request withdrawals from giving wallet balances.', category: 'giving', sortOrder: 30 },
+  { name: 'giving_wallets', displayName: 'Wallets', description: 'Track ministry and church wallet balances from giving, event, and other collection flows.', category: 'giving', sortOrder: 29 },
+  { name: 'giving_withdrawals', displayName: 'Withdrawals', description: 'Request withdrawals from ministry and church wallet balances.', category: 'giving', sortOrder: 30 },
   { name: 'giving_cell_offering', displayName: 'Cell/Fellowship Offering', description: 'Track giving connected to cell and fellowship offerings.', category: 'giving', sortOrder: 31 },
 ];
 
