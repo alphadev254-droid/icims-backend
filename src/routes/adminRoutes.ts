@@ -26,6 +26,7 @@ import {
 import {
   getPackages,
   getAllFeatures,
+  getModuleBundles,
   createPackage,
   updatePackage,
   deletePackage,
@@ -88,6 +89,7 @@ router.put('/church-users/:id', updateAdminChurchUser);
 // Package management
 router.get('/packages/rates', getConversionRates);
 router.get('/packages', getPackages);
+router.get('/packages/module-bundles', getModuleBundles);
 router.post('/packages', createPackage);
 router.put('/packages/:id', updatePackage);
 router.delete('/packages/:id', deletePackage);

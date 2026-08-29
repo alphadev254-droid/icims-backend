@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
 
 // ─── Packages (tiers) ─────────────────────────────────────────────────────────
 
@@ -12,12 +13,7 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   const packages = await prisma.package.findMany({
     where: { isActive: true, isPrivate: false },
     orderBy: { sortOrder: 'asc' },
-    include: {
-      features: {
-        include: { feature: true },
-        orderBy: { feature: { sortOrder: 'asc' } },
-      },
-    },
+    include: packageEntitlementInclude,
   });
 
   // Determine account country
@@ -63,7 +59,9 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   const discountKey = isMalawi ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT';
   const discount = parseFloat(process.env[discountKey] || (isMalawi ? '0.5' : '1'));
 
-  const convertedPackages = packages.map(pkg => ({
+  const convertedPackages = packages.map(rawPackage => {
+    const pkg = buildPackageFeatureLinks(rawPackage);
+    return {
     ...pkg,
     priceMonthly: Math.round(pkg.priceMonthly * rate * discount),
     priceYearly: Math.round(pkg.priceYearly * rate * discount),
@@ -74,7 +72,8 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
       .map(({ feature }) => ({ name: feature.name, displayName: feature.displayName, category: feature.category })),
     // Keep direct limit fields for display — these are the authoritative limits
     // maxChurches, maxMembers, maxEvents, maxGivings, maxCells stay in response
-  }));
+    };
+  });
 
   res.json({ success: true, data: convertedPackages });
 }
@@ -116,12 +115,7 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
       where: { ministryAdminId, status: 'active' },
       include: {
         package: {
-          include: {
-            features: {
-              include: { feature: true },
-              orderBy: { feature: { sortOrder: 'asc' } },
-            },
-          },
+          include: packageEntitlementInclude,
         },
       },
     });
@@ -136,7 +130,7 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
         firstName: user.firstName,
         lastName: user.lastName,
       },
-      package: subscription?.package || null,
+      package: subscription?.package ? buildPackageFeatureLinks(subscription.package) : null,
       subscription: subscription ? {
         status: subscription.status,
         startsAt: subscription.startsAt,

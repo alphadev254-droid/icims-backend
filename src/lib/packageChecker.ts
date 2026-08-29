@@ -4,6 +4,12 @@ interface PackageFeatures {
   [featureName: string]: number | null;
 }
 
+type FeatureMap = PackageFeatures;
+
+function setFeature(features: FeatureMap, featureName: string, limitValue?: number | null) {
+  features[featureName] = limitValue ?? null;
+}
+
 export async function getUserPackageFeatures(userId: string): Promise<PackageFeatures> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -36,6 +42,20 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
       package: {
         include: {
           features: { include: { feature: true } },
+          moduleBundles: {
+            include: {
+              bundle: {
+                include: {
+                  features: {
+                    include: { feature: true },
+                  },
+                },
+              },
+            },
+          },
+          bundleFeatureOverrides: {
+            include: { feature: true },
+          },
         },
       },
     },
@@ -46,9 +66,29 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
   const pkg = subscription.package;
   const features: PackageFeatures = {};
 
-  // Feature flags from PackageFeatureLink
+  // Feature flags from package bundles. Bundles are the preferred package
+  // structure; direct PackageFeatureLink remains supported during migration.
+  for (const packageBundle of pkg.moduleBundles) {
+    for (const link of packageBundle.bundle.features) {
+      if (!link.enabled) continue;
+      setFeature(features, link.feature.name, link.limitValue ?? packageBundle.limitValue);
+    }
+  }
+
+  // Legacy direct feature flags from PackageFeatureLink.
   for (const link of pkg.features) {
-    features[link.feature.name] = link.limitValue;
+    setFeature(features, link.feature.name, link.limitValue);
+  }
+
+  // Package-specific bundle overrides are applied last. A disabled override
+  // removes the feature for this package even if the bundle or legacy direct
+  // link includes it. An enabled override can add/force the feature.
+  for (const override of pkg.bundleFeatureOverrides) {
+    if (override.enabled) {
+      setFeature(features, override.feature.name, override.limitValue);
+    } else {
+      delete features[override.feature.name];
+    }
   }
 
   // Override/supplement with direct Package limit fields (take the more specific value)

@@ -10,6 +10,7 @@ import { givingCampaignCreatedTemplate } from '../lib/emailTemplates';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
 import { findDonationMemberByContact } from '../lib/donationMemberMatching';
+import { hasFeature } from '../lib/packageChecker';
 
 function donationLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
   return {
@@ -72,8 +73,8 @@ type CampaignWithChurchLinks = {
   id: string;
   churchId: string;
   scopeType?: string | null;
-  linkedChurches?: Array<{ churchId: string; church?: { id?: string; name: string } | null }>;
-  church?: { id?: string; name: string } | null;
+  linkedChurches?: Array<{ churchId: string; church?: { id?: string; name: string; ministryAdminId?: string | null } | null }>;
+  church?: { id?: string; name: string; ministryAdminId?: string | null } | null;
 };
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -120,6 +121,34 @@ function intersection(left: string[], right: string[]): string[] {
   return left.filter(value => rightSet.has(value));
 }
 
+type CampaignFeatureCandidate = CampaignWithChurchLinks & {
+  category?: string | null;
+};
+
+async function getCampaignFeatureOwnerId(campaign: CampaignFeatureCandidate): Promise<string | null> {
+  const linkedOwnerId = campaign.linkedChurches?.find(link => link.church?.ministryAdminId)?.church?.ministryAdminId;
+  if (linkedOwnerId) return linkedOwnerId;
+  if (campaign.church?.ministryAdminId) return campaign.church.ministryAdminId;
+
+  const church = await prisma.church.findUnique({
+    where: { id: campaign.churchId },
+    select: { ministryAdminId: true },
+  });
+  return church?.ministryAdminId ?? null;
+}
+
+async function campaignOwnerHasFeature(campaign: CampaignFeatureCandidate, featureName: string): Promise<boolean> {
+  const ownerId = await getCampaignFeatureOwnerId(campaign);
+  return !!ownerId && hasFeature(ownerId, featureName);
+}
+
+async function ensureCampaignOwnerFeature(campaign: CampaignFeatureCandidate, featureName: string, message: string) {
+  if (!(await campaignOwnerHasFeature(campaign, featureName))) {
+    return { error: message };
+  }
+  return null;
+}
+
 function resolveRequestedScopeChurchIds(params: {
   scopeType?: string;
   primaryChurchId?: string | null;
@@ -155,12 +184,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   const churchId = req.user?.churchId;
   const roleName = req.user?.role;
 
-  // Check if user has giving_tracking feature
-  const { hasFeature, checkLimit } = await import('../lib/packageChecker');
-  if (!(await hasFeature(userId!, 'giving_tracking'))) {
-    res.status(403).json({ success: false, message: 'Your package does not include Giving & Donations. Please upgrade to access this feature.' });
-    return;
-  }
+  const { checkLimit } = await import('../lib/packageChecker');
 
   const parsed = createCampaignSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -959,7 +983,13 @@ const createGuestMultipleDonationSchema = z.object({
 async function resolveDonationCampaigns(
   items: Array<{ campaignId: string; churchId?: string; amount: number; cellId?: string }>,
   requirePublic: boolean,
-  options: { selectedChurchId?: string | null; userChurchId?: string | null; validateCellSelection?: boolean } = {},
+  options: {
+    selectedChurchId?: string | null;
+    userChurchId?: string | null;
+    validateCellSelection?: boolean;
+    requiredFeature?: string;
+    requiredFeatureMessage?: string;
+  } = {},
 ) {
   const validateCellSelection = options.validateCellSelection !== false;
   const ids = [...new Set(items.map(item => item.campaignId))];
@@ -967,7 +997,8 @@ async function resolveDonationCampaigns(
   const campaigns = await prisma.givingCampaign.findMany({
     where: { id: { in: ids } },
     include: {
-      linkedChurches: { select: { churchId: true } },
+      church: { select: { id: true, name: true, ministryAdminId: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true, ministryAdminId: true } } } },
     },
   });
   if (campaigns.length !== ids.length) {
@@ -978,6 +1009,15 @@ async function resolveDonationCampaigns(
   }
   if (requirePublic && campaigns.some(campaign => !campaign.allowPublicDonations)) {
     return { error: 'One or more campaigns are not publicly available' };
+  }
+  if (requirePublic) {
+    for (const campaign of campaigns) {
+      const hasPublicLinks = await campaignOwnerHasFeature(campaign, 'giving_public_links');
+      const hasQrCodes = await campaignOwnerHasFeature(campaign, 'giving_qr_codes');
+      if (!hasPublicLinks && !hasQrCodes) {
+        return { error: 'Public giving links are not available for this campaign.' };
+      }
+    }
   }
 
   const currencies = [...new Set(campaigns.map(campaign => campaign.currency))];
@@ -991,6 +1031,24 @@ async function resolveDonationCampaigns(
   for (const [index, item] of items.entries()) {
     const campaign = campaignMap.get(item.campaignId);
     if (!campaign) continue;
+
+    if (options.requiredFeature) {
+      const featureError = await ensureCampaignOwnerFeature(
+        campaign,
+        options.requiredFeature,
+        options.requiredFeatureMessage || 'This giving feature is not available for this campaign.',
+      );
+      if (featureError) return featureError;
+    }
+
+    if (campaign.category === 'fellowship_offering') {
+      const cellFeatureError = await ensureCampaignOwnerFeature(
+        campaign,
+        'giving_cell_offering',
+        'Cell/Fellowship Offering is not available for this campaign.',
+      );
+      if (cellFeatureError) return cellFeatureError;
+    }
 
     const campaignChurchIds = getCampaignChurchIds(campaign);
     const fallbackChurchId = options.userChurchId || options.selectedChurchId || (campaignChurchIds.length === 1 ? campaignChurchIds[0] : undefined);
@@ -1422,7 +1480,12 @@ export async function getGuestDonationFees(req: Request, res: Response): Promise
   const resolved = await resolveDonationCampaigns(
     [{ campaignId, amount: parsedAmount }],
     true,
-    { selectedChurchId: churchId ?? null, validateCellSelection: false },
+    {
+      selectedChurchId: churchId ?? null,
+      validateCellSelection: false,
+      requiredFeature: 'giving_online_payments',
+      requiredFeatureMessage: 'Online giving payments are not available for this campaign.',
+    },
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
@@ -1456,8 +1519,8 @@ export async function getPublicCampaign(req: Request, res: Response): Promise<vo
   const campaign = await prisma.givingCampaign.findUnique({
     where: { id: String(id) },
     include: {
-      church: { select: { id: true, name: true } },
-      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+      church: { select: { id: true, name: true, ministryAdminId: true } },
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true, ministryAdminId: true } } } },
     },
   });
 
@@ -1469,6 +1532,25 @@ export async function getPublicCampaign(req: Request, res: Response): Promise<vo
   if (campaign.status !== 'active') {
     res.status(400).json({ success: false, message: 'This campaign is no longer active' });
     return;
+  }
+
+  const hasPublicLinkFeature = await campaignOwnerHasFeature(campaign, 'giving_public_links');
+  const hasQrFeature = await campaignOwnerHasFeature(campaign, 'giving_qr_codes');
+  if (!hasPublicLinkFeature && !hasQrFeature) {
+    res.status(403).json({ success: false, message: 'Public giving links are not available for this campaign.' });
+    return;
+  }
+
+  if (campaign.category === 'fellowship_offering') {
+    const cellFeatureError = await ensureCampaignOwnerFeature(
+      campaign,
+      'giving_cell_offering',
+      'Cell/Fellowship Offering is not available for this campaign.',
+    );
+    if (cellFeatureError) {
+      res.status(403).json({ success: false, message: cellFeatureError.error });
+      return;
+    }
   }
 
   const { targetAmount, ...publicFields } = campaign;
@@ -1501,7 +1583,11 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
   const resolved = await resolveDonationCampaigns(
     [{ campaignId, amount, cellId }],
     true,
-    { selectedChurchId },
+    {
+      selectedChurchId,
+      requiredFeature: 'giving_online_payments',
+      requiredFeatureMessage: 'Online giving payments are not available for this campaign.',
+    },
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
@@ -1589,7 +1675,11 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
   }
 
   const { items, churchId: selectedChurchId, guestName, guestEmail, guestPhone, donorType } = parsed.data;
-  const resolved = await resolveDonationCampaigns(items, true, { selectedChurchId });
+  const resolved = await resolveDonationCampaigns(items, true, {
+    selectedChurchId,
+    requiredFeature: 'giving_online_payments',
+    requiredFeatureMessage: 'Online giving payments are not available for this campaign.',
+  });
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
     return;
@@ -1942,7 +2032,12 @@ export async function getPublicCampaignCells(req: Request, res: Response): Promi
   const resolved = await resolveDonationCampaigns(
     [{ campaignId: String(id), amount: 1 }],
     true,
-    { selectedChurchId: selectedChurchId ?? null, validateCellSelection: false },
+    {
+      selectedChurchId: selectedChurchId ?? null,
+      validateCellSelection: false,
+      requiredFeature: 'giving_cell_offering',
+      requiredFeatureMessage: 'Cell/Fellowship Offering is not available for this campaign.',
+    },
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });

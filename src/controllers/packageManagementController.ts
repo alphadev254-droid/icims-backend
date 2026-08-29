@@ -1,21 +1,19 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
 
 // ─── GET /api/admin/packages ──────────────────────────────────────────────────
 
 export async function getPackages(req: Request, res: Response): Promise<void> {
   const packages = await prisma.package.findMany({
     include: {
-      features: {
-        include: { feature: true },
-        orderBy: { feature: { sortOrder: 'asc' } },
-      },
+      ...packageEntitlementInclude,
       _count: { select: { subscriptions: true } },
     },
     orderBy: { sortOrder: 'asc' },
   });
-  res.json({ success: true, data: packages });
+  res.json({ success: true, data: packages.map(pkg => buildPackageFeatureLinks(pkg, { preserveBundleRelations: true })) });
 }
 
 // ─── GET /api/admin/packages/features ────────────────────────────────────────
@@ -25,6 +23,23 @@ export async function getAllFeatures(req: Request, res: Response): Promise<void>
     orderBy: [{ category: 'asc' }, { sortOrder: 'asc' }],
   });
   res.json({ success: true, data: features });
+}
+
+// ─── GET /api/admin/packages/module-bundles ───────────────────────────────────
+
+export async function getModuleBundles(_req: Request, res: Response): Promise<void> {
+  const bundles = await prisma.moduleBundle.findMany({
+    orderBy: [{ category: 'asc' }, { sortOrder: 'asc' }, { name: 'asc' }],
+    include: {
+      features: {
+        include: { feature: true },
+        orderBy: { feature: { sortOrder: 'asc' } },
+      },
+      packages: { select: { packageId: true } },
+    },
+  });
+
+  res.json({ success: true, data: bundles });
 }
 
 // ─── POST /api/admin/packages ─────────────────────────────────────────────────
@@ -47,6 +62,17 @@ const packageSchema = z.object({
     featureId: z.string(),
     limitValue: z.number().int().optional().nullable(),
   })).optional().default([]),
+  moduleBundles: z.array(z.object({
+    bundleId: z.string(),
+    limitValue: z.number().int().optional().nullable(),
+  })).optional(),
+  bundleFeatureOverrides: z.array(z.object({
+    bundleId: z.string(),
+    featureId: z.string(),
+    enabled: z.boolean(),
+    limitValue: z.number().int().optional().nullable(),
+    reason: z.string().optional().nullable(),
+  })).optional(),
 });
 
 export async function createPackage(req: Request, res: Response): Promise<void> {
@@ -56,22 +82,48 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const { features, ...data } = parsed.data;
+  const { features, moduleBundles, bundleFeatureOverrides, ...data } = parsed.data;
 
-  const pkg = await prisma.package.create({
-    data: {
-      ...data,
-      features: {
-        create: features.map(f => ({
-          featureId: f.featureId,
-          limitValue: f.limitValue ?? null,
-        })),
+  const pkg = await prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const created = await tx.package.create({
+      data: {
+        ...data,
+        features: {
+          create: features.map(f => ({
+            featureId: f.featureId,
+            limitValue: f.limitValue ?? null,
+          })),
+        },
+        moduleBundles: moduleBundles ? {
+          create: moduleBundles.map(bundle => ({
+            bundleId: bundle.bundleId,
+            limitValue: bundle.limitValue ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        } : undefined,
+        bundleFeatureOverrides: bundleFeatureOverrides ? {
+          create: bundleFeatureOverrides.map(override => ({
+            bundleId: override.bundleId,
+            featureId: override.featureId,
+            enabled: override.enabled,
+            limitValue: override.limitValue ?? null,
+            reason: override.reason ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        } : undefined,
       },
-    },
-    include: { features: { include: { feature: true } } },
+    });
+
+    return tx.package.findUnique({
+      where: { id: created.id },
+      include: packageEntitlementInclude,
+    });
   });
 
-  res.status(201).json({ success: true, data: pkg });
+  res.status(201).json({ success: true, data: pkg ? buildPackageFeatureLinks(pkg, { preserveBundleRelations: true }) : null });
 }
 
 // ─── PUT /api/admin/packages/:id ─────────────────────────────────────────────
@@ -85,34 +137,70 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const { features, ...data } = parsed.data;
+  const { features, moduleBundles, bundleFeatureOverrides, ...data } = parsed.data;
 
-  // Update package fields
-  const pkg = await prisma.package.update({
-    where: { id },
-    data,
-  });
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.package.update({
+      where: { id },
+      data,
+    });
 
-  // If features provided, replace all feature links
-  if (features !== undefined) {
-    await prisma.packageFeatureLink.deleteMany({ where: { packageId: id } });
-    if (features.length > 0) {
-      await prisma.packageFeatureLink.createMany({
-        data: features.map(f => ({
-          packageId: id,
-          featureId: f.featureId,
-          limitValue: f.limitValue ?? null,
-        })),
-      });
+    // If features provided, replace all legacy direct feature links.
+    if (features !== undefined) {
+      await tx.packageFeatureLink.deleteMany({ where: { packageId: id } });
+      if (features.length > 0) {
+        await tx.packageFeatureLink.createMany({
+          data: features.map(f => ({
+            packageId: id,
+            featureId: f.featureId,
+            limitValue: f.limitValue ?? null,
+          })),
+        });
+      }
     }
-  }
 
-  const updated = await prisma.package.findUnique({
-    where: { id },
-    include: { features: { include: { feature: true } } },
+    if (moduleBundles !== undefined) {
+      await tx.packageModuleBundle.deleteMany({ where: { packageId: id } });
+      if (moduleBundles.length > 0) {
+        const now = new Date();
+        await tx.packageModuleBundle.createMany({
+          data: moduleBundles.map(bundle => ({
+            packageId: id,
+            bundleId: bundle.bundleId,
+            limitValue: bundle.limitValue ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        });
+      }
+    }
+
+    if (bundleFeatureOverrides !== undefined) {
+      await tx.packageBundleFeatureOverride.deleteMany({ where: { packageId: id } });
+      if (bundleFeatureOverrides.length > 0) {
+        const now = new Date();
+        await tx.packageBundleFeatureOverride.createMany({
+          data: bundleFeatureOverrides.map(override => ({
+            packageId: id,
+            bundleId: override.bundleId,
+            featureId: override.featureId,
+            enabled: override.enabled,
+            limitValue: override.limitValue ?? null,
+            reason: override.reason ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        });
+      }
+    }
+
+    return tx.package.findUnique({
+      where: { id },
+      include: packageEntitlementInclude,
+    });
   });
 
-  res.json({ success: true, data: updated });
+  res.json({ success: true, data: updated ? buildPackageFeatureLinks(updated, { preserveBundleRelations: true }) : null });
 }
 
 // ─── DELETE /api/admin/packages/:id ──────────────────────────────────────────

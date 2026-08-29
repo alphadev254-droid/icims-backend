@@ -7,6 +7,14 @@ const FEATURES = [
   { name: 'members_management', displayName: 'Members Management', description: 'This module helps you manage an online membership register of all the brethren in the church.', category: 'core', sortOrder: 1 },
   { name: 'events_management', displayName: 'Events Management', description: 'This module allows you to create church events and share them with all your church members. It also issues tickets for all ticketed events.', category: 'core', sortOrder: 2 },
   { name: 'giving_tracking', displayName: 'Giving & Donations', description: 'Online giving is made easy! You can now manage your church\'s giving online.', category: 'core', sortOrder: 3 },
+  { name: 'giving_campaigns', displayName: 'Giving Campaigns', description: 'Create and manage giving campaigns.', category: 'giving', sortOrder: 24 },
+  { name: 'giving_manual_records', displayName: 'Manual Giving Records', description: 'Record cash, bank, mobile money, or other manual giving records.', category: 'giving', sortOrder: 25 },
+  { name: 'giving_online_payments', displayName: 'Online Giving Payments', description: 'Accept online giving payments through configured payment providers.', category: 'giving', sortOrder: 26 },
+  { name: 'giving_public_links', displayName: 'Public Giving Links', description: 'Generate public giving links for campaigns.', category: 'giving', sortOrder: 27 },
+  { name: 'giving_qr_codes', displayName: 'Giving QR Codes', description: 'Generate QR codes for public giving links.', category: 'giving', sortOrder: 28 },
+  { name: 'giving_wallets', displayName: 'Giving Wallets', description: 'Track ministry and church wallet balances from giving collections.', category: 'giving', sortOrder: 29 },
+  { name: 'giving_withdrawals', displayName: 'Giving Withdrawals', description: 'Request withdrawals from giving wallet balances.', category: 'giving', sortOrder: 30 },
+  { name: 'giving_cell_offering', displayName: 'Cell/Fellowship Offering', description: 'Track giving connected to cell and fellowship offerings.', category: 'giving', sortOrder: 31 },
   { name: 'attendance_tracking', displayName: 'Attendance Tracking', description: 'Report every church meeting and retrieve the data at any time in the future.', category: 'core', sortOrder: 4 },
   { name: 'resources_library', displayName: 'Resources Library', description: 'This module gives you a platform to keep resource materials that can be accessed by all church members.', category: 'core', sortOrder: 5 },
   { name: 'churches_management', displayName: 'Churches Management', description: 'Create your church and manage how data flows from the churches under you in this module.', category: 'core', sortOrder: 6 },
@@ -43,6 +51,85 @@ const FEATURES = [
   { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 18 },
   { name: 'max_churches', displayName: 'Maximum Churches', category: 'limit', sortOrder: 19 },
   { name: 'max_events_per_month', displayName: 'Maximum Events Per Month', category: 'limit', sortOrder: 20 },
+];
+
+const MODULE_BUNDLES = [
+  {
+    key: 'members_core',
+    name: 'Members Core',
+    description: 'Membership, user, and church administration essentials.',
+    category: 'core',
+    sortOrder: 1,
+    features: ['members_management', 'churches_management'],
+  },
+  {
+    key: 'giving_basic',
+    name: 'Giving Basic',
+    description: 'Giving campaigns, manual records, and giving transaction visibility.',
+    category: 'giving',
+    sortOrder: 2,
+    features: ['giving_tracking', 'giving_campaigns', 'giving_manual_records', 'transactions_view'],
+  },
+  {
+    key: 'giving_full',
+    name: 'Giving Full',
+    description: 'Complete giving features including pledges, online payments, wallets, withdrawals, public links, QR codes, and cell/fellowship offerings.',
+    category: 'giving',
+    sortOrder: 3,
+    features: [
+      'giving_tracking',
+      'giving_campaigns',
+      'giving_manual_records',
+      'pledges_management',
+      'transactions_view',
+      'giving_online_payments',
+      'giving_public_links',
+      'giving_qr_codes',
+      'giving_wallets',
+      'giving_withdrawals',
+      'giving_cell_offering',
+    ],
+  },
+  {
+    key: 'attendance_full',
+    name: 'Attendance Full',
+    description: 'Attendance records, attendance reporting, and attendance exports.',
+    category: 'attendance',
+    sortOrder: 4,
+    features: ['attendance_tracking'],
+  },
+  {
+    key: 'events_full',
+    name: 'Events Full',
+    description: 'Event management, ticketing, and event attendance.',
+    category: 'events',
+    sortOrder: 5,
+    features: ['events_management', 'event_ticketing', 'event_attendance'],
+  },
+  {
+    key: 'communication_full',
+    name: 'Communication Full',
+    description: 'Announcements, teams, reminders, and communication tools.',
+    category: 'communication',
+    sortOrder: 6,
+    features: ['communication', 'teams_management', 'reminders_management'],
+  },
+  {
+    key: 'reports_full',
+    name: 'Reports Full',
+    description: 'Reports, analytics, performance dashboards, and advanced exports.',
+    category: 'reporting',
+    sortOrder: 7,
+    features: ['reports_analytics', 'performance_dashboard', 'advanced_reports'],
+  },
+  {
+    key: 'operations_full',
+    name: 'Operations Full',
+    description: 'Resources, roles, permissions, public website, and cell/fellowship operations.',
+    category: 'management',
+    sortOrder: 8,
+    features: ['resources_library', 'users_management', 'roles_permissions', 'church_website', 'cell_management'],
+  },
 ];
 
 const PACKAGES = [
@@ -128,6 +215,12 @@ const PACKAGES = [
   }
 ];
 
+const PACKAGE_BUNDLES: Record<string, string[]> = {
+  basic: ['members_core', 'giving_basic', 'attendance_full', 'events_full'],
+  standard: ['members_core', 'giving_full', 'attendance_full', 'events_full', 'communication_full', 'operations_full'],
+  premium: ['members_core', 'giving_full', 'attendance_full', 'events_full', 'communication_full', 'reports_full', 'operations_full'],
+};
+
 async function main() {
   console.log('🌱 Seeding packages and features...\n');
 
@@ -142,7 +235,39 @@ async function main() {
   }
   console.log(`✅ Created ${FEATURES.length} features\n`);
 
-  // 2. Create Packages
+  // 2. Create module bundles and link their features
+  console.log('🧩 Creating module bundles...');
+  for (const bundleConfig of MODULE_BUNDLES) {
+    const { features, ...bundleData } = bundleConfig;
+    const bundle = await prisma.moduleBundle.upsert({
+      where: { key: bundleConfig.key },
+      update: bundleData,
+      create: bundleData,
+    });
+
+    for (const featureName of features) {
+      const feature = await prisma.packageFeature.findUnique({ where: { name: featureName } });
+      if (!feature) continue;
+
+      await prisma.moduleBundleFeature.upsert({
+        where: {
+          bundleId_featureId: {
+            bundleId: bundle.id,
+            featureId: feature.id,
+          },
+        },
+        update: { enabled: true },
+        create: {
+          bundleId: bundle.id,
+          featureId: feature.id,
+          enabled: true,
+        },
+      });
+    }
+  }
+  console.log(`✅ Created ${MODULE_BUNDLES.length} module bundles\n`);
+
+  // 3. Create Packages
   console.log('📦 Creating packages...');
   for (const pkg of PACKAGES) {
     const { features, ...packageData } = pkg;
@@ -175,6 +300,25 @@ async function main() {
           },
         });
       }
+    }
+
+    for (const bundleKey of PACKAGE_BUNDLES[pkg.name] ?? []) {
+      const bundle = await prisma.moduleBundle.findUnique({ where: { key: bundleKey } });
+      if (!bundle) continue;
+
+      await prisma.packageModuleBundle.upsert({
+        where: {
+          packageId_bundleId: {
+            packageId: createdPackage.id,
+            bundleId: bundle.id,
+          },
+        },
+        update: {},
+        create: {
+          packageId: createdPackage.id,
+          bundleId: bundle.id,
+        },
+      });
     }
   }
   console.log(`✅ Created ${PACKAGES.length} packages\n`);

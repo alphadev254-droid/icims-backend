@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
+import { requireFeature } from '../middleware/packageCheck';
 import {
   getWalletBalance,
   getWalletTransactions,
@@ -12,12 +13,12 @@ import {
 
 const router = Router();
 
-router.get('/balance', authenticate, getWalletBalance);
-router.get('/transactions', authenticate, getWalletTransactions);
-router.get('/withdraw/fees', authenticate, getWithdrawalFeePreview);
-router.post('/withdraw/otp', authenticate, sendWithdrawalOtp);
-router.post('/withdraw', authenticate, requestWithdrawal);
-router.get('/withdrawals', authenticate, getWithdrawals);
-router.get('/supported-banks', authenticate, getSupportedBanks);
+router.get('/balance', authenticate, requireFeature('giving_wallets'), getWalletBalance);
+router.get('/transactions', authenticate, requireFeature('giving_wallets'), getWalletTransactions);
+router.get('/withdraw/fees', authenticate, requireFeature('giving_withdrawals'), getWithdrawalFeePreview);
+router.post('/withdraw/otp', authenticate, requireFeature('giving_withdrawals'), sendWithdrawalOtp);
+router.post('/withdraw', authenticate, requireFeature('giving_withdrawals'), requestWithdrawal);
+router.get('/withdrawals', authenticate, requireFeature('giving_withdrawals'), getWithdrawals);
+router.get('/supported-banks', authenticate, requireFeature('giving_withdrawals'), getSupportedBanks);
 
 export default router;

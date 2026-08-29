@@ -8,6 +8,7 @@ import { createSubdomain, toSlug } from '../lib/cloudflareDns';
 import { recordLoginAttempt } from '../middleware/metrics';
 import { displayName, logger, maskEmail, maskToken } from '../utils/logger';
 import type { UserRole } from '../types';
+import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -71,12 +72,10 @@ async function getUserWithPackage(userId: string) {
     const subscription = await prisma.subscription.findFirst({
       where: { ministryAdminId: effectiveMinistryAdminId, status: 'active' },
       include: {
-        package: {
-          include: { features: { include: { feature: true } } },
-        },
+        package: { include: packageEntitlementInclude },
       },
     });
-    if (subscription?.package) return { ...user, package: subscription.package };
+    if (subscription?.package) return { ...user, package: buildPackageFeatureLinks(subscription.package) };
   }
 
   // For ministry_admin: get their own subscription
@@ -84,12 +83,10 @@ async function getUserWithPackage(userId: string) {
     const subscription = await prisma.subscription.findFirst({
       where: { ministryAdminId: userId, status: 'active' },
       include: {
-        package: {
-          include: { features: { include: { feature: true } } },
-        },
+        package: { include: packageEntitlementInclude },
       },
     });
-    if (subscription?.package) return { ...user, package: subscription.package };
+    if (subscription?.package) return { ...user, package: buildPackageFeatureLinks(subscription.package) };
   }
 
   // No subscription found
