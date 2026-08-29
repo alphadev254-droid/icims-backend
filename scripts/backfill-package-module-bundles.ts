@@ -192,9 +192,10 @@ async function main() {
     }
   }
 
-  const featureByName = new Map(
-    (APPLY ? await prisma.packageFeature.findMany() : FEATURES).map(feature => [feature.name, feature]),
-  );
+  const featureRows = APPLY
+    ? await prisma.packageFeature.findMany()
+    : FEATURES.map((feature, index) => ({ ...feature, id: `dry-run-feature-${index}` }));
+  const featureByName = new Map(featureRows.map(feature => [feature.name, feature]));
   const bundleByKey = new Map(
     (APPLY ? await prisma.moduleBundle.findMany() : MODULE_BUNDLES.map((bundle, index) => ({ ...bundle, id: `dry-run-${index}` }))).map(bundle => [bundle.key, bundle]),
   );
