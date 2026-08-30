@@ -194,3 +194,36 @@ export function countryFromRequestHeaders(headers: Record<string, string | strin
   if (!value || value === 'XX' || value === 'T1') return null;
   return normalizeAccountCountry(value);
 }
+
+export async function getUserPackageAccountCountry(userId?: string | null, role?: string | null): Promise<string | null> {
+  if (!userId) return null;
+
+  if (role === 'ministry_admin') {
+    const admin = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { accountCountry: true },
+    });
+    return normalizeAccountCountry(admin?.accountCountry);
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      accountCountry: true,
+      ministryAdminId: true,
+      church: { select: { ministryAdminId: true } },
+    },
+  });
+
+  if (user?.accountCountry) return normalizeAccountCountry(user.accountCountry);
+
+  const ministryAdminId = user?.ministryAdminId ?? user?.church?.ministryAdminId ?? null;
+  if (!ministryAdminId) return null;
+
+  const ministryAdmin = await prisma.user.findUnique({
+    where: { id: ministryAdminId },
+    select: { accountCountry: true },
+  });
+
+  return normalizeAccountCountry(ministryAdmin?.accountCountry);
+}

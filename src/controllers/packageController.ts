@@ -7,44 +7,12 @@ import {
   findPackageMarketPriceWithFallback,
   gatewayForPackageCurrency,
   gatewayMarketLabel,
+  getUserPackageAccountCountry,
   packageAvailableInMarket,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
 
 // ─── Packages (tiers) ─────────────────────────────────────────────────────────
-
-async function getAuthenticatedPackageCountry(userId?: string, role?: string): Promise<string | null> {
-  if (!userId) return null;
-
-  if (role === 'ministry_admin') {
-    const admin = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { accountCountry: true },
-    });
-    return admin?.accountCountry || null;
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      accountCountry: true,
-      ministryAdminId: true,
-      church: { select: { ministryAdminId: true } },
-    },
-  });
-
-  if (user?.accountCountry) return user.accountCountry;
-
-  const adminId = user?.ministryAdminId ?? user?.church?.ministryAdminId ?? null;
-  if (!adminId) return null;
-
-  const admin = await prisma.user.findUnique({
-    where: { id: adminId },
-    select: { accountCountry: true },
-  });
-
-  return admin?.accountCountry || null;
-}
 
 /** GET /api/packages — list all packages with their features */
 export async function getPackages(req: Request, res: Response): Promise<void> {
@@ -58,7 +26,7 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   });
 
   const accountCountry = userId
-    ? await getAuthenticatedPackageCountry(userId, role)
+    ? await getUserPackageAccountCountry(userId, role)
     : (typeof req.query.country === 'string' ? req.query.country : countryFromRequestHeaders(req.headers));
 
   const market = await resolvePricingMarket(accountCountry);
