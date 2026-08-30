@@ -48,6 +48,14 @@ export function currencyForGateway(gateway: PaymentGateway): string {
   return gateway === 'paychangu' ? 'MWK' : 'KES';
 }
 
+export function gatewayForPackageCurrency(currency?: string | null): PaymentGateway {
+  return String(currency || '').toUpperCase() === 'MWK' ? 'paychangu' : 'paystack';
+}
+
+export function paystackChannelsForCurrency(currency?: string | null): string[] | undefined {
+  return String(currency || '').toUpperCase() === 'USD' ? ['card'] : undefined;
+}
+
 export function gatewayMarketLabel(gateway: PaymentGateway): string {
   return gateway === 'paychangu' ? 'Malawi' : 'General';
 }

@@ -28,6 +28,7 @@ import {
 } from '../services/packageInvoiceService';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
+const currencySchema = z.enum(['USD', 'KES', 'MWK']);
 
 async function defaultPackagePricing(pkg: any, billingCycle: string, country?: string | null) {
   if (pkg.isPrivate) {
@@ -52,7 +53,9 @@ async function defaultPackagePricing(pkg: any, billingCycle: string, country?: s
   const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
   const usdAmount = billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly;
   return {
-    amount: Math.round(convertUSDToLocal(usdAmount, market.currencyCode as 'MWK' | 'KES') * discount),
+    amount: market.currencyCode === 'USD'
+      ? parseFloat((Number(usdAmount) * discount).toFixed(2))
+      : Math.round(convertUSDToLocal(usdAmount, market.currencyCode as 'MWK' | 'KES') * discount),
     currency: market.currencyCode,
   };
 }
@@ -203,7 +206,7 @@ const invoiceSchema = z.object({
   billingCycle: z.enum(['monthly', 'yearly', 'custom']).default('monthly'),
   months: z.coerce.number().int().positive().optional(),
   amount: z.number().positive().optional(),
-  currency: z.enum(['MWK', 'KES']).optional(),
+  currency: currencySchema.optional(),
   invoiceDate: z.string().optional(),
   dueDate: z.string().min(1),
   servicePeriodStart: z.string().min(1),

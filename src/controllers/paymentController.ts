@@ -7,9 +7,11 @@ import { calculatePaymentFees } from '../utils/feeCalculations';
 import { convertUSDToLocal } from '../utils/currencyConversion';
 import {
   findPackageMarketPrice,
+  gatewayForPackageCurrency,
   packageDiscountFallbackForMarket,
   packageDiscountKeyForMarket,
   packageAvailableInMarket,
+  paystackChannelsForCurrency,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
 import { queueEmail } from '../lib/emailQueue';
@@ -214,9 +216,10 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   // authoritative; old USD package prices remain as a fallback.
   const baseAmountUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
   
-  // Determine gateway based on national admin's accountCountry
+  // Determine gateway based on the package pricing market. Private packages
+  // keep the legacy account-country gateway because they are negotiated.
   console.log(`[${traceId}] Calling getPaymentGateway for ministryAdminId: ${ministryAdminId}`);
-  const gateway = await getPaymentGateway(ministryAdminId);
+  const accountGateway = await getPaymentGateway(ministryAdminId);
   const market = await resolvePricingMarket(ministryAdmin.accountCountry);
   const marketPrice = pkg.isPrivate ? null : findPackageMarketPrice(pkg, market.id);
   if (!invoice && !pkg.isPrivate && !packageAvailableInMarket(pkg, market.id)) {
@@ -226,8 +229,13 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   const currency = invoice
     ? invoice.currency
     : pkg.isPrivate
-      ? (pkg.currencyCode || getCurrency(gateway))
-      : (marketPrice?.currencyCode ?? market.currencyCode ?? getCurrency(gateway));
+      ? (pkg.currencyCode || getCurrency(accountGateway))
+      : (marketPrice?.currencyCode ?? market.currencyCode ?? getCurrency(market.packageGateway));
+  const gateway = invoice
+    ? gatewayForPackageCurrency(invoice.currency)
+    : pkg.isPrivate
+      ? accountGateway
+      : gatewayForPackageCurrency(currency);
   const gatewayCountry = getGatewayCountry(gateway);
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
@@ -236,7 +244,11 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   
   const discountKey = packageDiscountKeyForMarket(market.code);
   const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
-  const fallbackAmount = pkg.isPrivate ? null : Math.round(convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES') * discount);
+  const fallbackAmount = pkg.isPrivate
+    ? null
+    : String(currency).toUpperCase() === 'USD'
+      ? parseFloat((Number(baseAmountUSD) * discount).toFixed(2))
+      : Math.round(convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES') * discount);
   const baseAmount = invoice
     ? Math.max(0, invoice.balanceDue || invoice.amount)
     : pkg.isPrivate
@@ -335,13 +347,9 @@ export async function initiatePublicInvoicePayment(req: Request, res: Response):
     return;
   }
 
-  const gateway = await getPaymentGateway(invoice.ministryAdminId);
-  const currency = getCurrency(gateway);
+  const currency = invoice.currency;
+  const gateway = gatewayForPackageCurrency(currency);
   const gatewayCountry = getGatewayCountry(gateway);
-  if (currency !== invoice.currency) {
-    res.status(400).json({ success: false, message: 'Invoice currency does not match the payment gateway currency' });
-    return;
-  }
 
   let invoiceQuote: ReturnType<typeof publicInvoicePaymentQuote>;
   try {
@@ -423,12 +431,14 @@ async function initiatePaystackPayment(
   console.log(`[${traceId}] initiatePaystackPayment called`);
   const amountInKobo = Math.round(fees.totalAmount * 100);
   const metadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
+  const channels = paystackChannelsForCurrency(pendingTx.currency);
   console.log(`[${traceId}] Amount in kobo: ${amountInKobo}`);
 
   try {
     const paystackPayload = {
       email: ministryAdmin.email,
       amount: amountInKobo,
+      currency: pendingTx.currency,
       callback_url: `${BACKEND_URL}/api/payments/verify`,
       metadata: {
         ...metadata,
@@ -436,6 +446,7 @@ async function initiatePaystackPayment(
         pendingTxId: pendingTx.id,
         initiatedBy: pendingTx.userId,
       },
+      ...(channels && { channels }),
       ...(SYSTEM_SUBACCOUNT_CODE && { subaccount: SYSTEM_SUBACCOUNT_CODE }),
     };
 
