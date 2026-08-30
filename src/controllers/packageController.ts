@@ -8,7 +8,9 @@ import {
   gatewayForPackageCurrency,
   gatewayMarketLabel,
   getUserPackageAccountCountry,
+  normalizePackagePaymentDuration,
   packageAvailableInMarket,
+  packagePaymentAmountForDuration,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
 
@@ -238,8 +240,16 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
   const { packageId, billingCycle } = req.query as { packageId: string; billingCycle: string };
+  const durationMonthsParam = req.query.durationMonths !== undefined ? Number(req.query.durationMonths) : undefined;
   if (!packageId || !billingCycle) {
     res.status(400).json({ success: false, message: 'packageId and billingCycle required' });
+    return;
+  }
+  let durationMonths: number;
+  try {
+    durationMonths = normalizePackagePaymentDuration(billingCycle, durationMonthsParam);
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message || 'Invalid package payment duration' });
     return;
   }
 
@@ -280,11 +290,15 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
     return;
   }
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
-  const baseAmount = pkg.isPrivate
-    ? Number(billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly)
-    : Number(billingCycle === 'monthly' ? marketPrice?.priceMonthly : marketPrice?.priceYearly);
+  const monthlyAmount = pkg.isPrivate ? Number(pkg.priceMonthly) : Number(marketPrice?.priceMonthly);
+  const yearlyAmount = pkg.isPrivate ? Number(pkg.priceYearly) : Number(marketPrice?.priceYearly);
+  const baseAmount = packagePaymentAmountForDuration(monthlyAmount, yearlyAmount, billingCycle, durationMonths);
   if (!pkg.isPrivate && (!marketPrice || !Number.isFinite(baseAmount) || baseAmount <= 0)) {
     res.status(400).json({ success: false, message: 'Package pricing is not configured for your country or the General market.' });
+    return;
+  }
+  if (!Number.isFinite(baseAmount) || baseAmount <= 0) {
+    res.status(400).json({ success: false, message: 'Package pricing is not configured for this duration.' });
     return;
   }
   const paymentCurrency = pkg.isPrivate ? currency : (marketPrice?.currencyCode ?? currency);
@@ -301,6 +315,7 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
         gateway,
       },
       baseAmount: fees.baseAmount,
+      durationMonths,
       convenienceFee: fees.convenienceFee,
       systemFeeAmount: fees.systemFeeAmount,
       transactionCost: fees.totalAmount - fees.baseAmount,

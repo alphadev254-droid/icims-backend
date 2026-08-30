@@ -7,7 +7,9 @@ import { calculatePaymentFees } from '../utils/feeCalculations';
 import {
   findPackageMarketPriceWithFallback,
   gatewayForPackageCurrency,
+  normalizePackagePaymentDuration,
   packageAvailableInMarket,
+  packagePaymentAmountForDuration,
   paystackChannelsForCurrency,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
@@ -21,6 +23,7 @@ import { displayName, maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import {
   activateSubscriptionFromInvoice,
+  addMonthsPeriod,
   applyPackagePaymentToInvoices,
   invoiceCoveredMonths,
   publicInvoicePaymentQuote,
@@ -41,6 +44,7 @@ function packagePaymentLogMeta(traceId: string, pendingTx: any, metadata: any = 
     packageId: metadata.packageId,
     packageName: metadata.packageName,
     billingCycle: metadata.billingCycle,
+    durationMonths: metadata.durationMonths,
     amount: metadata.baseAmount,
     totalAmount: metadata.totalAmount ?? pendingTx?.amount,
     currency: pendingTx?.currency,
@@ -98,6 +102,7 @@ function donationPaymentLogMeta(traceId: string, pendingTx: any, metadata: any =
 const subscribeSchema = z.object({
   packageId: z.string().optional(),
   billingCycle: z.enum(['monthly', 'yearly']).optional(),
+  durationMonths: z.coerce.number().int().positive().optional(),
   invoiceId: z.string().optional(),
 }).refine(data => !!data.invoiceId || (!!data.packageId && !!data.billingCycle), {
   message: 'Package and billing cycle are required unless paying an invoice',
@@ -240,13 +245,25 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
   console.log(`[${traceId}] National Admin accountCountry: ${ministryAdmin.accountCountry}`);
   
+  let directDurationMonths = 0;
+  try {
+    directDurationMonths = invoice ? 0 : normalizePackagePaymentDuration(billingCycle, parsed.data.durationMonths);
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message || 'Invalid package payment duration' });
+    return;
+  }
+
+  const monthlyAmount = pkg.isPrivate ? Number(pkg.priceMonthly) : Number(marketPrice?.priceMonthly);
+  const yearlyAmount = pkg.isPrivate ? Number(pkg.priceYearly) : Number(marketPrice?.priceYearly);
   const baseAmount = invoice
     ? Math.max(0, invoice.balanceDue || invoice.amount)
-    : pkg.isPrivate
-      ? Number(billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly)
-      : Number(billingCycle === 'monthly' ? marketPrice?.priceMonthly : marketPrice?.priceYearly);
+    : packagePaymentAmountForDuration(monthlyAmount, yearlyAmount, billingCycle!, directDurationMonths);
   if (!invoice && !pkg.isPrivate && (!marketPrice || !Number.isFinite(baseAmount) || baseAmount <= 0)) {
     res.status(400).json({ success: false, message: 'Package pricing is not configured for your country or the General market.' });
+    return;
+  }
+  if (!invoice && (!Number.isFinite(baseAmount) || baseAmount <= 0)) {
+    res.status(400).json({ success: false, message: 'Package pricing is not configured for this duration.' });
     return;
   }
   console.log(`[${traceId}] Pricing market: ${market.name}; base amount: ${baseAmount} ${currency}${pkg.isPrivate ? ' from private package' : marketPrice ? ' from market price' : ''}`);
@@ -264,6 +281,8 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   // Create pending transaction (expires in 1 hour)
   const expiresAt = new Date();
   expiresAt.setHours(expiresAt.getHours() + 1);
+  const servicePeriodStart = invoice?.servicePeriodStart ?? new Date();
+  const servicePeriodEnd = invoice?.servicePeriodEnd ?? addMonthsPeriod(servicePeriodStart, directDurationMonths).periodEnd;
 
   const pendingTx = await prisma.pendingTransaction.create({
     data: {
@@ -281,10 +300,11 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
         packageId,
         packageName: pkg.name,
         billingCycle,
+        durationMonths: invoice ? invoiceCoveredMonths(invoice) : directDurationMonths,
         invoiceId: invoice?.id,
         invoiceNumber: invoice?.invoiceNumber,
-        invoiceServicePeriodStart: invoice?.servicePeriodStart,
-        invoiceServicePeriodEnd: invoice?.servicePeriodEnd,
+        invoiceServicePeriodStart: servicePeriodStart,
+        invoiceServicePeriodEnd: servicePeriodEnd,
         baseAmount: fees.baseAmount,
         convenienceFee: fees.convenienceFee,
         systemFeeAmount: fees.systemFeeAmount,

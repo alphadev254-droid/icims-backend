@@ -195,6 +195,36 @@ export function countryFromRequestHeaders(headers: Record<string, string | strin
   return normalizeAccountCountry(value);
 }
 
+export function normalizePackagePaymentDuration(billingCycle?: string, durationMonths?: number): number {
+  if (billingCycle !== 'monthly' && billingCycle !== 'yearly') {
+    throw new Error('Billing cycle must be monthly or yearly');
+  }
+
+  if (billingCycle === 'yearly') {
+    const months = durationMonths ?? 12;
+    if (![12, 24, 36].includes(months)) {
+      throw new Error('Yearly package payments must be for 1, 2, or 3 years');
+    }
+    return months;
+  }
+
+  const months = durationMonths ?? 1;
+  if (months < 1 || months > 12) {
+    throw new Error('Monthly package payments must be between 1 and 12 months');
+  }
+  return months;
+}
+
+export function packagePaymentAmountForDuration(
+  monthlyAmount: number,
+  yearlyAmount: number,
+  billingCycle: string,
+  durationMonths: number
+): number {
+  if (billingCycle === 'yearly') return yearlyAmount * (durationMonths / 12);
+  return monthlyAmount * durationMonths;
+}
+
 export async function getUserPackageAccountCountry(userId?: string | null, role?: string | null): Promise<string | null> {
   if (!userId) return null;
 
