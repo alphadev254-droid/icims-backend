@@ -203,6 +203,13 @@ const packageSchema = z.object({
     limitValue: z.number().int().optional().nullable(),
     reason: z.string().optional().nullable(),
   })).optional(),
+  marketFeatureOverrides: z.array(z.object({
+    pricingMarketId: z.string(),
+    featureId: z.string(),
+    enabled: z.boolean(),
+    limitValue: z.number().int().optional().nullable(),
+    reason: z.string().optional().nullable(),
+  })).optional(),
   marketPrices: z.array(z.object({
     pricingMarketId: z.string(),
     priceMonthly: z.number().min(0),
@@ -218,8 +225,9 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const { features, moduleBundles, bundleFeatureOverrides, marketPrices, ...data } = parsed.data;
+  const { features, moduleBundles, bundleFeatureOverrides, marketFeatureOverrides, marketPrices, ...data } = parsed.data;
   const effectiveMarketPrices = data.isPrivate ? [] : (marketPrices ?? []);
+  const effectiveMarketFeatureOverrides = data.isPrivate ? [] : (marketFeatureOverrides ?? []);
 
   const pkg = await prisma.$transaction(async (tx) => {
     const now = new Date();
@@ -243,6 +251,17 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
         bundleFeatureOverrides: bundleFeatureOverrides ? {
           create: bundleFeatureOverrides.map(override => ({
             bundleId: override.bundleId,
+            featureId: override.featureId,
+            enabled: override.enabled,
+            limitValue: override.limitValue ?? null,
+            reason: override.reason ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        } : undefined,
+        marketFeatureOverrides: effectiveMarketFeatureOverrides.length > 0 ? {
+          create: effectiveMarketFeatureOverrides.map(override => ({
+            pricingMarketId: override.pricingMarketId,
             featureId: override.featureId,
             enabled: override.enabled,
             limitValue: override.limitValue ?? null,
@@ -284,8 +303,9 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const { features, moduleBundles, bundleFeatureOverrides, marketPrices, ...data } = parsed.data;
+  const { features, moduleBundles, bundleFeatureOverrides, marketFeatureOverrides, marketPrices, ...data } = parsed.data;
   const effectiveMarketPrices = data.isPrivate ? [] : marketPrices;
+  const effectiveMarketFeatureOverrides = data.isPrivate ? [] : marketFeatureOverrides;
 
   const updated = await prisma.$transaction(async (tx) => {
     await tx.package.update({
@@ -353,6 +373,25 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
             priceMonthly: price.priceMonthly,
             priceYearly: price.priceYearly,
             currencyCode: price.currencyCode,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        });
+      }
+    }
+
+    if (effectiveMarketFeatureOverrides !== undefined) {
+      await tx.packageMarketFeatureOverride.deleteMany({ where: { packageId: id } });
+      if (effectiveMarketFeatureOverrides.length > 0) {
+        const now = new Date();
+        await tx.packageMarketFeatureOverride.createMany({
+          data: effectiveMarketFeatureOverrides.map(override => ({
+            packageId: id,
+            pricingMarketId: override.pricingMarketId,
+            featureId: override.featureId,
+            enabled: override.enabled,
+            limitValue: override.limitValue ?? null,
+            reason: override.reason ?? null,
             createdAt: now,
             updatedAt: now,
           })),

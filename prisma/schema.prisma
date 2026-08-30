@@ -854,6 +854,7 @@ model Package {
   features               PackageFeatureLink[]
   moduleBundles          PackageModuleBundle[]
   bundleFeatureOverrides PackageBundleFeatureOverride[]
+  marketFeatureOverrides PackageMarketFeatureOverride[]
   marketPrices           PackageMarketPrice[]
   payments               Payment[]
   subscriptions          Subscription[]
@@ -876,6 +877,7 @@ model PricingMarket {
 
   countries     Country[]
   packagePrices PackageMarketPrice[]
+  featureOverrides PackageMarketFeatureOverride[]
 
   @@index([isActive, sortOrder])
   @@map("pricing_markets")
@@ -932,6 +934,7 @@ model PackageFeature {
   packages        PackageFeatureLink[]
   bundleLinks     ModuleBundleFeature[]
   bundleOverrides PackageBundleFeatureOverride[]
+  marketOverrides PackageMarketFeatureOverride[]
 
   @@map("package_features")
 }
@@ -1018,6 +1021,27 @@ model PackageBundleFeatureOverride {
   @@index([bundleId])
   @@index([featureId])
   @@map("package_bundle_feature_overrides")
+}
+
+model PackageMarketFeatureOverride {
+  id              String   @id @default(cuid())
+  packageId       String
+  pricingMarketId String
+  featureId       String
+  enabled         Boolean
+  limitValue      Int?
+  reason          String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  package       Package       @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  pricingMarket PricingMarket @relation(fields: [pricingMarketId], references: [id], onDelete: Cascade)
+  feature       PackageFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, pricingMarketId, featureId], map: "pkg_market_feat_override_key")
+  @@index([pricingMarketId])
+  @@index([featureId])
+  @@map("package_market_feature_overrides")
 }
 
 model Payment {

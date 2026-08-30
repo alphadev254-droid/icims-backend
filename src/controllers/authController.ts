@@ -9,6 +9,7 @@ import { recordLoginAttempt } from '../middleware/metrics';
 import { displayName, logger, maskEmail, maskToken } from '../utils/logger';
 import type { UserRole } from '../types';
 import { buildSafePackageEntitlement, packageEntitlementInclude } from '../lib/packageEntitlements';
+import { findPackageMarketPriceWithFallback, getUserPackageAccountCountry, resolvePricingMarket } from '../utils/pricingMarkets';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -66,7 +67,17 @@ async function getUserWithPackage(userId: string) {
       },
     });
     if (subscription?.package) {
-      return { ...user, package: buildSafePackageEntitlement(subscription.package) };
+      const accountCountry = await getUserPackageAccountCountry(user.id, user.role?.name);
+      const market = await resolvePricingMarket(accountCountry);
+      const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
+      const marketPrice = findPackageMarketPriceWithFallback(subscription.package, market.id, generalMarket.id);
+      return {
+        ...user,
+        package: buildSafePackageEntitlement(subscription.package, {
+          pricingMarketId: marketPrice?.pricingMarketId ?? market.id,
+          fallbackPricingMarketId: generalMarket.id,
+        }),
+      };
     }
   }
 

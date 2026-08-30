@@ -1,4 +1,6 @@
 import prisma from './prisma';
+import { buildPackageFeatureLinks, packageEntitlementInclude } from './packageEntitlements';
+import { findPackageMarketPriceWithFallback, getUserPackageAccountCountry, resolvePricingMarket } from '../utils/pricingMarkets';
 
 interface PackageFeatures {
   [featureName: string]: number | null;
@@ -39,25 +41,7 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
   const subscription = await prisma.subscription.findFirst({
     where: { ministryAdminId, status: 'active' },
     include: {
-      package: {
-        include: {
-          features: { include: { feature: true } },
-          moduleBundles: {
-            include: {
-              bundle: {
-                include: {
-                  features: {
-                    include: { feature: true },
-                  },
-                },
-              },
-            },
-          },
-          bundleFeatureOverrides: {
-            include: { feature: true },
-          },
-        },
-      },
+      package: { include: packageEntitlementInclude },
     },
   });
 
@@ -65,29 +49,18 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
 
   const pkg = subscription.package;
   const features: PackageFeatures = {};
+  const accountCountry = await getUserPackageAccountCountry(userId, roleName);
+  const market = await resolvePricingMarket(accountCountry);
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
+  const marketPrice = findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
+  const effectivePackage = buildPackageFeatureLinks(pkg, {
+    pricingMarketId: marketPrice?.pricingMarketId ?? market.id,
+    fallbackPricingMarketId: generalMarket.id,
+  });
 
-  // Feature flags from package bundles. Bundles are the preferred package
-  // structure; direct PackageFeatureLink remains supported during migration.
-  for (const packageBundle of pkg.moduleBundles) {
-    for (const link of packageBundle.bundle.features) {
-      if (!link.enabled) continue;
-      setFeature(features, link.feature.name, link.limitValue ?? packageBundle.limitValue);
-    }
-  }
-
-  // Legacy direct feature flags from PackageFeatureLink.
-  for (const link of pkg.features) {
-    setFeature(features, link.feature.name, link.limitValue);
-  }
-
-  // Package-specific bundle overrides are applied last. A disabled override
-  // removes the feature for this package even if the bundle or legacy direct
-  // link includes it. An enabled override can add/force the feature.
-  for (const override of pkg.bundleFeatureOverrides) {
-    if (override.enabled) {
-      setFeature(features, override.feature.name, override.limitValue);
-    } else {
-      delete features[override.feature.name];
+  for (const link of effectivePackage.features ?? []) {
+    if (link.feature?.name) {
+      setFeature(features, link.feature.name, link.limitValue);
     }
   }
 

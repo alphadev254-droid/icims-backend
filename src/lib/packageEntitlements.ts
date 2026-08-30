@@ -16,6 +16,9 @@ export const packageEntitlementInclude = {
   bundleFeatureOverrides: {
     include: { feature: true },
   },
+  marketFeatureOverrides: {
+    include: { feature: true, pricingMarket: true },
+  },
   marketPrices: {
     include: { pricingMarket: true },
   },
@@ -23,7 +26,7 @@ export const packageEntitlementInclude = {
 
 export function buildPackageFeatureLinks<TPackage extends Record<string, any>>(
   pkg: TPackage,
-  options: { preserveBundleRelations?: boolean } = {},
+  options: { preserveBundleRelations?: boolean; pricingMarketId?: string | null; fallbackPricingMarketId?: string | null } = {},
 ): TPackage {
   const featureLinks = new Map<string, any>();
 
@@ -68,10 +71,38 @@ export function buildPackageFeatureLinks<TPackage extends Record<string, any>>(
     }
   }
 
+  const hasSpecificMarketPrice = !!options.pricingMarketId
+    && (pkg.marketPrices ?? []).some((price: any) => price.pricingMarketId === options.pricingMarketId);
+  const effectiveMarketId = hasSpecificMarketPrice
+    ? options.pricingMarketId
+    : options.fallbackPricingMarketId ?? options.pricingMarketId ?? null;
+
+  if (effectiveMarketId) {
+    for (const override of pkg.marketFeatureOverrides ?? []) {
+      if (!override.feature || override.pricingMarketId !== effectiveMarketId) continue;
+
+      if (override.enabled) {
+        featureLinks.set(override.feature.id, {
+          packageId: pkg.id,
+          featureId: override.feature.id,
+          limitValue: override.limitValue ?? null,
+          feature: override.feature,
+        });
+      } else {
+        featureLinks.delete(override.feature.id);
+      }
+    }
+  }
+
   const cleanPackage = options.preserveBundleRelations
     ? pkg
     : (() => {
-        const { moduleBundles: _moduleBundles, bundleFeatureOverrides: _bundleFeatureOverrides, ...rest } = pkg;
+        const {
+          moduleBundles: _moduleBundles,
+          bundleFeatureOverrides: _bundleFeatureOverrides,
+          marketFeatureOverrides: _marketFeatureOverrides,
+          ...rest
+        } = pkg;
         return rest;
       })();
 
@@ -81,10 +112,13 @@ export function buildPackageFeatureLinks<TPackage extends Record<string, any>>(
   } as unknown as TPackage;
 }
 
-export function buildSafePackageEntitlement<TPackage extends Record<string, any>>(pkg: TPackage | null | undefined) {
+export function buildSafePackageEntitlement<TPackage extends Record<string, any>>(
+  pkg: TPackage | null | undefined,
+  options: { pricingMarketId?: string | null; fallbackPricingMarketId?: string | null } = {},
+) {
   if (!pkg) return null;
 
-  const effectivePackage = buildPackageFeatureLinks(pkg);
+  const effectivePackage = buildPackageFeatureLinks(pkg, options);
 
   return {
     id: effectivePackage.id,

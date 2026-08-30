@@ -37,10 +37,13 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
 
   const convertedPackages = packages
   .map(rawPackage => {
-    const pkg = buildPackageFeatureLinks(rawPackage);
-    if (!packageAvailableInMarket(pkg, market.id, generalMarket.id)) return null;
-    const marketPrice = findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
+    if (!packageAvailableInMarket(rawPackage, market.id, generalMarket.id)) return null;
+    const marketPrice = findPackageMarketPriceWithFallback(rawPackage, market.id, generalMarket.id);
     if (!marketPrice) return null;
+    const pkg = buildPackageFeatureLinks(rawPackage, {
+      pricingMarketId: marketPrice.pricingMarketId,
+      fallbackPricingMarketId: generalMarket.id,
+    });
     const priceMonthly = marketPrice.priceMonthly;
     const priceYearly = marketPrice.priceYearly;
     const packageCurrency = marketPrice.currencyCode ?? currency;
@@ -143,6 +146,13 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
     });
   }
 
+  const accountCountry = await getUserPackageAccountCountry(userId, role);
+  const market = await resolvePricingMarket(accountCountry);
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
+  const packageMarketPrice = subscription?.package
+    ? findPackageMarketPriceWithFallback(subscription.package, market.id, generalMarket.id)
+    : null;
+
   res.json({ 
     success: true, 
     data: { 
@@ -152,7 +162,10 @@ export async function getCurrentPackage(req: Request, res: Response): Promise<vo
         firstName: user.firstName,
         lastName: user.lastName,
       },
-      package: subscription?.package ? buildPackageFeatureLinks(subscription.package) : null,
+      package: subscription?.package ? buildPackageFeatureLinks(subscription.package, {
+        pricingMarketId: packageMarketPrice?.pricingMarketId ?? market.id,
+        fallbackPricingMarketId: generalMarket.id,
+      }) : null,
       subscription: subscription ? {
         status: subscription.status,
         startsAt: subscription.startsAt,
