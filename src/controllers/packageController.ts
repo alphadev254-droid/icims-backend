@@ -13,6 +13,39 @@ import {
 
 // ─── Packages (tiers) ─────────────────────────────────────────────────────────
 
+async function getAuthenticatedPackageCountry(userId?: string, role?: string): Promise<string | null> {
+  if (!userId) return null;
+
+  if (role === 'ministry_admin') {
+    const admin = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { accountCountry: true },
+    });
+    return admin?.accountCountry || null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      accountCountry: true,
+      ministryAdminId: true,
+      church: { select: { ministryAdminId: true } },
+    },
+  });
+
+  if (user?.accountCountry) return user.accountCountry;
+
+  const adminId = user?.ministryAdminId ?? user?.church?.ministryAdminId ?? null;
+  if (!adminId) return null;
+
+  const admin = await prisma.user.findUnique({
+    where: { id: adminId },
+    select: { accountCountry: true },
+  });
+
+  return admin?.accountCountry || null;
+}
+
 /** GET /api/packages — list all packages with their features */
 export async function getPackages(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -24,38 +57,9 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     include: packageEntitlementInclude,
   });
 
-  let accountCountry = typeof req.query.country === 'string'
-    ? req.query.country
-    : countryFromRequestHeaders(req.headers);
-
-  if (!accountCountry && userId) {
-    // For ministry_admin: read their own accountCountry directly
-    if (role === 'ministry_admin') {
-      const admin = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { accountCountry: true },
-      });
-      if (admin?.accountCountry) accountCountry = admin.accountCountry;
-    } else {
-      // For other roles: find their ministryAdminId, then read that admin's country
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { accountCountry: true, ministryAdminId: true, church: { select: { ministryAdminId: true } } },
-      });
-      if (user?.accountCountry) {
-        accountCountry = user.accountCountry;
-      } else {
-        const adminId = user?.ministryAdminId ?? user?.church?.ministryAdminId ?? null;
-        if (adminId) {
-          const admin = await prisma.user.findUnique({
-            where: { id: adminId },
-            select: { accountCountry: true },
-          });
-          if (admin?.accountCountry) accountCountry = admin.accountCountry;
-        }
-      }
-    }
-  }
+  const accountCountry = userId
+    ? await getAuthenticatedPackageCountry(userId, role)
+    : (typeof req.query.country === 'string' ? req.query.country : countryFromRequestHeaders(req.headers));
 
   const market = await resolvePricingMarket(accountCountry);
   const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
