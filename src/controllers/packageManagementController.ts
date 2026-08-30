@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
-import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
+import { packageEntitlementInclude } from '../lib/packageEntitlements';
 
 // ─── GET /api/admin/packages ──────────────────────────────────────────────────
 
@@ -13,7 +13,7 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     },
     orderBy: { sortOrder: 'asc' },
   });
-  res.json({ success: true, data: packages.map(pkg => buildPackageFeatureLinks(pkg, { preserveBundleRelations: true })) });
+  res.json({ success: true, data: packages });
 }
 
 // ─── GET /api/admin/packages/features ────────────────────────────────────────
@@ -289,7 +289,7 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
     });
   });
 
-  res.status(201).json({ success: true, data: pkg ? buildPackageFeatureLinks(pkg, { preserveBundleRelations: true }) : null });
+  res.status(201).json({ success: true, data: pkg });
 }
 
 // ─── PUT /api/admin/packages/:id ─────────────────────────────────────────────
@@ -405,7 +405,7 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
     });
   });
 
-  res.json({ success: true, data: updated ? buildPackageFeatureLinks(updated, { preserveBundleRelations: true }) : null });
+  res.json({ success: true, data: updated });
 }
 
 // ─── DELETE /api/admin/packages/:id ──────────────────────────────────────────
