@@ -255,9 +255,7 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { ministryAdminId: true } });
     ministryAdminId = user?.ministryAdminId ?? null;
   }
-  const admin = ministryAdminId
-    ? await prisma.user.findUnique({ where: { id: ministryAdminId }, select: { accountCountry: true } })
-    : null;
+  const accountCountry = await getUserPackageAccountCountry(userId, role);
   if (pkg.isPrivate) {
     if (!ministryAdminId) {
       res.status(403).json({ success: false, message: 'This private package is not available for this account.' });
@@ -272,7 +270,7 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
       return;
     }
   }
-  const market = await resolvePricingMarket(admin?.accountCountry);
+  const market = await resolvePricingMarket(accountCountry);
   const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
   const currency = pkg.isPrivate ? (pkg.currencyCode || market.currencyCode) : market.currencyCode;
 

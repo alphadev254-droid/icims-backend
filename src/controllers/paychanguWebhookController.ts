@@ -321,7 +321,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
       ceilRoundingAmount: metadata.ceilRoundingAmount || 0,
       totalAmount: metadata.totalAmount,
       currency: pendingTx.currency,
-      type: 'subscription',
+      type: 'package_subscription',
       status: 'completed',
       gateway: metadata.gateway,
       reference: pendingTx.reference,
