@@ -13,6 +13,20 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
     },
     orderBy: { sortOrder: 'asc' },
   });
+
+  tracePackageMarketOverrides('admin_packages_market_overrides_loaded', {
+    requestId: req.requestId,
+    packageCount: packages.length,
+    packages: packages.map(pkg => ({
+      packageId: pkg.id,
+      packageName: pkg.name,
+      marketPriceCount: pkg.marketPrices?.length ?? 0,
+      marketFeatureOverrideCount: pkg.marketFeatureOverrides?.length ?? 0,
+      disabledMarketFeatureOverrideCount: pkg.marketFeatureOverrides?.filter(override => override.enabled === false).length ?? 0,
+      marketFeatureOverrides: summarizeMarketFeatureOverrides(pkg.marketFeatureOverrides),
+    })),
+  });
+
   res.json({ success: true, data: packages });
 }
 
@@ -64,6 +78,28 @@ export async function getCountries(_req: Request, res: Response): Promise<void> 
 }
 
 const currencySchema = z.enum(['USD', 'KES', 'MWK']);
+
+function tracePackageMarketOverrides(event: string, payload: Record<string, unknown>) {
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: 'info',
+    service: 'icims-backend',
+    event,
+    ...payload,
+  }));
+}
+
+function summarizeMarketFeatureOverrides(overrides?: Array<{
+  pricingMarketId?: string | null;
+  featureId?: string | null;
+  enabled?: boolean;
+}>) {
+  return (overrides ?? []).map(override => ({
+    pricingMarketId: override.pricingMarketId,
+    featureId: override.featureId,
+    enabled: override.enabled,
+  }));
+}
 
 const pricingMarketSchema = z.object({
   code: z.string().min(2).max(64).regex(/^[a-z0-9_-]+$/i).transform(value => value.trim().toLowerCase()),
@@ -229,6 +265,16 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
   const effectiveMarketPrices = data.isPrivate ? [] : (marketPrices ?? []);
   const effectiveMarketFeatureOverrides = data.isPrivate ? [] : (marketFeatureOverrides ?? []);
 
+  tracePackageMarketOverrides('admin_package_create_market_overrides_received', {
+    requestId: req.requestId,
+    packageName: data.name,
+    isPrivate: data.isPrivate,
+    marketPriceCount: effectiveMarketPrices.length,
+    marketFeatureOverrideCount: effectiveMarketFeatureOverrides.length,
+    disabledMarketFeatureOverrideCount: effectiveMarketFeatureOverrides.filter(override => override.enabled === false).length,
+    marketFeatureOverrides: summarizeMarketFeatureOverrides(effectiveMarketFeatureOverrides),
+  });
+
   const pkg = await prisma.$transaction(async (tx) => {
     const now = new Date();
     const created = await tx.package.create({
@@ -283,6 +329,19 @@ export async function createPackage(req: Request, res: Response): Promise<void> 
       },
     });
 
+    const savedMarketFeatureOverrides = await tx.packageMarketFeatureOverride.findMany({
+      where: { packageId: created.id },
+      select: { pricingMarketId: true, featureId: true, enabled: true },
+    });
+
+    tracePackageMarketOverrides('admin_package_create_market_overrides_saved', {
+      requestId: req.requestId,
+      packageId: created.id,
+      marketFeatureOverrideCount: savedMarketFeatureOverrides.length,
+      disabledMarketFeatureOverrideCount: savedMarketFeatureOverrides.filter(override => override.enabled === false).length,
+      marketFeatureOverrides: summarizeMarketFeatureOverrides(savedMarketFeatureOverrides),
+    });
+
     return tx.package.findUnique({
       where: { id: created.id },
       include: packageEntitlementInclude,
@@ -306,6 +365,18 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
   const { features, moduleBundles, bundleFeatureOverrides, marketFeatureOverrides, marketPrices, ...data } = parsed.data;
   const effectiveMarketPrices = data.isPrivate ? [] : marketPrices;
   const effectiveMarketFeatureOverrides = data.isPrivate ? [] : marketFeatureOverrides;
+
+  tracePackageMarketOverrides('admin_package_update_market_overrides_received', {
+    requestId: req.requestId,
+    packageId: id,
+    isPrivate: data.isPrivate,
+    marketPricesProvided: effectiveMarketPrices !== undefined,
+    marketFeatureOverridesProvided: effectiveMarketFeatureOverrides !== undefined,
+    marketPriceCount: effectiveMarketPrices?.length ?? null,
+    marketFeatureOverrideCount: effectiveMarketFeatureOverrides?.length ?? null,
+    disabledMarketFeatureOverrideCount: effectiveMarketFeatureOverrides?.filter(override => override.enabled === false).length ?? null,
+    marketFeatureOverrides: summarizeMarketFeatureOverrides(effectiveMarketFeatureOverrides),
+  });
 
   const updated = await prisma.$transaction(async (tx) => {
     await tx.package.update({
@@ -398,6 +469,19 @@ export async function updatePackage(req: Request, res: Response): Promise<void> 
         });
       }
     }
+
+    const savedMarketFeatureOverrides = await tx.packageMarketFeatureOverride.findMany({
+      where: { packageId: id },
+      select: { pricingMarketId: true, featureId: true, enabled: true },
+    });
+
+    tracePackageMarketOverrides('admin_package_update_market_overrides_saved', {
+      requestId: req.requestId,
+      packageId: id,
+      marketFeatureOverrideCount: savedMarketFeatureOverrides.length,
+      disabledMarketFeatureOverrideCount: savedMarketFeatureOverrides.filter(override => override.enabled === false).length,
+      marketFeatureOverrides: summarizeMarketFeatureOverrides(savedMarketFeatureOverrides),
+    });
 
     return tx.package.findUnique({
       where: { id },
