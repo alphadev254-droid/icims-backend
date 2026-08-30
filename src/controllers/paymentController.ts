@@ -4,12 +4,9 @@ import prisma from '../lib/prisma';
 import axios from 'axios';
 import { getPaymentGateway, getCurrency, getGatewayCountry } from '../utils/gatewayRouter';
 import { calculatePaymentFees } from '../utils/feeCalculations';
-import { convertUSDToLocal } from '../utils/currencyConversion';
 import {
-  findPackageMarketPrice,
+  findPackageMarketPriceWithFallback,
   gatewayForPackageCurrency,
-  packageDiscountFallbackForMarket,
-  packageDiscountKeyForMarket,
   packageAvailableInMarket,
   paystackChannelsForCurrency,
   resolvePricingMarket,
@@ -212,17 +209,17 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
   }
   console.log(`[${traceId}] Package: ${pkg.name} (${pkg.displayName})`);
 
-  // Package prices resolve through pricing markets. Market price rows are
-  // authoritative; old USD package prices remain as a fallback.
-  const baseAmountUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
+  // Public package prices resolve through pricing markets. Private packages
+  // keep their own negotiated package-table price.
   
-  // Determine gateway based on the package pricing market. Private packages
-  // keep the legacy account-country gateway because they are negotiated.
+  // Read the legacy account gateway only as a private-package currency fallback.
+  // The actual checkout gateway is derived from the final currency.
   console.log(`[${traceId}] Calling getPaymentGateway for ministryAdminId: ${ministryAdminId}`);
   const accountGateway = await getPaymentGateway(ministryAdminId);
   const market = await resolvePricingMarket(ministryAdmin.accountCountry);
-  const marketPrice = pkg.isPrivate ? null : findPackageMarketPrice(pkg, market.id);
-  if (!invoice && !pkg.isPrivate && !packageAvailableInMarket(pkg, market.id)) {
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
+  const marketPrice = pkg.isPrivate ? null : findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
+  if (!invoice && !pkg.isPrivate && !packageAvailableInMarket(pkg, market.id, generalMarket.id)) {
     res.status(400).json({ success: false, message: 'This package is not available for your country or market.' });
     return;
   }
@@ -230,31 +227,29 @@ export async function initiatePackageSubscription(req: Request, res: Response): 
     ? invoice.currency
     : pkg.isPrivate
       ? (pkg.currencyCode || getCurrency(accountGateway))
-      : (marketPrice?.currencyCode ?? market.currencyCode ?? getCurrency(market.packageGateway));
+      : marketPrice?.currencyCode;
+  if (!currency) {
+    res.status(400).json({ success: false, message: 'Package pricing is not configured for your country or the General market.' });
+    return;
+  }
   const gateway = invoice
     ? gatewayForPackageCurrency(invoice.currency)
-    : pkg.isPrivate
-      ? accountGateway
-      : gatewayForPackageCurrency(currency);
+    : gatewayForPackageCurrency(currency);
   const gatewayCountry = getGatewayCountry(gateway);
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
   console.log(`[${traceId}] National Admin accountCountry: ${ministryAdmin.accountCountry}`);
-  console.log(`[${traceId}] Package price in USD: ${baseAmountUSD}`);
   
-  const discountKey = packageDiscountKeyForMarket(market.code);
-  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
-  const fallbackAmount = pkg.isPrivate
-    ? null
-    : String(currency).toUpperCase() === 'USD'
-      ? parseFloat((Number(baseAmountUSD) * discount).toFixed(2))
-      : Math.round(convertUSDToLocal(baseAmountUSD, currency as 'MWK' | 'KES') * discount);
   const baseAmount = invoice
     ? Math.max(0, invoice.balanceDue || invoice.amount)
     : pkg.isPrivate
       ? Number(billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly)
-      : Number(billingCycle === 'monthly' ? marketPrice?.priceMonthly ?? fallbackAmount : marketPrice?.priceYearly ?? fallbackAmount);
-  console.log(`[${traceId}] Pricing market: ${market.name}; base amount: ${baseAmount} ${currency}${pkg.isPrivate ? ' from private package' : marketPrice ? ' from market price' : ' from USD fallback'}`);
+      : Number(billingCycle === 'monthly' ? marketPrice?.priceMonthly : marketPrice?.priceYearly);
+  if (!invoice && !pkg.isPrivate && (!marketPrice || !Number.isFinite(baseAmount) || baseAmount <= 0)) {
+    res.status(400).json({ success: false, message: 'Package pricing is not configured for your country or the General market.' });
+    return;
+  }
+  console.log(`[${traceId}] Pricing market: ${market.name}; base amount: ${baseAmount} ${currency}${pkg.isPrivate ? ' from private package' : marketPrice ? ' from market price' : ''}`);
   
   // Calculate fees (Kenya has no tax, Malawi has 17.5% tax)
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);

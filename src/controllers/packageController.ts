@@ -4,11 +4,10 @@ import prisma from '../lib/prisma';
 import { buildPackageFeatureLinks, packageEntitlementInclude } from '../lib/packageEntitlements';
 import {
   countryFromRequestHeaders,
-  findPackageMarketPrice,
-  packageDiscountFallbackForMarket,
-  packageDiscountKeyForMarket,
+  findPackageMarketPriceWithFallback,
+  gatewayForPackageCurrency,
+  gatewayMarketLabel,
   packageAvailableInMarket,
-  packageRateKeyForMarket,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
 
@@ -59,31 +58,29 @@ export async function getPackages(req: Request, res: Response): Promise<void> {
   }
 
   const market = await resolvePricingMarket(accountCountry);
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
   const currency = market.currencyCode;
-  const rateKey = packageRateKeyForMarket(market.code);
-  const rateVal = process.env[rateKey];
-  if (!rateVal || isNaN(parseFloat(rateVal))) throw new Error('Payment configuration is not available. Please contact support.');
-  const rate = parseFloat(rateVal);
-  const discountKey = packageDiscountKeyForMarket(market.code);
-  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
 
   const convertedPackages = packages
   .map(rawPackage => {
     const pkg = buildPackageFeatureLinks(rawPackage);
-    if (!packageAvailableInMarket(pkg, market.id)) return null;
-    const marketPrice = findPackageMarketPrice(pkg, market.id);
-    const priceMonthly = marketPrice ? marketPrice.priceMonthly : Math.round(pkg.priceMonthly * rate * discount);
-    const priceYearly = marketPrice ? marketPrice.priceYearly : Math.round(pkg.priceYearly * rate * discount);
+    if (!packageAvailableInMarket(pkg, market.id, generalMarket.id)) return null;
+    const marketPrice = findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
+    if (!marketPrice) return null;
+    const priceMonthly = marketPrice.priceMonthly;
+    const priceYearly = marketPrice.priceYearly;
+    const packageCurrency = marketPrice.currencyCode ?? currency;
+    const packageGateway = gatewayForPackageCurrency(packageCurrency);
     return {
     ...pkg,
     priceMonthly,
     priceYearly,
-    currency: marketPrice?.currencyCode ?? currency,
+    currency: packageCurrency,
     pricingMarket: {
       code: market.code,
       name: market.name,
       country: market.country,
-      gateway: market.packageGateway,
+      gateway: packageGateway,
     },
     // Only return non-limit features (no limitValue exposed)
     features: pkg.features
@@ -304,36 +301,34 @@ export async function calculateFees(req: Request, res: Response): Promise<void> 
     }
   }
   const market = await resolvePricingMarket(admin?.accountCountry);
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
   const currency = pkg.isPrivate ? (pkg.currencyCode || market.currencyCode) : market.currencyCode;
-  const usdRateKey = packageRateKeyForMarket(market.code);
-  const usdRateVal = process.env[usdRateKey];
-  if (!usdRateVal || isNaN(parseFloat(usdRateVal))) throw new Error('Payment configuration is not available. Please contact support.');
-  const usdRate = parseFloat(usdRateVal);
 
-  const baseUSD = billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly;
-  const marketPrice = pkg.isPrivate ? null : findPackageMarketPrice(pkg, market.id);
-  if (!pkg.isPrivate && !packageAvailableInMarket(pkg, market.id)) {
+  const marketPrice = pkg.isPrivate ? null : findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
+  if (!pkg.isPrivate && !packageAvailableInMarket(pkg, market.id, generalMarket.id)) {
     res.status(400).json({ success: false, message: 'This package is not available for your country or market.' });
     return;
   }
-  const discountKey = packageDiscountKeyForMarket(market.code);
-  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
   const baseAmount = pkg.isPrivate
     ? Number(billingCycle === 'monthly' ? pkg.priceMonthly : pkg.priceYearly)
-    : marketPrice
-    ? Number(billingCycle === 'monthly' ? marketPrice.priceMonthly : marketPrice.priceYearly)
-    : parseFloat((baseUSD * usdRate * discount).toFixed(2));
-  const fees = calculatePaymentFees(baseAmount, market.name);
+    : Number(billingCycle === 'monthly' ? marketPrice?.priceMonthly : marketPrice?.priceYearly);
+  if (!pkg.isPrivate && (!marketPrice || !Number.isFinite(baseAmount) || baseAmount <= 0)) {
+    res.status(400).json({ success: false, message: 'Package pricing is not configured for your country or the General market.' });
+    return;
+  }
+  const paymentCurrency = pkg.isPrivate ? currency : (marketPrice?.currencyCode ?? currency);
+  const gateway = gatewayForPackageCurrency(paymentCurrency);
+  const fees = calculatePaymentFees(baseAmount, gatewayMarketLabel(gateway));
 
   res.json({
     success: true,
     data: {
-      currency: pkg.isPrivate ? currency : (marketPrice?.currencyCode ?? currency),
+      currency: paymentCurrency,
       pricingMarket: {
         code: market.code,
         name: market.name,
-        gateway: market.packageGateway,
+        gateway,
       },
       baseAmount: fees.baseAmount,
       convenienceFee: fees.convenienceFee,

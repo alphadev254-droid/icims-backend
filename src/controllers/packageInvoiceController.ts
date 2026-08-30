@@ -1,12 +1,8 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
-import { convertUSDToLocal } from '../utils/currencyConversion';
 import {
-  findPackageMarketPrice,
-  packageDiscountFallbackForMarket,
-  packageDiscountKeyForMarket,
-  packageRateKeyForMarket,
+  findPackageMarketPriceWithFallback,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
 import { queueEmail } from '../lib/emailQueue';
@@ -39,7 +35,8 @@ async function defaultPackagePricing(pkg: any, billingCycle: string, country?: s
   }
 
   const market = await resolvePricingMarket(country);
-  const marketPrice = findPackageMarketPrice(pkg, market.id);
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
+  const marketPrice = findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
   if (marketPrice) {
     return {
       amount: Number(billingCycle === 'yearly' ? marketPrice.priceYearly : marketPrice.priceMonthly),
@@ -47,17 +44,7 @@ async function defaultPackagePricing(pkg: any, billingCycle: string, country?: s
     };
   }
 
-  const rateKey = packageRateKeyForMarket(market.code);
-  const rate = parseFloat(process.env[rateKey] || (market.code === 'malawi' ? '1730' : '129'));
-  const discountKey = packageDiscountKeyForMarket(market.code);
-  const discount = parseFloat(process.env[discountKey] || packageDiscountFallbackForMarket(market.code));
-  const usdAmount = billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly;
-  return {
-    amount: market.currencyCode === 'USD'
-      ? parseFloat((Number(usdAmount) * discount).toFixed(2))
-      : Math.round(convertUSDToLocal(usdAmount, market.currencyCode as 'MWK' | 'KES') * discount),
-    currency: market.currencyCode,
-  };
+  throw new Error('Package pricing is not configured for this country or the General market.');
 }
 
 function parseDate(value: string, field: string) {
@@ -243,7 +230,13 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
   }
   const invoiceDate = parsed.data.invoiceDate ? parseDate(parsed.data.invoiceDate, 'invoiceDate') : new Date();
   const dueDate = parseDate(parsed.data.dueDate, 'dueDate');
-  const defaultPricing = await defaultPackagePricing(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry);
+  let defaultPricing: { amount: number; currency: string };
+  try {
+    defaultPricing = await defaultPackagePricing(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry);
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message || 'Package pricing is not configured' });
+    return;
+  }
   const currency = parsed.data.currency || defaultPricing.currency;
   const amount = defaultPricing.amount * (parsed.data.billingCycle === 'yearly' ? 1 : invoiceMonths);
 

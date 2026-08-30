@@ -88,10 +88,22 @@ export function findPackageMarketPrice(pkg: { marketPrices?: any[] | null }, mar
   return (pkg.marketPrices ?? []).find((price) => price.pricingMarketId === marketId) ?? null;
 }
 
-export function packageAvailableInMarket(pkg: { isPrivate?: boolean; marketPrices?: any[] | null }, marketId?: string | null): boolean {
+export function findPackageMarketPriceWithFallback(
+  pkg: { marketPrices?: any[] | null },
+  marketId?: string | null,
+  fallbackMarketId?: string | null
+) {
+  return findPackageMarketPrice(pkg, marketId)
+    ?? (fallbackMarketId && fallbackMarketId !== marketId ? findPackageMarketPrice(pkg, fallbackMarketId) : null);
+}
+
+export function packageAvailableInMarket(
+  pkg: { isPrivate?: boolean; marketPrices?: any[] | null },
+  marketId?: string | null,
+  fallbackMarketId?: string | null
+): boolean {
   if (pkg.isPrivate) return true;
-  if (!packageHasMarketPrices(pkg)) return true;
-  return !!findPackageMarketPrice(pkg, marketId);
+  return !!findPackageMarketPriceWithFallback(pkg, marketId, fallbackMarketId);
 }
 
 export function isPackageCurrencyLocal(currency?: string | null): boolean {
