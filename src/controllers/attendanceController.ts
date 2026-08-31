@@ -200,6 +200,7 @@ function participantToVisitor(participant: any) {
     invitedBy: participant.invitedBy,
     invitedByUserId: participant.invitedByUserId,
     invitedByUser: participant.invitedByUser,
+    isFirstTime: participant.guestFirstTime,
     isNewConvert: participant.isNewConvert,
     createdAt: participant.createdAt,
     attendance: participant.attendance,
