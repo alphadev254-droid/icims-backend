@@ -1919,7 +1919,7 @@ export async function getCellsSimple(req: Request, res: Response): Promise<void>
 
   const cells = await prisma.cell.findMany({
     where,
-    select: { id: true, name: true, zone: true },
+    select: { id: true, churchId: true, name: true, zone: true },
     orderBy: { name: 'asc' },
   });
 
