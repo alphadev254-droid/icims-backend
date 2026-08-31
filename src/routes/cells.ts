@@ -3,7 +3,7 @@ import { authenticate, authorizeAnyPermission, authorizePermission } from '../mi
 import {
   getCells, getCell, createCell, updateCell, deleteCell,
   getCellMembers, addCellMember, updateCellMember, removeCellMember,
-  getCellMeetings, createCellMeeting,
+  getCellMeetings, createCellMeeting, deleteCellMeeting,
   getMeetingAttendance, submitMeetingAttendance,
   getCellStats, getCellFinanceStats,
   getCellDonations,
@@ -53,5 +53,6 @@ router.post('/:id/meetings', authorizePermission('cells:update'), createCellMeet
 
 router.get('/meetings/:meetingId/attendance', authorizeAnyPermission(['cells:read', 'cells:update']), getMeetingAttendance);
 router.post('/meetings/:meetingId/attendance', authorizePermission('cells:update'), submitMeetingAttendance);
+router.delete('/meetings/:meetingId', authorizePermission('cells:update'), deleteCellMeeting);
 
 export default router;

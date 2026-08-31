@@ -868,6 +868,38 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
   res.status(201).json({ success: true, data: meeting });
 }
 
+// ─── DELETE /api/cells/meetings/:meetingId ───────────────────────────────────
+
+export async function deleteCellMeeting(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId!;
+  const roleName = req.user?.role ?? 'member';
+  const churchId = req.user?.churchId;
+  const meetingId = String(req.params.meetingId);
+
+  const meeting = await prisma.cellMeeting.findUnique({
+    where: { id: meetingId },
+    include: { cell: { select: { id: true, name: true, churchId: true } } },
+  });
+
+  if (!meeting) {
+    res.status(404).json({ success: false, message: 'Meeting not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (!accessibleChurchIds.includes(meeting.cell.churchId)) {
+    res.status(403).json({ success: false, message: 'You do not have access to this cell meeting' });
+    return;
+  }
+
+  await prisma.cellMeeting.delete({ where: { id: meetingId } });
+
+  res.json({ success: true, message: 'Meeting deleted' });
+}
+
 // ─── GET /api/cells/meetings/:meetingId/attendance ────────────────────────────
 
 export async function getMeetingAttendance(req: Request, res: Response): Promise<void> {
