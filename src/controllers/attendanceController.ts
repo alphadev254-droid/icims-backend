@@ -197,6 +197,7 @@ function participantToVisitor(participant: any) {
     ageBracket: participant.guestAgeBracket,
     howHeard: participant.guestHowHeard,
     notes: participant.guestNotes,
+    invitedBy: participant.invitedBy,
     invitedByUserId: participant.invitedByUserId,
     invitedByUser: participant.invitedByUser,
     isNewConvert: participant.isNewConvert,
