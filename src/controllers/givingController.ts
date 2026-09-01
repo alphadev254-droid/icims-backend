@@ -808,10 +808,104 @@ export async function deleteCampaign(req: Request, res: Response): Promise<void>
   res.json({ success: true, message: 'Campaign cancelled' });
 }
 
+function groupDonationRowsByPersonCampaign(rows: any[]) {
+  type GroupedGivingRow = {
+    donorKey: string;
+    name: string;
+    email: string;
+    phone: string;
+    donorType: string;
+    campaign: string;
+    category: string;
+    cell: string;
+    church: string;
+    currency: string;
+    totalAmount: number;
+    transactionCount: number;
+    paymentMethods: Set<string>;
+    statuses: Set<string>;
+    firstDonationDate: Date | null;
+    lastDonationDate: Date | null;
+  };
+
+  const grouped = new Map<string, GroupedGivingRow>();
+
+  for (const row of rows) {
+    const donorType = row.isAnonymous ? 'Anonymous' : row.isGuest ? 'Guest' : row.user ? 'Member' : 'Donor';
+    const name = row.isAnonymous
+      ? 'Anonymous'
+      : row.isGuest
+        ? (row.guestName || row.donorName || 'Guest')
+        : `${row.user?.firstName ?? ''} ${row.user?.lastName ?? ''}`.trim() || row.donorName || 'Donor';
+    const email = row.isAnonymous ? '' : row.isGuest ? (row.guestEmail || row.donorEmail || '') : (row.user?.email || row.donorEmail || '');
+    const phone = row.isAnonymous ? '' : row.isGuest ? (row.guestPhone || row.donorPhone || '') : (row.user?.phone || row.donorPhone || '');
+    const donorIdentity = row.user?.id || email || phone || name || row.id;
+    const campaignName = row.campaign?.name || '';
+    const categoryName = row.campaign?.category || '';
+    const cellName = row.cell?.name || '';
+    const churchName = row.church?.name || '';
+    const currency = row.currency || '';
+    const key = [donorType, donorIdentity, row.campaignId, campaignName, churchName, cellName, currency].join('|');
+
+    const existing = grouped.get(key) ?? {
+      donorKey: donorIdentity,
+      name,
+      email,
+      phone,
+      donorType,
+      campaign: campaignName,
+      category: categoryName,
+      cell: cellName,
+      church: churchName,
+      currency,
+      totalAmount: 0,
+      transactionCount: 0,
+      paymentMethods: new Set<string>(),
+      statuses: new Set<string>(),
+      firstDonationDate: null,
+      lastDonationDate: null,
+    };
+
+    existing.totalAmount += Number(row.amount || 0);
+    existing.transactionCount += 1;
+    if (row.paymentMethod) existing.paymentMethods.add(row.paymentMethod);
+    if (row.status) existing.statuses.add(row.status);
+    const createdAt = row.createdAt ? new Date(row.createdAt) : null;
+    if (createdAt) {
+      if (!existing.firstDonationDate || createdAt < existing.firstDonationDate) existing.firstDonationDate = createdAt;
+      if (!existing.lastDonationDate || createdAt > existing.lastDonationDate) existing.lastDonationDate = createdAt;
+    }
+
+    grouped.set(key, existing);
+  }
+
+  return Array.from(grouped.values())
+    .map(row => ({
+      donorKey: row.donorKey,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      donorType: row.donorType,
+      campaign: row.campaign,
+      category: row.category,
+      cell: row.cell,
+      church: row.church,
+      currency: row.currency,
+      totalAmount: row.totalAmount,
+      transactionCount: row.transactionCount,
+      paymentMethods: Array.from(row.paymentMethods).join('; '),
+      statuses: Array.from(row.statuses).join('; '),
+      firstDonationDate: row.firstDonationDate,
+      lastDonationDate: row.lastDonationDate,
+    }))
+    .sort((a, b) => b.totalAmount - a.totalAmount || a.name.localeCompare(b.name) || a.campaign.localeCompare(b.campaign));
+}
+
 export async function getDonations(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role;
   const { campaignId, churchId: filterChurchId, category, cellId, startDate, endDate } = req.query;
+  const groupByPersonCampaign = req.query.groupByPersonCampaign === 'true';
 
   // Pagination
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
@@ -838,6 +932,38 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
       ...(category && { campaign: { is: { category: String(category) } } }),
       ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
     };
+    if (groupByPersonCampaign) {
+      const rows = await prisma.donationTransaction.findMany({
+        where,
+        select: {
+          id: true,
+          campaignId: true,
+          amount: true,
+          currency: true,
+          status: true,
+          isAnonymous: true,
+          isGuest: true,
+          donorName: true,
+          donorEmail: true,
+          donorPhone: true,
+          guestName: true,
+          guestEmail: true,
+          guestPhone: true,
+          createdAt: true,
+          paymentMethod: true,
+          campaign: { select: { name: true, category: true } },
+          church: { select: { name: true } },
+          user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+          cell: { select: { name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50000,
+      });
+      const groupedRows = groupDonationRowsByPersonCampaign(rows);
+      const total = groupedRows.length;
+      res.json({ success: true, data: groupedRows.slice(skip, skip + limit), pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+      return;
+    }
     const [donations, total] = await Promise.all([
       prisma.donationTransaction.findMany({
         where,
@@ -892,6 +1018,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
 
   const donationSelect = {
     id: true,
+    campaignId: true,
     amount: true,
     currency: true,
     status: true,
@@ -900,6 +1027,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     reference: true,
     donorName: true,
     donorEmail: true,
+    donorPhone: true,
     isGuest: true,
     guestName: true,
     guestEmail: true,
@@ -909,9 +1037,22 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     paymentMethod: true,
     campaign: { select: { name: true, category: true } },
     church: { select: { name: true } },
-    user: { select: { firstName: true, lastName: true, email: true, phone: true } },
+    user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
     cell: { select: { name: true } },
   };
+
+  if (groupByPersonCampaign) {
+    const rows = await prisma.donationTransaction.findMany({
+      where,
+      select: donationSelect,
+      orderBy: { createdAt: 'desc' },
+      take: 50000,
+    });
+    const groupedRows = groupDonationRowsByPersonCampaign(rows);
+    const total = groupedRows.length;
+    res.json({ success: true, data: groupedRows.slice(skip, skip + limit), pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+    return;
+  }
 
   if (isExport) {
     // Export mode: respects limit + page for batched downloads
