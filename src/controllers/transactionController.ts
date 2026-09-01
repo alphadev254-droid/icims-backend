@@ -401,8 +401,13 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
   }
 
   const filterChurchId = req.query.churchId as string | undefined;
+  const campaignId = req.query.campaignId as string | undefined;
+  const category = req.query.category as string | undefined;
+  const groupByCampaign = req.query.groupByCampaign === 'true';
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(parseInt(req.query.limit as string) || 10000, 10000);
 
   const churchIds = await getAccessibleChurchIds(
     roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
@@ -421,33 +426,53 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
 
   const dateFilter: any = {};
   if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) dateFilter.lte = new Date(endDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    dateFilter.lte = end;
+  }
 
-  // Aggregate total giving per userId
-  const grouped = await prisma.donationTransaction.groupBy({
-    by: ['userId', 'churchId'],
-    where: {
-      churchId: { in: scopedChurchIds },
-      status: 'completed',
-      userId: { not: null },
-      isGuest: false,
-      isAnonymous: false,
-      ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
-    },
-    _sum: { amount: true },
-    _count: { id: true },
-    orderBy: { _sum: { amount: 'desc' } },
-    take: 10000,
-  });
+  const donationWhere: any = {
+    churchId: { in: scopedChurchIds },
+    status: 'completed',
+    userId: { not: null },
+    isGuest: false,
+    isAnonymous: false,
+    ...(campaignId && { campaignId }),
+    ...(category && category !== 'all' && { campaign: { is: { category } } }),
+    ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+  };
+
+  // Aggregate giving per member, optionally split by campaign.
+  const grouped = groupByCampaign
+    ? await prisma.donationTransaction.groupBy({
+        by: ['userId', 'churchId', 'campaignId', 'currency'],
+        where: donationWhere,
+        _sum: { amount: true },
+        _count: { id: true },
+        orderBy: { _sum: { amount: 'desc' } },
+        take: 10000,
+      })
+    : await prisma.donationTransaction.groupBy({
+        by: ['userId', 'churchId', 'currency'],
+        where: donationWhere,
+        _sum: { amount: true },
+        _count: { id: true },
+        orderBy: { _sum: { amount: 'desc' } },
+        take: 10000,
+      });
 
   if (grouped.length === 0) {
-    res.json({ success: true, data: [] });
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
     return;
   }
 
   // Batch-fetch all enrichment data in parallel
   const userIds = grouped.map(g => g.userId!).filter(Boolean);
-  const [users, churches, userCampaigns] = await Promise.all([
+  const campaignIds = groupByCampaign
+    ? [...new Set(grouped.map((g: any) => g.campaignId).filter(Boolean))]
+    : [];
+  const [users, churches, campaigns, userCampaigns] = await Promise.all([
     prisma.user.findMany({
       where: { id: { in: userIds } },
       select: {
@@ -464,12 +489,16 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
       where: { id: { in: scopedChurchIds } },
       select: { id: true, name: true },
     }),
+    campaignIds.length > 0
+      ? prisma.givingCampaign.findMany({
+          where: { id: { in: campaignIds } },
+          select: { id: true, name: true, category: true },
+        })
+      : Promise.resolve([]),
     prisma.donationTransaction.findMany({
       where: {
+        ...donationWhere,
         userId: { in: userIds },
-        status: 'completed',
-        churchId: { in: scopedChurchIds },
-        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
       },
       select: { userId: true, campaignId: true, campaign: { select: { name: true } } },
       distinct: ['userId', 'campaignId'],
@@ -477,6 +506,7 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
   ]);
   const userMap = new Map(users.map(u => [u.id, u]));
   const churchMap = new Map(churches.map(c => [c.id, c.name]));
+  const campaignMap = new Map(campaigns.map(c => [c.id, c]));
   const campaignsByUser = new Map<string, string[]>();
   for (const uc of userCampaigns) {
     if (!uc.userId) continue;
@@ -487,6 +517,7 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
 
   const data = grouped.map(g => {
     const u = userMap.get(g.userId!) as any;
+    const campaign = groupByCampaign ? campaignMap.get((g as any).campaignId) : null;
     return {
       userId: g.userId,
       firstName: u?.firstName ?? '',
@@ -498,11 +529,17 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
       status: u?.status ?? '',
       cell: u?.cellMemberships?.[0]?.cell?.name ?? '',
       church: churchMap.get(g.churchId ?? '') ?? '',
-      campaigns: campaignsByUser.get(g.userId!)?.join('; ') ?? '',
+      campaignId: groupByCampaign ? (g as any).campaignId : undefined,
+      campaign: campaign?.name ?? '',
+      campaignCategory: campaign?.category ?? '',
+      campaigns: groupByCampaign ? (campaign?.name ?? '') : (campaignsByUser.get(g.userId!)?.join('; ') ?? ''),
+      currency: (g as any).currency ?? '',
       totalGiven: g._sum.amount ?? 0,
       transactionCount: g._count.id,
     };
   });
 
-  res.json({ success: true, data });
+  const total = data.length;
+  const pagedData = data.slice((page - 1) * limit, page * limit);
+  res.json({ success: true, data: pagedData, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 }
