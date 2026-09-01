@@ -835,7 +835,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
     const where: any = {
       userId,
       ...(campaignId && { campaignId: String(campaignId) }),
-      ...(category && { campaign: { category: String(category) } }),
+      ...(category && { campaign: { is: { category: String(category) } } }),
       ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
     };
     const [donations, total] = await Promise.all([
@@ -885,7 +885,7 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
   const where: any = {
     churchId: { in: scopedChurchIds },
     ...(campaignId && { campaignId: String(campaignId) }),
-    ...(category && { campaign: { category: String(category) } }),
+    ...(category && { campaign: { is: { category: String(category) } } }),
     ...(cellId && { cellId: String(cellId) }),
     ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
   };
@@ -915,14 +915,17 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
 
   if (isExport) {
     // Export mode: respects limit + page for batched downloads
-    const donations = await prisma.donationTransaction.findMany({
-      where,
-      select: donationSelect,
-      orderBy: { createdAt: 'desc' },
-      skip,
-      take: limit,
-    });
-    res.json({ success: true, data: donations });
+    const [donations, total] = await Promise.all([
+      prisma.donationTransaction.findMany({
+        where,
+        select: donationSelect,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.donationTransaction.count({ where }),
+    ]);
+    res.json({ success: true, data: donations, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     return;
   }
 
