@@ -207,6 +207,99 @@ function participantToVisitor(participant: any) {
   };
 }
 
+function normalizeVisitorPhone(value?: string | null): string | null {
+  const digits = value?.replace(/\D/g, '') ?? '';
+  if (!digits) return null;
+  return digits.startsWith('265') && digits.length > 9 ? digits.slice(3) : digits;
+}
+
+function normalizeVisitorEmail(value?: string | null): string | null {
+  const email = value?.trim().toLowerCase();
+  return email || null;
+}
+
+function normalizeVisitorName(value?: string | null): string | null {
+  const name = value?.trim().replace(/\s+/g, ' ').toLowerCase();
+  return name || null;
+}
+
+function serviceVisitorIdentityKey(participant: any): string | null {
+  const email = normalizeVisitorEmail(participant.guestEmail);
+  if (email) return `email:${email}`;
+  const phone = normalizeVisitorPhone(participant.guestPhone);
+  if (phone) return `phone:${phone}`;
+  const name = normalizeVisitorName(participant.guestName);
+  if (!name) return null;
+  const churchKey = participant.attendance?.churchId || participant.attendance?.church?.name || 'unknown';
+  return `name:${churchKey}:${name}`;
+}
+
+function serviceVisitorDate(participant: any): Date | null {
+  const value = participant.attendance?.date || participant.createdAt;
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function uniqueText(values: Array<string | null | undefined>): string {
+  return Array.from(new Set(values.map(value => value?.trim()).filter(Boolean) as string[])).join('; ');
+}
+
+function serviceVisitorInviter(participant: any): string {
+  if (participant.invitedByUser) {
+    const fullName = `${participant.invitedByUser.firstName ?? ''} ${participant.invitedByUser.lastName ?? ''}`.trim();
+    if (fullName) return fullName;
+    if (participant.invitedByUser.email) return participant.invitedByUser.email;
+    if (participant.invitedByUser.phone) return participant.invitedByUser.phone;
+  }
+  return participant.invitedBy || '';
+}
+
+function groupedServiceVisitorSummary(filteredParticipants: any[], historyParticipants: any[]) {
+  const filteredKeys = new Set(filteredParticipants.map(serviceVisitorIdentityKey).filter(Boolean) as string[]);
+  const groups = new Map<string, any[]>();
+
+  for (const participant of historyParticipants) {
+    const key = serviceVisitorIdentityKey(participant);
+    if (!key || !filteredKeys.has(key)) continue;
+    const group = groups.get(key) || [];
+    group.push(participant);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map(group => {
+      const sorted = [...group].sort((a, b) => (serviceVisitorDate(a)?.getTime() ?? 0) - (serviceVisitorDate(b)?.getTime() ?? 0));
+      const first = sorted[0];
+      const latest = sorted[sorted.length - 1] || first;
+      const firstDate = serviceVisitorDate(first);
+      const lastDate = serviceVisitorDate(latest);
+      const hasFirstVisit = group.some(row => row.guestFirstTime) || group.length === 1;
+      const hasReturnVisit = group.length > 1 || group.some(row => row.guestFirstTime === false && !hasFirstVisit);
+
+      return {
+        id: serviceVisitorIdentityKey(first),
+        name: latest.guestName || first.guestName,
+        phone: latest.guestPhone || first.guestPhone,
+        email: latest.guestEmail || first.guestEmail,
+        residentialArea: latest.guestResidentialArea || first.guestResidentialArea,
+        gender: latest.guestGender || first.guestGender,
+        ageBracket: latest.guestAgeBracket || first.guestAgeBracket,
+        howHeard: latest.guestHowHeard || first.guestHowHeard,
+        notes: uniqueText(group.map(row => row.guestNotes)),
+        invitedBy: uniqueText(group.map(serviceVisitorInviter)),
+        isFirstVisit: hasFirstVisit,
+        isReturnVisit: hasReturnVisit,
+        totalVisits: group.length,
+        firstVisitDate: firstDate?.toISOString() || null,
+        lastVisitDate: lastDate?.toISOString() || null,
+        isNewConvert: group.some(row => row.isNewConvert),
+        churchesVisited: uniqueText(group.map(row => row.attendance?.church?.name)),
+        serviceTypes: uniqueText(group.map(row => row.attendance?.serviceType)),
+      };
+    })
+    .sort((a, b) => new Date(b.lastVisitDate || 0).getTime() - new Date(a.lastVisitDate || 0).getTime());
+}
+
 function mergeAttendanceIncrement(target: any, increment: any) {
   for (const [key, value] of Object.entries(increment)) {
     const amount = (value as any)?.increment ?? 0;
@@ -2065,6 +2158,7 @@ export async function getServiceVisitorsReport(req: Request, res: Response): Pro
   const churchId = req.user?.churchId;
   const roleName = req.user?.role ?? 'member';
   const { churchId: filterChurchId, serviceType, startDate, endDate } = req.query;
+  const groupByVisitor = req.query.groupByVisitor === 'true';
 
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
@@ -2091,36 +2185,61 @@ export async function getServiceVisitorsReport(req: Request, res: Response): Pro
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(parseInt(req.query.limit as string) || 5000, 5000);
   const skip = (page - 1) * limit;
+  const visitorWhere = {
+    userId: null,
+    attendance: attendanceWhere,
+    OR: [
+      { checkInMethod: { in: visitorParticipantMethods } },
+      { checkInMethod: { contains: 'guest' } },
+      { checkInMethod: { contains: 'visitor' } },
+    ],
+  };
+  const visitorInclude = {
+    attendance: { select: { id: true, churchId: true, date: true, serviceType: true, church: { select: { name: true } } } },
+    invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+  };
+
+  if (groupByVisitor) {
+    const historyAttendanceWhere = { churchId: { in: scopedChurchIds } };
+    const [filteredVisitors, historyVisitors] = await Promise.all([
+      (prisma as any).attendanceParticipant.findMany({
+        where: visitorWhere,
+        include: visitorInclude,
+        orderBy: { createdAt: 'desc' },
+        take: 50000,
+      }),
+      (prisma as any).attendanceParticipant.findMany({
+        where: {
+          userId: null,
+          attendance: historyAttendanceWhere,
+          OR: [
+            { checkInMethod: { in: visitorParticipantMethods } },
+            { checkInMethod: { contains: 'guest' } },
+            { checkInMethod: { contains: 'visitor' } },
+          ],
+        },
+        include: visitorInclude,
+        orderBy: { createdAt: 'desc' },
+        take: 50000,
+      }),
+    ]);
+
+    const groupedVisitors = groupedServiceVisitorSummary(filteredVisitors, historyVisitors);
+    const data = groupedVisitors.slice(skip, skip + limit);
+    res.json({ success: true, data, pagination: { page, limit, total: groupedVisitors.length, totalPages: Math.ceil(groupedVisitors.length / limit) } });
+    return;
+  }
 
   const [visitors, total] = await Promise.all([
     (prisma as any).attendanceParticipant.findMany({
-      where: {
-        userId: null,
-        attendance: attendanceWhere,
-        OR: [
-          { checkInMethod: { in: visitorParticipantMethods } },
-          { checkInMethod: { contains: 'guest' } },
-          { checkInMethod: { contains: 'visitor' } },
-        ],
-      },
-      include: {
-        attendance: { select: { date: true, serviceType: true, church: { select: { name: true } } } },
-        invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
-      },
+      where: visitorWhere,
+      include: visitorInclude,
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
     }),
     (prisma as any).attendanceParticipant.count({
-      where: {
-        userId: null,
-        attendance: attendanceWhere,
-        OR: [
-          { checkInMethod: { in: visitorParticipantMethods } },
-          { checkInMethod: { contains: 'guest' } },
-          { checkInMethod: { contains: 'visitor' } },
-        ],
-      },
+      where: visitorWhere,
     }),
   ]);
 

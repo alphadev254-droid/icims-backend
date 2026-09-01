@@ -202,6 +202,81 @@ function visitorIdentityKey(visitor: VisitorIdentityRow): string | null {
   return name ? `name:${name}` : null;
 }
 
+function cellVisitorReportIdentityKey(visitor: any): string | null {
+  const email = normalizeEmail(visitor.visitorEmail);
+  if (email) return `email:${email}`;
+  const phone = normalizePhone(visitor.visitorPhone);
+  if (phone) return `phone:${phone}`;
+  const name = normalizeName(visitor.visitorName);
+  if (!name) return null;
+  const churchKey = visitor.meeting?.cell?.church?.name || visitor.cellId || 'unknown';
+  return `name:${churchKey}:${name}`;
+}
+
+function cellVisitorDate(visitor: any): Date | null {
+  const value = visitor.meeting?.date || visitor.createdAt;
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function uniqueReportText(values: Array<string | null | undefined>): string {
+  return Array.from(new Set(values.map(value => value?.trim()).filter(Boolean) as string[])).join('; ');
+}
+
+function cellVisitorInviter(visitor: any): string {
+  if (visitor.invitedByUser) {
+    const fullName = `${visitor.invitedByUser.firstName ?? ''} ${visitor.invitedByUser.lastName ?? ''}`.trim();
+    if (fullName) return fullName;
+    if (visitor.invitedByUser.email) return visitor.invitedByUser.email;
+    if (visitor.invitedByUser.phone) return visitor.invitedByUser.phone;
+  }
+  return '';
+}
+
+function groupedCellVisitorSummary(filteredVisitors: any[], historyVisitors: any[]) {
+  const filteredKeys = new Set(filteredVisitors.map(cellVisitorReportIdentityKey).filter(Boolean) as string[]);
+  const groups = new Map<string, any[]>();
+
+  for (const visitor of historyVisitors) {
+    const key = cellVisitorReportIdentityKey(visitor);
+    if (!key || !filteredKeys.has(key)) continue;
+    const group = groups.get(key) || [];
+    group.push(visitor);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map(group => {
+      const sorted = [...group].sort((a, b) => (cellVisitorDate(a)?.getTime() ?? 0) - (cellVisitorDate(b)?.getTime() ?? 0));
+      const first = sorted[0];
+      const latest = sorted[sorted.length - 1] || first;
+      const firstDate = cellVisitorDate(first);
+      const lastDate = cellVisitorDate(latest);
+      const hasFirstVisit = group.some(row => row.isFirstTime) || group.length === 1;
+      const hasReturnVisit = group.length > 1 || group.some(row => row.isFirstTime === false && !hasFirstVisit);
+
+      return {
+        id: cellVisitorReportIdentityKey(first),
+        visitorName: latest.visitorName || first.visitorName,
+        visitorPhone: latest.visitorPhone || first.visitorPhone,
+        visitorEmail: latest.visitorEmail || first.visitorEmail,
+        isFirstVisit: hasFirstVisit,
+        isReturnVisit: hasReturnVisit,
+        totalVisits: group.length,
+        firstVisitDate: firstDate?.toISOString() || null,
+        lastVisitDate: lastDate?.toISOString() || null,
+        isNewConvert: group.some(row => row.isNewConvert),
+        invitedBy: uniqueReportText(group.map(cellVisitorInviter)),
+        cellsVisited: uniqueReportText(group.map(row => row.meeting?.cell?.name)),
+        zones: uniqueReportText(group.map(row => row.meeting?.cell?.zone)),
+        churchesVisited: uniqueReportText(group.map(row => row.meeting?.cell?.church?.name)),
+        meetingTopics: uniqueReportText(group.map(row => row.meeting?.topic)),
+        notes: uniqueReportText(group.map(row => row.notes)),
+      };
+    })
+    .sort((a, b) => new Date(b.lastVisitDate || 0).getTime() - new Date(a.lastVisitDate || 0).getTime());
+}
+
 function summarizeGuestConversion(visitors: VisitorIdentityRow[], members: MemberIdentityRow[]) {
   const memberPhones = new Set(members.map(m => normalizePhone(m.phone)).filter(Boolean) as string[]);
   const memberEmails = new Set(members.map(m => normalizeEmail(m.email)).filter(Boolean) as string[]);
@@ -1808,6 +1883,7 @@ export async function getCellVisitors(req: Request, res: Response): Promise<void
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
   const isExport = req.query.export === 'true';
+  const groupByVisitor = req.query.groupByVisitor === 'true';
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = isExport
     ? Math.min(5000, Math.max(1, parseInt(req.query.limit as string) || 5000))
@@ -1862,35 +1938,62 @@ export async function getCellVisitors(req: Request, res: Response): Promise<void
     isVisitor: true,
     ...(Object.keys(dateFilter).length > 0 && { meeting: { date: dateFilter } }),
   };
+  const visitorSelect = {
+    id: true,
+    cellId: true,
+    visitorName: true,
+    visitorPhone: true,
+    visitorEmail: true,
+    isFirstTime: true,
+    invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+    isNewConvert: true,
+    notes: true,
+    createdAt: true,
+    meeting: {
+      select: {
+        date: true,
+        topic: true,
+        cell: {
+          select: {
+            name: true,
+            zone: true,
+            church: { select: { name: true } },
+          },
+        },
+      },
+    },
+  };
+
+  if (groupByVisitor) {
+    const [filteredVisitors, historyVisitors] = await Promise.all([
+      prisma.cellAttendance.findMany({
+        where,
+        select: visitorSelect,
+        orderBy: [{ meeting: { date: 'desc' } }],
+        take: 50000,
+      }),
+      prisma.cellAttendance.findMany({
+        where: { cellId: { in: cellIds }, isVisitor: true },
+        select: visitorSelect,
+        orderBy: [{ meeting: { date: 'desc' } }],
+        take: 50000,
+      }),
+    ]);
+
+    const groupedVisitors = groupedCellVisitorSummary(filteredVisitors, historyVisitors);
+    res.json({
+      success: true,
+      data: groupedVisitors.slice(skip, skip + limit),
+      pagination: { page, limit, total: groupedVisitors.length, totalPages: Math.ceil(groupedVisitors.length / limit) },
+    });
+    return;
+  }
 
   const [total, visitors] = await Promise.all([
     prisma.cellAttendance.count({ where }),
     prisma.cellAttendance.findMany({
       where,
-      select: {
-        id: true,
-        visitorName: true,
-        visitorPhone: true,
-        visitorEmail: true,
-        isFirstTime: true,
-        invitedByUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
-        isNewConvert: true,
-        notes: true,
-        createdAt: true,
-        meeting: {
-          select: {
-            date: true,
-            topic: true,
-            cell: {
-              select: {
-                name: true,
-                zone: true,
-                church: { select: { name: true } },
-              },
-            },
-          },
-        },
-      },
+      select: visitorSelect,
       orderBy: [{ meeting: { date: 'desc' } }],
       skip,
       take: limit,
