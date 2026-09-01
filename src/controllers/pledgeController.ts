@@ -44,6 +44,107 @@ function campaignChurchIds(campaign: { churchId: string; linkedChurches?: Array<
   return [...new Set(linked.length > 0 ? linked : [campaign.churchId])];
 }
 
+function groupPledgeRowsByPersonCampaign(rows: any[]) {
+  type GroupedPledgeRow = {
+    pledgerKey: string;
+    name: string;
+    email: string;
+    phone: string;
+    pledgerType: string;
+    campaign: string;
+    category: string;
+    church: string;
+    currency: string;
+    pledgedTotal: number;
+    paidTotal: number;
+    pledgeCount: number;
+    statuses: Set<string>;
+    earliestDeadline: Date | null;
+    latestDeadline: Date | null;
+    firstPledgeDate: Date | null;
+    lastPledgeDate: Date | null;
+  };
+
+  const grouped = new Map<string, GroupedPledgeRow>();
+
+  for (const row of rows) {
+    const name = row.user
+      ? `${row.user.firstName ?? ''} ${row.user.lastName ?? ''}`.trim() || 'Member'
+      : row.pledgerName || 'Walk-in';
+    const email = row.user?.email || row.pledgerEmail || '';
+    const phone = row.user?.phone || row.pledgerPhone || '';
+    const pledgerType = row.user ? 'Member' : 'Walk-in';
+    const pledgerKey = row.user?.id || email || phone || name || row.id;
+    const campaignName = row.campaign?.name || '';
+    const category = row.campaign?.category || '';
+    const churchName = row.church?.name || '';
+    const currency = row.currency || row.campaign?.currency || '';
+    const key = [pledgerType, pledgerKey, row.campaignId, campaignName, churchName, currency].join('|');
+
+    const existing = grouped.get(key) ?? {
+      pledgerKey,
+      name,
+      email,
+      phone,
+      pledgerType,
+      campaign: campaignName,
+      category,
+      church: churchName,
+      currency,
+      pledgedTotal: 0,
+      paidTotal: 0,
+      pledgeCount: 0,
+      statuses: new Set<string>(),
+      earliestDeadline: null,
+      latestDeadline: null,
+      firstPledgeDate: null,
+      lastPledgeDate: null,
+    };
+
+    existing.pledgedTotal += Number(row.pledgedAmount || 0);
+    existing.paidTotal += Number(row.amountPaid || 0);
+    existing.pledgeCount += 1;
+    if (row.status) existing.statuses.add(row.status);
+
+    const deadline = row.fulfillmentDeadline ? new Date(row.fulfillmentDeadline) : null;
+    if (deadline) {
+      if (!existing.earliestDeadline || deadline < existing.earliestDeadline) existing.earliestDeadline = deadline;
+      if (!existing.latestDeadline || deadline > existing.latestDeadline) existing.latestDeadline = deadline;
+    }
+
+    const createdAt = row.createdAt ? new Date(row.createdAt) : null;
+    if (createdAt) {
+      if (!existing.firstPledgeDate || createdAt < existing.firstPledgeDate) existing.firstPledgeDate = createdAt;
+      if (!existing.lastPledgeDate || createdAt > existing.lastPledgeDate) existing.lastPledgeDate = createdAt;
+    }
+
+    grouped.set(key, existing);
+  }
+
+  return Array.from(grouped.values())
+    .map(row => ({
+      pledgerKey: row.pledgerKey,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      pledgerType: row.pledgerType,
+      campaign: row.campaign,
+      category: row.category,
+      church: row.church,
+      currency: row.currency,
+      pledgedTotal: row.pledgedTotal,
+      paidTotal: row.paidTotal,
+      outstandingTotal: row.pledgedTotal - row.paidTotal,
+      pledgeCount: row.pledgeCount,
+      statuses: Array.from(row.statuses).join('; '),
+      earliestDeadline: row.earliestDeadline,
+      latestDeadline: row.latestDeadline,
+      firstPledgeDate: row.firstPledgeDate,
+      lastPledgeDate: row.lastPledgeDate,
+    }))
+    .sort((a, b) => b.outstandingTotal - a.outstandingTotal || a.name.localeCompare(b.name) || a.campaign.localeCompare(b.campaign));
+}
+
 // ─── Recalculate pledge status ────────────────────────────────────────────────
 
 /** Recalculate and persist pledge status after a payment is linked */
@@ -263,6 +364,7 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
   }
 
   const campaignId     = typeof req.query.campaignId    === 'string' ? req.query.campaignId    : undefined;
+  const category       = typeof req.query.category      === 'string' ? req.query.category      : undefined;
   const status         = typeof req.query.status        === 'string' ? req.query.status        : undefined;
   const filterChurchId = typeof req.query.churchId      === 'string' ? req.query.churchId      : undefined;
   const startDate      = typeof req.query.startDate     === 'string' ? req.query.startDate     : undefined;
@@ -271,9 +373,12 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
   const dueEndDate     = typeof req.query.dueEndDate    === 'string' ? req.query.dueEndDate    : undefined;
   const sortBy         = typeof req.query.sortBy        === 'string' ? req.query.sortBy        : 'newest';
   const isExport       = req.query.export === 'true';
+  const groupByPersonCampaign = req.query.groupByPersonCampaign === 'true';
   const page           = Math.max(parseInt(typeof req.query.page  === 'string' ? req.query.page  : '1',  10) || 1, 1);
-  const limit          = isExport ? 10000 : Math.min(parseInt(typeof req.query.limit === 'string' ? req.query.limit : '20', 10) || 20, 100);
-  const skip           = isExport ? 0 : (page - 1) * limit;
+  const limit          = isExport
+    ? Math.min(parseInt(typeof req.query.limit === 'string' ? req.query.limit : '10000', 10) || 10000, 10000)
+    : Math.min(parseInt(typeof req.query.limit === 'string' ? req.query.limit : '20', 10) || 20, 100);
+  const skip           = (page - 1) * limit;
 
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
@@ -303,6 +408,7 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
   const where: any = {
     churchId: { in: accessibleChurchIds },
     ...(campaignId && { campaignId }),
+    ...(category && category !== 'all' && { campaign: { is: { category } } }),
     ...(status && status !== 'all' && { status }),
     ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
     ...(Object.keys(dueDateFilter).length > 0 && { fulfillmentDeadline: dueDateFilter }),
@@ -317,21 +423,52 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
     where.churchId = filterChurchId;
   }
 
+  const pledgeInclude = {
+    campaign: { select: { id: true, name: true, category: true, currency: true } },
+    church: { select: { name: true } },
+    user: {
+      select: {
+        id: true, firstName: true, lastName: true, email: true, phone: true,
+      },
+    },
+  };
+
+  if (groupByPersonCampaign) {
+    const [allPledges, allStats] = await Promise.all([
+      prisma.pledge.findMany({
+        where,
+        orderBy: buildOrderBy(sortBy),
+        include: pledgeInclude,
+        take: 50000,
+      }),
+      prisma.pledge.aggregate({
+        where,
+        _sum: { pledgedAmount: true, amountPaid: true },
+        _count: { id: true },
+      }),
+    ]);
+
+    const grouped = groupPledgeRowsByPersonCampaign(allPledges);
+    const total = grouped.length;
+    const totalPledged = allStats._sum.pledgedAmount ?? 0;
+    const totalPaid = allStats._sum.amountPaid ?? 0;
+
+    res.json({
+      success: true,
+      data: grouped.slice(skip, skip + limit),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      summary: { totalPledged, totalPaid, outstanding: totalPledged - totalPaid, count: allStats._count.id },
+    });
+    return;
+  }
+
   const [pledges, total, allStats] = await Promise.all([
     prisma.pledge.findMany({
       where,
       orderBy: buildOrderBy(sortBy),
       skip,
       take: limit,
-      include: {
-        campaign: { select: { id: true, name: true, category: true, currency: true } },
-        church: { select: { name: true } },
-        user: {
-          select: {
-            firstName: true, lastName: true, email: true, phone: true,
-          },
-        },
-      },
+      include: pledgeInclude,
     }),
     prisma.pledge.count({ where }),
     // Summary always across ALL matching pledges (not just this page)
