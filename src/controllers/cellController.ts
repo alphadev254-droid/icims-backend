@@ -333,12 +333,20 @@ export async function getCells(req: Request, res: Response): Promise<void> {
       select: { cellId: true, meetingId: true, userId: true, status: true },
     }),
     prisma.cellAttendance.findMany({
-      where: { cellId: { in: cellIds }, isVisitor: true },
+      where: {
+        cellId: { in: cellIds },
+        isVisitor: true,
+        ...(hasDates && { meeting: { date: dateFilter } }),
+      },
       select: { cellId: true, visitorPhone: true, visitorEmail: true, visitorName: true },
     }),
     (prisma as any).donationTransaction.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds }, status: 'completed' },
+      where: {
+        cellId: { in: cellIds },
+        status: 'completed',
+        ...(hasDates && { createdAt: dateFilter }),
+      },
       _sum: { amount: true },
     }),
   ]);
