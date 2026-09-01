@@ -224,14 +224,14 @@ function normalizeVisitorName(value?: string | null): string | null {
 }
 
 function serviceVisitorIdentityKey(participant: any): string | null {
+  const churchKey = participant.attendance?.churchId || participant.attendance?.church?.name || 'unknown';
   const email = normalizeVisitorEmail(participant.guestEmail);
-  if (email) return `email:${email}`;
+  if (email) return `church:${churchKey}:email:${email}`;
   const phone = normalizeVisitorPhone(participant.guestPhone);
-  if (phone) return `phone:${phone}`;
+  if (phone) return `church:${churchKey}:phone:${phone}`;
   const name = normalizeVisitorName(participant.guestName);
   if (!name) return null;
-  const churchKey = participant.attendance?.churchId || participant.attendance?.church?.name || 'unknown';
-  return `name:${churchKey}:${name}`;
+  return `church:${churchKey}:name:${name}`;
 }
 
 function serviceVisitorDate(participant: any): Date | null {

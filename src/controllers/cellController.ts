@@ -203,14 +203,14 @@ function visitorIdentityKey(visitor: VisitorIdentityRow): string | null {
 }
 
 function cellVisitorReportIdentityKey(visitor: any): string | null {
+  const cellKey = visitor.cellId || visitor.meeting?.cell?.name || 'unknown';
   const email = normalizeEmail(visitor.visitorEmail);
-  if (email) return `email:${email}`;
+  if (email) return `cell:${cellKey}:email:${email}`;
   const phone = normalizePhone(visitor.visitorPhone);
-  if (phone) return `phone:${phone}`;
+  if (phone) return `cell:${cellKey}:phone:${phone}`;
   const name = normalizeName(visitor.visitorName);
   if (!name) return null;
-  const churchKey = visitor.meeting?.cell?.church?.name || visitor.cellId || 'unknown';
-  return `name:${churchKey}:${name}`;
+  return `cell:${cellKey}:name:${name}`;
 }
 
 function cellVisitorDate(visitor: any): Date | null {
