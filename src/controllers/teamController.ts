@@ -275,6 +275,12 @@ export const getTeamMembers = async (req: Request, res: Response) => {
           memberType: true,
           loginEnabled: true,
           membershipType: true,
+          role: {
+            select: {
+              name: true,
+              displayName: true,
+            },
+          },
           maritalStatus: true,
           serviceInterest: true,
           gender: true,
@@ -304,6 +310,8 @@ export const getTeamMembers = async (req: Request, res: Response) => {
       memberType: u.memberType,
       loginEnabled: u.loginEnabled,
       membershipType: u.membershipType,
+      roleName: u.role?.name ?? null,
+      roleDisplayName: u.role?.displayName ?? null,
       maritalStatus: u.maritalStatus,
       serviceInterest: u.serviceInterest,
       gender: u.gender,
