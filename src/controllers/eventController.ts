@@ -11,6 +11,7 @@ import { queueChurchPush } from '../lib/notificationQueue';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { eventCreatedTemplate } from '../lib/emailTemplates';
 import { hasFeature } from '../lib/packageChecker';
+import { refreshReminderCache } from '../workers/reminderCacheWorker';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
 
@@ -593,6 +594,9 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     }),
     emailType: 'notification',
   }).catch(err => console.error('[Event] Failed to queue member emails:', err));
+
+  // Refresh reminder cache immediately so new event appears without waiting for nightly cron
+  refreshReminderCache().catch(err => console.error('[Event] Failed to refresh reminder cache:', err));
 }
 
 export async function updateEvent(req: Request, res: Response): Promise<void> {
@@ -693,6 +697,11 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     },
   });
   res.json({ success: true, data: decorateEventAvailability(event) });
+
+  // Refresh reminder cache if date changed so reminders stay accurate
+  if (eventData.date) {
+    refreshReminderCache().catch(err => console.error('[Event] Failed to refresh reminder cache on update:', err));
+  }
 }
 
 export async function deleteEvent(req: Request, res: Response): Promise<void> {
