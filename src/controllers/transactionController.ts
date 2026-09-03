@@ -312,6 +312,7 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
   const filterChurchId = req.query.churchId as string | undefined;
+  const campaignId = req.query.campaignId as string | undefined;
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(parseInt(req.query.limit as string) || 5000, 5000);
   const skip = (page - 1) * limit;
@@ -334,6 +335,15 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
   const where: any = { churchId: { in: scopedChurchIds } };
   if (type) where.type = type;
   if (status) where.status = status;
+  if (campaignId) {
+    where.type = 'donation';
+    const donationRows = await prisma.donationTransaction.findMany({
+      where: { campaignId, churchId: { in: scopedChurchIds } },
+      select: { transactionId: true },
+    });
+    const transactionIds = donationRows.map(row => row.transactionId).filter(Boolean) as string[];
+    where.id = transactionIds.length ? { in: transactionIds } : { in: ['__no_matching_campaign_transactions__'] };
+  }
   if (startDate || endDate) {
     where.createdAt = {};
     if (startDate) where.createdAt.gte = new Date(startDate);
