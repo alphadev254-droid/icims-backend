@@ -1323,6 +1323,7 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
   const where: any = {
     churchId: { in: linkedChurchIds },
     status: 'active',
+    memberType: { not: 'child' },
     OR: [
       { firstName: { contains: q } },
       { lastName: { contains: q } },
