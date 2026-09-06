@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { cancelUserAccount } from '../lib/userCancellation';
+import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
 
 const USER_INCLUDE = {
   role: true,
@@ -382,7 +383,7 @@ const createUserSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
   firstName: z.string().min(1, 'First name required'),
   lastName: z.string().min(1, 'Last name required'),
-  phone: z.string().min(1, 'Phone number is required'),
+  phone: phoneSchema,
   gender: z.enum(['male', 'female']).optional(),
   dateOfBirth: z.string().optional(),
   maritalStatus: z.enum(['single', 'married', 'widowed', 'divorced']).optional(),
@@ -547,7 +548,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 const updateUserSchema = z.object({
   firstName: z.string().min(1).optional(),
   lastName: z.string().min(1).optional(),
-  phone: z.string().optional(),
+  phone: optionalPhoneSchema,
   email: z.string().email().optional(),
   password: z.string().min(8).optional(),
   roleName: z.string().optional(),

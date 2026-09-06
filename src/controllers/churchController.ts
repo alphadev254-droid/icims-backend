@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { optionalPhoneSchema } from '../lib/inputValidation';
 
 async function resolveAccessibleChurchIds(req: Request, status: 'active' | 'cancelled' | 'all' = 'active'): Promise<string[]> {
   const role = req.user?.role ?? 'member';
@@ -107,7 +108,7 @@ const churchSchema = z.object({
   traditionalAuthority: z.string().min(1, 'Traditional Authority is required'),
   village: z.string().optional(),
   address: z.string().optional(),
-  phone: z.string().optional(),
+  phone: optionalPhoneSchema,
   email: z.string().email().optional().or(z.literal('')),
   website: z.string().optional(),
   pastorName: z.string().optional(),
@@ -214,7 +215,7 @@ const updateChurchSchema = z.object({
   traditionalAuthority: z.string().min(1, 'Traditional Authority is required').optional(),
   village: z.string().optional(),
   address: z.string().optional(),
-  phone: z.string().optional(),
+  phone: optionalPhoneSchema,
   email: z.string().email().optional().or(z.literal('')),
   website: z.string().optional(),
   pastorName: z.string().optional(),

@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { hasFeature } from '../lib/packageChecker';
 import { queueEmail } from '../lib/emailQueue';
 import { visitRequestTemplate } from '../lib/emailTemplates';
+import { optionalPhoneSchema } from '../lib/inputValidation';
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -23,12 +24,12 @@ const profileSchema = z.object({
   // Service times — JSON string validated as array
   serviceTimes: z.string().nullable().optional(),
   // Contact
-  phone:          z.string().max(30).nullable().optional(),
+  phone:          optionalPhoneSchema.nullable(),
   email:          z.string().email().nullable().optional().or(z.literal('')),
   address:        z.string().max(300).nullable().optional(),
   facebookUrl:    z.string().nullable().optional().or(z.literal('')),
   youtubeUrl:     z.string().nullable().optional().or(z.literal('')),
-  whatsappNumber: z.string().max(30).nullable().optional(),
+  whatsappNumber: optionalPhoneSchema.nullable(),
   // Publish
   isPublished: z.boolean().optional(),
 });
@@ -58,7 +59,7 @@ const visitRequestSchema = z.object({
   firstName: z.string().trim().min(1, 'First name is required').max(80),
   lastName: z.string().trim().min(1, 'Last name is required').max(80),
   email: z.string().trim().email('Valid email is required').max(150),
-  phone: z.string().trim().max(40).nullable().optional().or(z.literal('')),
+  phone: optionalPhoneSchema.nullable(),
   serviceName: z.string().trim().max(120).nullable().optional().or(z.literal('')),
   notes: z.string().trim().max(1500).nullable().optional().or(z.literal('')),
 });

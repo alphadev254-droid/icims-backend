@@ -11,6 +11,7 @@ import { recordPaymentEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
 import { findDonationMemberByContact } from '../lib/donationMemberMatching';
 import { hasFeature } from '../lib/packageChecker';
+import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
 
 function donationLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
   return {
@@ -1091,7 +1092,7 @@ const createDonationSchema = z.object({
   isAnonymous: z.boolean().optional().default(false),
   donorName: z.string().optional(),
   donorEmail: z.string().email().optional(),
-  donorPhone: z.string().optional(),
+  donorPhone: optionalPhoneSchema,
   notes: z.string().optional(),
   cellId: z.string().optional(),
   pledgeId: z.string().optional(), // optional: pay against a specific pledge
@@ -1111,7 +1112,7 @@ const createMultipleDonationSchema = z.object({
   isAnonymous: z.boolean().optional().default(false),
   donorName: z.string().optional(),
   donorEmail: z.string().email().optional(),
-  donorPhone: z.string().optional(),
+  donorPhone: optionalPhoneSchema,
   notes: z.string().optional(),
 });
 
@@ -1120,7 +1121,7 @@ const createGuestMultipleDonationSchema = z.object({
   churchId: z.string().optional(),
   guestName: z.string().min(1),
   guestEmail: z.string().email().optional().or(z.literal('')),
-  guestPhone: z.string().trim().min(1, 'Phone is required'),
+  guestPhone: phoneSchema,
   donorType: z.enum(['auto', 'member', 'guest']).optional().default('auto'),
 });
 
@@ -1708,7 +1709,7 @@ const guestDonationSchema = z.object({
   amount: z.number().positive(),
   guestName: z.string().min(1),
   guestEmail: z.string().email().optional().or(z.literal('')),
-  guestPhone: z.string().trim().min(1, 'Phone is required'),
+  guestPhone: phoneSchema,
   cellId: z.string().optional(),
   donorType: z.enum(['auto', 'member', 'guest']).optional().default('auto'),
 });
@@ -1989,7 +1990,7 @@ const recordCashDonationSchema = z.object({
   memberId: z.string().optional(),
   guestName: z.string().optional(),
   guestEmail: z.string().email().optional().or(z.literal('')),
-  guestPhone: z.string().optional(),
+  guestPhone: optionalPhoneSchema,
   amount: z.number().positive('Amount must be positive'),
   currency: z.string().min(1),
   date: z.string().min(1, 'Date is required'),

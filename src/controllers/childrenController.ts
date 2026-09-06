@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { hashPassword } from '../lib/password';
+import { optionalPhoneSchema } from '../lib/inputValidation';
 
 const childSchema = z.object({
   churchId: z.string().min(1),
@@ -11,7 +12,7 @@ const childSchema = z.object({
   dateOfBirth: z.string().optional().nullable(),
   age: z.number().int().min(0).max(120).optional().nullable(),
   gender: z.enum(['male', 'female', 'other']).optional().nullable(),
-  phone: z.string().optional().nullable(),
+  phone: optionalPhoneSchema.nullable(),
   status: z.enum(['active', 'inactive']).optional(),
   notes: z.string().optional().nullable(),
   guardianId: z.string().optional(),

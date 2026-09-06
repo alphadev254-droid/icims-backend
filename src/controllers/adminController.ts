@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { cancelUserAccount } from '../lib/userCancellation';
 import axios from 'axios';
+import { optionalPhoneSchema } from '../lib/inputValidation';
 
 function groupDonationDetails(rows: any[]) {
   const grouped = new Map<string, any[]>();
@@ -468,7 +469,7 @@ const updateUserSchema = z.object({
   firstName: z.string().min(1).optional(),
   lastName: z.string().min(1).optional(),
   email: z.string().email().optional(),
-  phone: z.string().nullable().optional(),
+  phone: optionalPhoneSchema.nullable(),
   status: z.enum(['active', 'suspended', 'inactive', 'cancelled']).optional(),
   accountCountry: z.string().trim().min(2).max(80).nullable().optional(),
   title: z.string().nullable().optional(),
@@ -770,7 +771,7 @@ const updateChurchSchema = z.object({
   name: z.string().min(2).optional(),
   location: z.string().optional(),
   pastorName: z.string().optional(),
-  phone: z.string().optional(),
+  phone: optionalPhoneSchema,
   email: z.string().email().optional().or(z.literal('')),
   website: z.string().optional(),
   address: z.string().optional(),

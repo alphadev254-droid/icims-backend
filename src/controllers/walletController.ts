@@ -11,6 +11,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate, withdrawalOtpTemplate } from '../lib/emailTemplates';
 import { recordWithdrawalEvent } from '../middleware/metrics';
 import { maskPhone } from '../utils/logger';
+import { optionalDigitsOnlySchema, optionalPhoneSchema } from '../lib/inputValidation';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 
@@ -214,10 +215,10 @@ const withdrawalBaseSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(['mobile_money', 'bank_transfer']),
   mobileOperator: z.enum(['airtel', 'tnm']).optional(),
-  mobileNumber: z.string().optional(),
+  mobileNumber: optionalPhoneSchema,
   bankCode: z.string().optional(),
   accountName: z.string().optional(),
-  accountNumber: z.string().optional(),
+  accountNumber: optionalDigitsOnlySchema('Account number'),
 });
 
 const withdrawalSchema = withdrawalBaseSchema.refine(

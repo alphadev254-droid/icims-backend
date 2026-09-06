@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { phoneSchema } from '../lib/inputValidation';
 import { cancelUserAccount } from '../lib/userCancellation';
 
 // Note: Member model doesn't exist in schema. This controller is currently non-functional.
@@ -9,7 +10,7 @@ import { cancelUserAccount } from '../lib/userCancellation';
 const memberSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
-  phone: z.string().min(7),
+  phone: phoneSchema,
   email: z.string().email().optional().or(z.literal('')),
   gender: z.enum(['male', 'female', 'other']).optional(),
   dateOfBirth: z.string().optional(),

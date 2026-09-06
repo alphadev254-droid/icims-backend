@@ -1,13 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { queueEmail } from '../lib/emailQueue';
+import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
 
 const router = Router();
 
 const contactSchema = z.object({
   name:    z.string().min(1).max(100),
   email:   z.string().email(),
-  phone:   z.string().optional(),
+  phone:   optionalPhoneSchema,
   church:  z.string().optional(),
   subject: z.string().min(1).max(200),
   message: z.string().min(10).max(5000),
@@ -79,7 +80,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 const demoSchema = z.object({
   name:          z.string().min(1).max(100),
   email:         z.string().email(),
-  phone:         z.string().min(1, 'Phone number is required'),
+  phone:         phoneSchema,
   church:        z.string().min(1, 'Church / organisation name is required'),
   country:       z.enum(['Kenya', 'Malawi', 'Other']),
   memberCount:   z.string().optional(),

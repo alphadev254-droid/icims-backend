@@ -10,6 +10,7 @@ import { displayName, logger, maskEmail, maskToken } from '../utils/logger';
 import type { UserRole } from '../types';
 import { buildSafePackageEntitlement, packageEntitlementInclude } from '../lib/packageEntitlements';
 import { findPackageMarketPriceWithFallback, getUserPackageAccountCountry, resolvePricingMarket } from '../utils/pricingMarkets';
+import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -308,7 +309,7 @@ const registerSchema = z.object({
   numberOfBranches: z.number().int().min(0).optional(),
   email: z.string().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  phone: z.string().min(1, 'Phone number is required'),
+  phone: phoneSchema,
   gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
   accountCountry: z.string({ required_error: 'Country is required' }).trim().min(2, 'Country is required').max(80).optional(),
   anniversary: z.string().optional(),
@@ -367,7 +368,7 @@ const memberRegisterSchema = z.object({
   lastName: z.string().min(2, 'Last name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  phone: z.string().min(1, 'Phone number is required'),
+  phone: phoneSchema,
   gender: z.enum(['male', 'female'], { required_error: 'Gender is required' }),
   dateOfBirth: z.string().min(1, 'Date of birth is required'),
   maritalStatus: z.enum(['single', 'married', 'widowed', 'divorced'], { required_error: 'Marital status is required' }),
@@ -766,7 +767,7 @@ export async function getMe(req: Request, res: Response): Promise<void> {
 const profileSchema = z.object({
   firstName: z.string().min(1).optional(),
   lastName: z.string().min(1).optional(),
-  phone: z.string().optional(),
+  phone: optionalPhoneSchema,
   currentPassword: z.string().optional(),
   newPassword: z.string().min(8).optional(),
 });

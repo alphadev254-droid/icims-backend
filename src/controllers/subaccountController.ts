@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import axios from 'axios';
 import prisma from '../lib/prisma';
+import { digitsOnlySchema, optionalDigitsOnlySchema } from '../lib/inputValidation';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -10,7 +11,7 @@ const createSubaccountSchema = z.object({
   churchId: z.string().min(1),
   businessName: z.string().min(1),
   settlementBank: z.string().min(1),
-  accountNumber: z.string().min(1),
+  accountNumber: digitsOnlySchema('Account number'),
   percentageCharge: z.number().min(0).max(100).default(0),
   description: z.string().optional(),
 });
@@ -18,7 +19,7 @@ const createSubaccountSchema = z.object({
 const updateSubaccountSchema = z.object({
   businessName: z.string().optional(),
   settlementBank: z.string().optional(),
-  accountNumber: z.string().optional(),
+  accountNumber: optionalDigitsOnlySchema('Account number'),
   percentageCharge: z.number().min(0).max(100).optional(),
   active: z.boolean().optional(),
 });

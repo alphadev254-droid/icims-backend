@@ -7,6 +7,7 @@ import prisma from '../lib/prisma';
 import { queueEmail } from '../lib/emailQueue';
 import { withdrawalOtpTemplate } from '../lib/emailTemplates';
 import { refundWithdrawal } from '../utils/walletOperations';
+import { optionalDigitsOnlySchema, optionalPhoneSchema } from '../lib/inputValidation';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 const OTP_EXPIRY_MINUTES = Number(process.env.WITHDRAWAL_OTP_EXPIRY_MINUTES || 5);
@@ -19,10 +20,10 @@ const treasuryBaseSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(['mobile_money', 'bank_transfer']),
   mobileOperator: z.enum(['airtel', 'tnm']).optional(),
-  mobileNumber: z.string().optional(),
+  mobileNumber: optionalPhoneSchema,
   bankCode: z.string().optional(),
   accountName: z.string().optional(),
-  accountNumber: z.string().optional(),
+  accountNumber: optionalDigitsOnlySchema('Account number'),
 });
 
 const treasurySchema = treasuryBaseSchema.refine((data) => {
