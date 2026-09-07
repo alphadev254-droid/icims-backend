@@ -12,6 +12,12 @@ import { maskEmail, maskPhone } from '../utils/logger';
 import { findDonationMemberByContact } from '../lib/donationMemberMatching';
 import { hasFeature } from '../lib/packageChecker';
 import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
+import {
+  gatewayForPackageCurrency,
+  gatewayMarketLabel,
+  paystackChannelsForCurrency,
+  resolvePricingMarketForChurch,
+} from '../utils/pricingMarkets';
 
 function donationLogMeta(traceId: string, pendingTx: any, metadata: any = {}, extra: Record<string, unknown> = {}) {
   return {
@@ -46,7 +52,7 @@ const createCampaignSchema = z.object({
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']),
   subcategory: z.string().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
-  currency: z.enum(['MWK', 'KES']).default('MWK'),
+  currency: z.enum(['USD', 'KES', 'MWK']).optional(),
   endDate: z.string().optional(),
   imageUrl: z.string().optional(),
   allowPublicDonations: z.boolean().optional(),
@@ -62,7 +68,7 @@ const updateCampaignSchema = z.object({
   category: z.enum(['tithe', 'offering', 'partnership', 'welfare', 'missions', 'fellowship_offering']).optional(),
   subcategory: z.string().nullable().optional(),
   targetAmount: z.number().positive().optional().or(z.literal(0)).or(z.nan()).transform(val => val && val > 0 ? val : undefined),
-  currency: z.enum(['MWK', 'KES']).optional(),
+  currency: z.enum(['USD', 'KES', 'MWK']).optional(),
   status: z.enum(['active', 'completed', 'cancelled']).optional(),
   endDate: z.string().nullable().optional(),
   imageUrl: z.string().nullable().optional(),
@@ -180,6 +186,28 @@ function resolveRequestedScopeChurchIds(params: {
   return { churchIds };
 }
 
+async function resolveSingleCurrencyForChurches(churchIds: string[]) {
+  const marketRows = await Promise.all(
+    churchIds.map(async churchId => ({
+      churchId,
+      market: await resolvePricingMarketForChurch(churchId),
+    }))
+  );
+  const currencies = [...new Set(marketRows.map(row => row.market.currencyCode))];
+  if (currencies.length !== 1) {
+    return {
+      error: 'Selected churches belong to different currency markets. Create separate giving campaigns for each market.',
+      marketRows,
+    };
+  }
+
+  return {
+    currency: currencies[0],
+    market: marketRows[0]?.market,
+    marketRows,
+  };
+}
+
 export async function createCampaign(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;
@@ -193,7 +221,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, endDate, allowPublicDonations, allowPledging, ...data } = parsed.data;
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, endDate, allowPublicDonations, allowPledging, currency: requestedCurrency, ...data } = parsed.data;
 
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
@@ -216,6 +244,18 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   }
   const scopedCampaignChurchIds = resolvedScope.churchIds;
   const primaryChurchId = scopedCampaignChurchIds[0];
+  const campaignCurrency = await resolveSingleCurrencyForChurches(scopedCampaignChurchIds);
+  if (campaignCurrency.error || !campaignCurrency.currency) {
+    res.status(400).json({ success: false, message: campaignCurrency.error });
+    return;
+  }
+  if (requestedCurrency && requestedCurrency !== campaignCurrency.currency) {
+    res.status(400).json({
+      success: false,
+      message: `This ministry market uses ${campaignCurrency.currency}. Giving campaigns cannot use ${requestedCurrency}.`,
+    });
+    return;
+  }
 
   // Check maxGivings limit
   let ministryAdminId: string | null = roleName === 'ministry_admin' ? userId! : null;
@@ -235,8 +275,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   }
 
   // Check if Kenya account has subaccount for receiving donations
-  const { getPaymentGateway } = await import('../utils/gatewayRouter');
-  const gateway = await getPaymentGateway(userId!);
+  const gateway = gatewayForPackageCurrency(campaignCurrency.currency);
   
   if (gateway === 'paystack') {
     const subaccounts = await prisma.subaccount.findMany({
@@ -258,6 +297,7 @@ export async function createCampaign(req: Request, res: Response): Promise<void>
   const campaign = await prisma.givingCampaign.create({
     data: {
       ...data,
+      currency: campaignCurrency.currency,
       churchId: primaryChurchId,
       scopeType,
       endDate: endDate ? new Date(endDate) : null,
@@ -725,7 +765,7 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
 
   console.log(`[updateCampaign] ✓ access granted — proceeding with update`);
 
-  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, endDate, ...data } = parsed.data;
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, endDate, currency: requestedCurrency, ...data } = parsed.data;
   const nextScopeType = scopeType ?? existingCampaign.scopeType ?? 'one_church';
   const shouldUpdateScope = scopeType !== undefined || targetChurchId !== undefined || requestedChurchIds !== undefined;
   const resolvedScope = shouldUpdateScope
@@ -741,6 +781,18 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
     res.status(403).json({ success: false, message: resolvedScope.error });
     return;
   }
+  const campaignCurrency = await resolveSingleCurrencyForChurches(resolvedScope.churchIds);
+  if (campaignCurrency.error || !campaignCurrency.currency) {
+    res.status(400).json({ success: false, message: campaignCurrency.error });
+    return;
+  }
+  if (requestedCurrency && requestedCurrency !== campaignCurrency.currency) {
+    res.status(400).json({
+      success: false,
+      message: `This ministry market uses ${campaignCurrency.currency}. Giving campaigns cannot use ${requestedCurrency}.`,
+    });
+    return;
+  }
 
   const campaign = await prisma.$transaction(async tx => {
     if (shouldUpdateScope) {
@@ -751,6 +803,7 @@ export async function updateCampaign(req: Request, res: Response): Promise<void>
       where: { id: String(id) },
       data: {
         ...data,
+        currency: campaignCurrency.currency,
         ...(endDate !== undefined ? { endDate: endDate ? new Date(endDate) : null } : {}),
         ...(shouldUpdateScope ? {
           churchId: resolvedScope.churchIds![0],
@@ -1206,6 +1259,11 @@ async function resolveDonationCampaigns(
     }
     itemChurchIds[index] = itemChurchId;
 
+    const churchMarket = await resolvePricingMarketForChurch(itemChurchId);
+    if (campaign.currency !== churchMarket.currencyCode) {
+      return { error: `${campaign.name} uses ${campaign.currency}, but ${campaign.church?.name || 'the selected church'} belongs to the ${churchMarket.currencyCode} market.` };
+    }
+
     if (validateCellSelection && campaign.category === 'fellowship_offering' && !item.cellId) {
       return { error: `Please select a cell/fellowship for ${campaign.name}` };
     }
@@ -1266,16 +1324,11 @@ export async function createDonation(req: Request, res: Response): Promise<void>
   const campaign = resolved.campaignMap.get(campaignId)!;
 
   // Determine gateway using existing function
-  const { getPaymentGateway, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
   
-  const gateway = await getPaymentGateway(userId!);
-  const currency = getCurrency(gateway);
-  const gatewayCountry = getGatewayCountry(gateway);
-  if (currency !== resolved.currency) {
-    res.status(400).json({ success: false, message: `Selected campaign uses ${resolved.currency}, but your payment gateway uses ${currency}` });
-    return;
-  }
+  const currency = resolved.currency;
+  const gateway = gatewayForPackageCurrency(currency);
+  const gatewayCountry = gatewayMarketLabel(gateway);
   
   console.log(`[${traceId}] Gateway: ${gateway}, Country: ${gatewayCountry}, Currency: ${currency}`);
   
@@ -1356,16 +1409,11 @@ export async function createMultipleDonation(req: Request, res: Response): Promi
     return;
   }
 
-  const { getPaymentGateway, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
 
-  const gateway = await getPaymentGateway(userId!);
-  const currency = getCurrency(gateway);
-  if (currency !== resolved.currency) {
-    res.status(400).json({ success: false, message: `Selected campaigns use ${resolved.currency}, but your payment gateway uses ${currency}` });
-    return;
-  }
-  const gatewayCountry = getGatewayCountry(gateway);
+  const currency = resolved.currency;
+  const gateway = gatewayForPackageCurrency(currency);
+  const gatewayCountry = gatewayMarketLabel(gateway);
   const baseAmount = items.reduce((sum, item) => sum + item.amount, 0);
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
 
@@ -1453,7 +1501,8 @@ async function initiatePaystackDonation(
     const paystackPayload = {
       email: donorEmail || userEmail,
       amount: amountInKobo,
-      currency: 'KES',
+      currency,
+      ...(paystackChannelsForCurrency(currency) ? { channels: paystackChannelsForCurrency(currency) } : {}),
       callback_url: callbackUrl,
       metadata: {
         ...metadata,
@@ -1637,12 +1686,11 @@ export async function getGuestDonationFees(req: Request, res: Response): Promise
     return;
   }
 
-  const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
 
-  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
-  const currency = getCurrency(gateway);
-  const gatewayCountry = getGatewayCountry(gateway);
+  const currency = resolved.currency;
+  const gateway = gatewayForPackageCurrency(currency);
+  const gatewayCountry = gatewayMarketLabel(gateway);
   const fees = calculatePaymentFees(parsedAmount, gatewayCountry);
 
   res.json({
@@ -1740,12 +1788,11 @@ export async function createGuestDonation(req: Request, res: Response): Promise<
   }
   const campaign = resolved.campaignMap.get(campaignId)!;
 
-  const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
 
-  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
-  const currency = getCurrency(gateway);
-  const gatewayCountry = getGatewayCountry(gateway);
+  const currency = resolved.currency;
+  const gateway = gatewayForPackageCurrency(currency);
+  const gatewayCountry = gatewayMarketLabel(gateway);
   const fees = calculatePaymentFees(amount, gatewayCountry);
   const matchedMember = donorType !== 'guest'
     ? await findDonationMemberByContact({
@@ -1830,16 +1877,11 @@ export async function createGuestMultipleDonation(req: Request, res: Response): 
     return;
   }
 
-  const { getPaymentGatewayByChurch, getCurrency, getGatewayCountry } = await import('../utils/gatewayRouter');
   const { calculatePaymentFees } = await import('../utils/feeCalculations');
 
-  const gateway = await getPaymentGatewayByChurch(resolved.churchId);
-  const currency = getCurrency(gateway);
-  if (currency !== resolved.currency) {
-    res.status(400).json({ success: false, message: `Selected campaigns use ${resolved.currency}, but this church accepts ${currency}` });
-    return;
-  }
-  const gatewayCountry = getGatewayCountry(gateway);
+  const currency = resolved.currency;
+  const gateway = gatewayForPackageCurrency(currency);
+  const gatewayCountry = gatewayMarketLabel(gateway);
   const baseAmount = items.reduce((sum, item) => sum + item.amount, 0);
   const fees = calculatePaymentFees(baseAmount, gatewayCountry);
   const matchedMember = donorType !== 'guest'
@@ -1992,7 +2034,7 @@ const recordCashDonationSchema = z.object({
   guestEmail: z.string().email().optional().or(z.literal('')),
   guestPhone: optionalPhoneSchema,
   amount: z.number().positive('Amount must be positive'),
-  currency: z.string().min(1),
+  currency: z.enum(['USD', 'KES', 'MWK']).optional(),
   date: z.string().min(1, 'Date is required'),
   reference: z.string().optional(),
   notes: z.string().optional(),
@@ -2010,7 +2052,7 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { campaignId, churchId: selectedChurchId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency, date, reference, notes, cellId, pledgeId } = parsed.data;
+  const { campaignId, churchId: selectedChurchId, donorType, memberId, guestName, guestEmail, guestPhone, amount, currency: requestedCurrency, date, reference, notes, cellId, pledgeId } = parsed.data;
 
   // Validate required fields per donor type
   if (donorType === 'member' && !memberId) {
@@ -2068,6 +2110,14 @@ export async function recordCashDonation(req: Request, res: Response): Promise<v
   );
   if ('error' in resolved) {
     res.status(400).json({ success: false, message: resolved.error });
+    return;
+  }
+  const currency = resolved.currency;
+  if (requestedCurrency && requestedCurrency !== currency) {
+    res.status(400).json({
+      success: false,
+      message: `This campaign uses ${currency}. Manual giving cannot be recorded as ${requestedCurrency}.`,
+    });
     return;
   }
   if (!accessibleChurchIds.includes(resolved.churchId)) {

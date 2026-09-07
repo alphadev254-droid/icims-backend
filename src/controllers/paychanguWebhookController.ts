@@ -597,7 +597,7 @@ async function processPaychanguDonation(pendingTx: any, metadata: any, payload: 
 
   // Credit church wallet
   const { creditChurchWallet } = await import('../utils/walletOperations');
-  await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName || metadata.campaignId}`);
+  await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName || metadata.campaignId}`, pendingTx.currency || 'MWK');
 
   // Send receipt email
   const isGuest = metadata.isGuest === true;

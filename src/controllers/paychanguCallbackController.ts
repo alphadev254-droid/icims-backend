@@ -505,7 +505,7 @@ if (pendingTx.type === 'donation') {
 
   // Credit church wallet
   const { creditChurchWallet } = await import('../utils/walletOperations');
-  await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName}`);
+  await creditChurchWallet(pendingTx.churchId!, metadata.baseAmount, 'donation', transaction.id, `Donation - ${metadata.campaignName}`, pendingTx.currency || 'MWK');
 
   // Guest receipt email
   if (metadata.isGuest && metadata.guestEmail) {

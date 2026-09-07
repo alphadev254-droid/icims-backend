@@ -20,7 +20,8 @@ export async function creditChurchWallet(
   amount: number,
   source: string,
   sourceId: string,
-  description: string
+  description: string,
+  currency = 'MWK'
 ) {
   let wallet = await prisma.wallet.findUnique({
     where: { churchId }
@@ -37,9 +38,13 @@ export async function creditChurchWallet(
         churchId,
         ministryAdminId: church!.ministryAdminId!,
         balance: 0,
-        currency: 'MWK'
+        currency
       }
     });
+  }
+
+  if (wallet.currency !== currency) {
+    throw new Error(`Wallet currency mismatch. This church wallet is ${wallet.currency}, but the credit is ${currency}.`);
   }
 
   const balanceBefore = wallet.balance;

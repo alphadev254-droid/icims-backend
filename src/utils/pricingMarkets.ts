@@ -188,6 +188,28 @@ export async function resolvePricingMarket(accountCountry?: string | null): Prom
   };
 }
 
+export async function resolvePricingMarketForMinistryAdmin(ministryAdminId?: string | null): Promise<ResolvedPricingMarket> {
+  if (!ministryAdminId) return resolvePricingMarket(null);
+
+  const ministryAdmin = await prisma.user.findUnique({
+    where: { id: ministryAdminId },
+    select: { accountCountry: true },
+  });
+
+  return resolvePricingMarket(ministryAdmin?.accountCountry);
+}
+
+export async function resolvePricingMarketForChurch(churchId?: string | null): Promise<ResolvedPricingMarket> {
+  if (!churchId) return resolvePricingMarket(null);
+
+  const church = await prisma.church.findUnique({
+    where: { id: churchId },
+    select: { ministryAdminId: true },
+  });
+
+  return resolvePricingMarketForMinistryAdmin(church?.ministryAdminId);
+}
+
 export function countryFromRequestHeaders(headers: Record<string, string | string[] | undefined>): string | null {
   const cfCountry = headers['cf-ipcountry'];
   const value = Array.isArray(cfCountry) ? cfCountry[0] : cfCountry;

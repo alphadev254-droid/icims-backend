@@ -108,6 +108,7 @@ export async function createDonationRecordsForTransaction(args: {
       'donation',
       transactionId,
       `Donation - ${line.campaignName || line.campaignId}`,
+      currency,
     );
 
     created.push(donationTx);

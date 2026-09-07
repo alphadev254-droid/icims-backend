@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { getUserPackageAccountCountry, resolvePricingMarket } from '../utils/pricingMarkets';
 
 export async function getStats(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -29,10 +30,12 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     ]);
 
     const myTotalDonations = myDonations.filter(d => d.status === 'completed').reduce((sum, d) => sum + d.amount, 0);
+    const memberMarket = await resolvePricingMarket(await getUserPackageAccountCountry(userId, roleName));
 
     res.json({
       success: true,
       data: {
+        currency: memberMarket.currencyCode,
         myTotalDonations,
         myDonationRecords: myDonations.length,
         upcomingEvents: churchEvents.filter(e => e.status === 'upcoming').length,
@@ -114,7 +117,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     // All-time donations for total + monthly breakdown
     prisma.donationTransaction.findMany({
       where: { churchId: { in: churchIds }, status: 'completed' },
-      select: { amount: true, createdAt: true },
+      select: { amount: true, createdAt: true, currency: true },
     }),
     // Last month donations aggregate
     prisma.donationTransaction.aggregate({
@@ -202,9 +205,8 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     monthlyGiving.push({ month: monthName, amount: Math.round(monthTotal) });
   }
 
-  // Determine currency from account country
-  const accountCountry = req.user?.accountCountry || 'Malawi';
-  const currency = accountCountry === 'Kenya' ? 'KES' : 'MWK';
+  const market = await resolvePricingMarket(await getUserPackageAccountCountry(userId, roleName));
+  const currency = market.currencyCode;
 
   res.json({
     success: true,
