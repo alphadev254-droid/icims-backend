@@ -179,6 +179,46 @@ const NEW_EVENT_FEATURES = new Set([
   'event_reports',
 ]);
 
+const PACKAGE_DEFAULT_FEATURES: Record<string, string[]> = {
+  basic: [
+    'attendance_tracking',
+    'cell_management',
+    'churches_management',
+    'events_management',
+    'giving_tracking',
+    'max_churches',
+    'max_events_per_month',
+    'max_members',
+    'members_management',
+    'teams_management',
+    'transactions_view',
+    'users_management',
+  ],
+  standard: [
+    'attendance_tracking',
+    'cell_management',
+    'church_website',
+    'churches_management',
+    'communication',
+    'event_attendance',
+    'event_ticketing',
+    'events_management',
+    'giving_tracking',
+    'max_churches',
+    'max_events_per_month',
+    'max_members',
+    'members_management',
+    'pledges_management',
+    'reminders_management',
+    'reports_analytics',
+    'resources_library',
+    'teams_management',
+    'transactions_view',
+    'users_management',
+  ],
+  premium: FEATURES.map(feature => feature.name),
+};
+
 const BUNDLE_TRIGGERS: Record<string, string[]> = {
   members_core: ['members_management', 'churches_management'],
   giving_full: ['giving_tracking', 'transactions_view', 'pledges_management'],
@@ -187,6 +227,7 @@ const BUNDLE_TRIGGERS: Record<string, string[]> = {
   communication_full: ['communication', 'teams_management', 'reminders_management'],
   reports_full: ['reports_analytics', 'performance_dashboard', 'advanced_reports'],
   operations_full: ['resources_library', 'users_management', 'roles_permissions', 'church_website', 'cell_management'],
+  scheduling_full: ['scheduler_calendar_view', 'scheduler_event_creation', 'scheduler_recurring_events'],
 };
 
 function shouldEnableFeature(featureName: string, packageFeatureNames: Set<string>) {
@@ -203,6 +244,13 @@ function shouldEnableFeature(featureName: string, packageFeatureNames: Set<strin
     return packageFeatureNames.has('event_attendance');
   }
   return false;
+}
+
+function getDefaultFeatureNamesForPackage(pkg: { name: string; isPrivate: boolean }) {
+  const packageName = pkg.name.toLowerCase();
+  const defaultFeatures = PACKAGE_DEFAULT_FEATURES[packageName];
+  if (defaultFeatures) return defaultFeatures;
+  return pkg.isPrivate ? PACKAGE_DEFAULT_FEATURES.premium : [];
 }
 
 async function main() {
@@ -270,7 +318,10 @@ async function main() {
   );
 
   for (const pkg of packages) {
-    const packageFeatureNames = new Set(pkg.features.map(link => link.feature.name));
+    const directFeatureNames = new Set(pkg.features.map(link => link.feature.name));
+    const defaultFeatureNames = getDefaultFeatureNamesForPackage(pkg);
+    const packageFeatureNames = directFeatureNames.size > 0 ? directFeatureNames : new Set(defaultFeatureNames);
+    const featureSource = directFeatureNames.size > 0 ? 'direct package feature links' : defaultFeatureNames.length > 0 ? 'default package profile' : 'none';
     const selectedBundleKeys = MODULE_BUNDLES
       .filter(bundle => (BUNDLE_TRIGGERS[bundle.key] ?? []).some(featureName => packageFeatureNames.has(featureName)))
       .map(bundle => bundle.key);
@@ -284,7 +335,9 @@ async function main() {
 
     console.log('');
     console.log(`PACKAGE: ${pkg.displayName} (${pkg.name})`);
-    console.log(`  Current direct features: ${[...packageFeatureNames].sort().join(', ') || 'none'}`);
+    console.log(`  Current direct features: ${[...directFeatureNames].sort().join(', ') || 'none'}`);
+    console.log(`  Effective features source: ${featureSource}`);
+    console.log(`  Effective features: ${[...packageFeatureNames].sort().join(', ') || 'none'}`);
     console.log(`  Bundles to link: ${selectedBundleKeys.join(', ') || 'none'}`);
     console.log(`  Active ministries using this package: ${activeUsers.length ? activeUsers.join(' | ') : 'none'}`);
 
