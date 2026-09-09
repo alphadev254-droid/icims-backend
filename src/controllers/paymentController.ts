@@ -17,7 +17,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { ticketPurchaseTemplate, donationReceiptTemplate, packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
-import { createDonationRecordsForTransaction } from '../lib/donationCompletion';
+import { createDonationRecordsForTransaction, preflightDonationWallets } from '../lib/donationCompletion';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { displayName, maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
@@ -702,6 +702,11 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const existingPayment = await prisma.payment.findFirst({ where: { reference: data.reference } });
         if (existingPayment) {
           console.log(`[${traceId}] Payment already processed: ${existingPayment.id}`);
+          if (metadata.pendingTxId) {
+            await prisma.pendingTransaction.delete({ where: { id: metadata.pendingTxId } }).catch(() => {});
+          }
+          await prisma.pendingTransaction.deleteMany({ where: { reference: String(reference) } }).catch(() => {});
+          console.log(`[${traceId}] Stale pending transaction cleared after existing payment`);
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=package_subscription`);
           return;
         }
@@ -859,6 +864,8 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
         if (existingTransaction) {
           console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
+          await prisma.pendingTransaction.deleteMany({ where: { reference: String(reference) } }).catch(() => {});
+          console.log(`[${traceId}] Stale pending transaction cleared after existing event transaction`);
           const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
           const callbackUrl = isGuest
             ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}&eventId=${metadata.eventId}`
@@ -1083,6 +1090,8 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
         if (existingTransaction) {
           console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
+          await prisma.pendingTransaction.deleteMany({ where: { reference: String(reference) } }).catch(() => {});
+          console.log(`[${traceId}] Stale pending transaction cleared after existing donation transaction`);
           const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
           const callbackUrl = isGuest
             ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail || '')}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}`
@@ -1109,6 +1118,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
         const donationDonor = getEffectiveDonationDonor(pendingTx, pendingMetadata);
+        await preflightDonationWallets({
+          pendingTx,
+          metadata: pendingMetadata,
+          reference: data.reference,
+          currency: data.currency,
+        });
         
         // Create transaction
         const transaction = await prisma.transaction.create({

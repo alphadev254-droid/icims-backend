@@ -41,20 +41,15 @@ export function hasMultipleDonationLines(metadata: any): boolean {
   return Array.isArray(metadata.items) && metadata.items.length > 1;
 }
 
-export async function createDonationRecordsForTransaction(args: {
+export async function preflightDonationWallets(args: {
   pendingTx: any;
   metadata: any;
-  transactionId: string;
   reference: string;
   currency: string;
-  paymentMethod: string;
-  paidAt?: Date;
-  gatewayCustomerEmail?: string | null;
+  transactionId?: string | null;
 }) {
-  const { pendingTx, metadata, transactionId, reference, currency, paymentMethod, gatewayCustomerEmail } = args;
+  const { pendingTx, metadata, reference, currency, transactionId } = args;
   const lines = getDonationLines(metadata);
-  const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, metadata);
-  const created: any[] = [];
   const churchIds = [
     ...new Set(lines
       .map(line => line.churchId || pendingTx.churchId)
@@ -79,6 +74,24 @@ export async function createDonationRecordsForTransaction(args: {
     });
     throw error;
   }
+}
+
+export async function createDonationRecordsForTransaction(args: {
+  pendingTx: any;
+  metadata: any;
+  transactionId: string;
+  reference: string;
+  currency: string;
+  paymentMethod: string;
+  paidAt?: Date;
+  gatewayCustomerEmail?: string | null;
+}) {
+  const { pendingTx, metadata, transactionId, reference, currency, paymentMethod, gatewayCustomerEmail } = args;
+  const lines = getDonationLines(metadata);
+  const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, metadata);
+  const created: any[] = [];
+
+  await preflightDonationWallets({ pendingTx, metadata, transactionId, reference, currency });
 
   for (const [lineIndex, line] of lines.entries()) {
     const lineChurchId = line.churchId || pendingTx.churchId;
