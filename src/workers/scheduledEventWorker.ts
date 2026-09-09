@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import cron from 'node-cron';
 import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
@@ -29,6 +30,22 @@ type RecurrenceRuleRow = {
   count: number | null;
 };
 
+type ScheduledEventOccurrenceRow = {
+  id: string;
+  status: string;
+  generatedSourceId: string | null;
+};
+
+type CellMeetingTemplateRow = {
+  id: string;
+  cellId: string;
+  time: string | null;
+  topic: string | null;
+  meetingTime: string | null;
+};
+
+type PrismaExecutor = Pick<typeof prisma, '$executeRaw' | '$queryRaw'>;
+
 const WEEK_DAY_INDEX: Record<string, number> = {
   sunday: 0,
   monday: 1,
@@ -38,6 +55,15 @@ const WEEK_DAY_INDEX: Record<string, number> = {
   friday: 5,
   saturday: 6,
 };
+
+function formatTimeForMeeting(date: Date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function truncateErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 1000);
+}
 
 function addDays(value: Date, days: number) {
   const date = new Date(value);
@@ -277,6 +303,126 @@ async function sendTeamCommunication(sourceId: string) {
   return true;
 }
 
+async function claimScheduledEvent(eventId: string) {
+  const updated = await prisma.$executeRaw`
+    UPDATE scheduled_events
+    SET status = 'processing', updatedAt = NOW(3)
+    WHERE id = ${eventId} AND status = 'scheduled'
+  `;
+  return updated > 0;
+}
+
+async function restoreScheduledEvent(eventId: string) {
+  await prisma.$executeRaw`
+    UPDATE scheduled_events
+    SET status = 'scheduled', updatedAt = NOW(3)
+    WHERE id = ${eventId} AND status = 'processing'
+  `;
+}
+
+async function markScheduledEventCancelled(eventId: string) {
+  await prisma.$executeRaw`
+    UPDATE scheduled_events
+    SET status = 'cancelled', updatedAt = NOW(3)
+    WHERE id = ${eventId}
+  `;
+}
+
+async function ensureProcessingOccurrence(db: PrismaExecutor, event: ScheduledEventRow) {
+  const occurrenceId = randomUUID();
+  await db.$executeRaw`
+    INSERT INTO scheduled_event_occurrences (
+      id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+      generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+    ) VALUES (
+      ${occurrenceId}, ${event.id}, ${event.startAt}, ${event.endAt}, 'processing',
+      NULL, NULL, NULL, NOW(3), NOW(3)
+    )
+    ON DUPLICATE KEY UPDATE
+      status = IF(status = 'generated', status, 'processing'),
+      errorMessage = IF(status = 'generated', errorMessage, NULL),
+      updatedAt = NOW(3)
+  `;
+
+  const rows = await db.$queryRaw<ScheduledEventOccurrenceRow[]>`
+    SELECT id, status, generatedSourceId
+    FROM scheduled_event_occurrences
+    WHERE scheduledEventId = ${event.id} AND occurrenceStartAt = ${event.startAt}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function countGeneratedOccurrences(db: PrismaExecutor, scheduledEventId: string) {
+  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>`
+    SELECT COUNT(*) AS count
+    FROM scheduled_event_occurrences
+    WHERE scheduledEventId = ${scheduledEventId} AND status = 'generated'
+  `;
+  return Number(rows[0]?.count ?? 0);
+}
+
+async function getCellMeetingTemplate(db: PrismaExecutor, sourceId: string) {
+  const rows = await db.$queryRaw<CellMeetingTemplateRow[]>`
+    SELECT cm.id, cm.cellId, cm.time, cm.topic, c.meetingTime
+    FROM cell_meetings cm
+    JOIN cells c ON c.id = cm.cellId
+    WHERE cm.id = ${sourceId}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function createCellMeetingOccurrence(event: ScheduledEventRow) {
+  if (!event.sourceId) return null;
+
+  return prisma.$transaction(async tx => {
+    const occurrence = await ensureProcessingOccurrence(tx, event);
+    if (!occurrence) return null;
+    if (occurrence.status === 'generated' && occurrence.generatedSourceId) return occurrence.generatedSourceId;
+
+    const generatedCount = await countGeneratedOccurrences(tx, event.id);
+    const template = await getCellMeetingTemplate(tx, event.sourceId!);
+    if (!template) return null;
+
+    const generatedMeetingId = generatedCount === 0 ? event.sourceId! : randomUUID();
+
+    if (generatedCount > 0) {
+      await tx.$executeRaw`
+        INSERT INTO cell_meetings (
+          id, cellId, date, time, topic, notes, recurrenceRuleId, createdAt, updatedAt
+        ) VALUES (
+          ${generatedMeetingId}, ${template.cellId}, ${event.startAt},
+          ${template.time || template.meetingTime || formatTimeForMeeting(event.startAt)},
+          ${template.topic}, NULL, NULL, NOW(3), NOW(3)
+        )
+      `;
+    }
+
+    await tx.$executeRaw`
+      UPDATE scheduled_event_occurrences
+      SET status = 'generated',
+          generatedSourceModule = 'cell_meetings',
+          generatedSourceId = ${generatedMeetingId},
+          errorMessage = NULL,
+          updatedAt = NOW(3)
+      WHERE id = ${occurrence.id}
+    `;
+
+    return generatedMeetingId;
+  });
+}
+
+async function markOccurrenceFailed(event: ScheduledEventRow, error: unknown) {
+  await prisma.$executeRaw`
+    UPDATE scheduled_event_occurrences
+    SET status = 'failed',
+        errorMessage = ${truncateErrorMessage(error)},
+        updatedAt = NOW(3)
+    WHERE scheduledEventId = ${event.id} AND occurrenceStartAt = ${event.startAt}
+  `;
+}
+
 async function advanceOrCompleteSchedule(event: ScheduledEventRow) {
   if (!event.recurrenceRuleId) {
     await prisma.$executeRaw`
@@ -333,38 +479,23 @@ export async function processDueScheduledCommunicationEvents() {
     if (!event.sourceId) continue;
 
     try {
-      await prisma.$executeRaw`
-        UPDATE scheduled_events
-        SET status = 'processing', updatedAt = NOW(3)
-        WHERE id = ${event.id} AND status = 'scheduled'
-      `;
+      const claimed = await claimScheduledEvent(event.id);
+      if (!claimed) continue;
 
       const sent = event.sourceModule === 'announcements'
         ? await sendAnnouncement(event.sourceId)
         : await sendTeamCommunication(event.sourceId);
 
       if (!sent) {
-        await prisma.$executeRaw`
-          UPDATE scheduled_events
-          SET status = 'cancelled', updatedAt = NOW(3)
-          WHERE id = ${event.id}
-        `;
+        await markScheduledEventCancelled(event.id);
         continue;
       }
 
-      await prisma.$executeRaw`
-        UPDATE scheduled_events
-        SET status = 'scheduled', updatedAt = NOW(3)
-        WHERE id = ${event.id} AND status = 'processing'
-      `;
+      await restoreScheduledEvent(event.id);
       await advanceOrCompleteSchedule(event);
     } catch (error) {
       console.error(`[ScheduledEvents] Failed to process ${event.sourceModule}:${event.sourceId}`, error);
-      await prisma.$executeRaw`
-        UPDATE scheduled_events
-        SET status = 'scheduled', updatedAt = NOW(3)
-        WHERE id = ${event.id} AND status = 'processing'
-      `;
+      await restoreScheduledEvent(event.id);
     }
   }
 
@@ -373,12 +504,57 @@ export async function processDueScheduledCommunicationEvents() {
   }
 }
 
+export async function processDueScheduledCellMeetingEvents() {
+  const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
+  const events = await prisma.$queryRaw<ScheduledEventRow[]>`
+    SELECT id, sourceModule, sourceId, title, startAt, endAt, recurrenceRuleId
+    FROM scheduled_events
+    WHERE status = 'scheduled'
+      AND startAt <= NOW(3)
+      AND sourceModule = 'cell_meetings'
+    ORDER BY startAt ASC
+    LIMIT ${limit}
+  `;
+
+  for (const event of events) {
+    if (!event.sourceId) {
+      await markScheduledEventCancelled(event.id);
+      continue;
+    }
+
+    try {
+      const claimed = await claimScheduledEvent(event.id);
+      if (!claimed) continue;
+
+      const generatedMeetingId = await createCellMeetingOccurrence(event);
+      if (!generatedMeetingId) {
+        await markScheduledEventCancelled(event.id);
+        continue;
+      }
+
+      await restoreScheduledEvent(event.id);
+      await advanceOrCompleteSchedule(event);
+    } catch (error) {
+      console.error(`[ScheduledEvents] Failed to generate cell meeting for ${event.sourceId}`, error);
+      await markOccurrenceFailed(event, error);
+      await restoreScheduledEvent(event.id);
+    }
+  }
+
+  if (events.length > 0) {
+    console.log(`[ScheduledEvents] Processed ${events.length} due cell meeting schedule(s)`);
+  }
+}
+
 export function startScheduledEventWorker() {
   const expression = process.env.SCHEDULED_EVENTS_CRON || '* * * * *';
   cron.schedule(expression, () => {
-    processDueScheduledCommunicationEvents().catch(error => {
+    Promise.all([
+      processDueScheduledCommunicationEvents(),
+      processDueScheduledCellMeetingEvents(),
+    ]).catch(error => {
       console.error('[ScheduledEvents] Worker failed:', error);
     });
   });
-  console.log(`[ScheduledEvents] Communication scheduler initialized (${expression})`);
+  console.log(`[ScheduledEvents] Scheduler initialized (${expression})`);
 }

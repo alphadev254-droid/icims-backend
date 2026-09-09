@@ -32,7 +32,7 @@ const schema = z.object({
   priority: z.enum(['normal', 'urgent']).default('normal'),
   churchId: z.string().min(1, 'Church ID required'),
   attachments: z.string().optional(),
-  deliveryMode: z.enum(['draft', 'now', 'scheduled']).default('now').optional(),
+  deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
   scheduledAt: z.string().datetime().optional().nullable(),
   recurrenceRule: recurrenceRuleSchema,
 });
@@ -192,17 +192,15 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     include: { church: { select: { ministryAdminId: true } } },
   });
 
-  if (mode !== 'draft') {
-    const startAt = mode === 'scheduled' ? new Date(scheduledAt!) : new Date();
-    const recurrenceRuleId = mode === 'scheduled'
-      ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
-      : null;
-    await syncAnnouncementToSchedule({
-      ...item,
-      scheduledAt: startAt,
-      recurrenceRuleId,
-    });
-  }
+  const startAt = mode === 'scheduled' ? new Date(scheduledAt!) : new Date();
+  const recurrenceRuleId = mode === 'scheduled'
+    ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
+    : null;
+  await syncAnnouncementToSchedule({
+    ...item,
+    scheduledAt: startAt,
+    recurrenceRuleId,
+  });
 
   const [itemWithSchedule] = await attachAnnouncementSchedules([item]);
   res.status(201).json({ success: true, data: itemWithSchedule });
@@ -297,15 +295,6 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       scheduledAt: new Date(),
       recurrenceRuleId: null,
     });
-  } else if (mode === 'draft') {
-    if (existingSchedule.length > 0) {
-      const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
-      if (!scheduleAccess.allowed) {
-        res.status(403).json({ success: false, message: scheduleAccess.message });
-        return;
-      }
-      await deleteScheduledEventForSource('announcements', id);
-    }
   }
 
   const [updatedWithSchedule] = await attachAnnouncementSchedules([updated]);

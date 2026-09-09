@@ -973,7 +973,7 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
   const roleName = req.user?.role ?? 'member';
   const churchId = req.user?.churchId;
   const schema = z.object({
-    deliveryMode: z.enum(['draft', 'now', 'scheduled']).default('now').optional(),
+    deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
     date: z.string().min(1),
     time: z.string().optional(),
     topic: z.string().optional(),
@@ -1049,7 +1049,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   const churchId = req.user?.churchId;
   const meetingId = String(req.params.meetingId);
   const schema = z.object({
-    deliveryMode: z.enum(['draft', 'now', 'scheduled']).optional(),
+    deliveryMode: z.enum(['now', 'scheduled']).optional(),
     date: z.string().min(1).optional(),
     time: z.string().optional(),
     topic: z.string().optional(),

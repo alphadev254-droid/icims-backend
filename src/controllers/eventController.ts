@@ -104,7 +104,7 @@ const baseEventSchema = z.object({
   imageUrl: z.string().nullable().optional(),
   scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
   churchIds: z.array(z.string().min(1)).optional(),
-  deliveryMode: z.enum(['draft', 'now', 'scheduled']).default('now').optional(),
+  deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
   recurrenceRule: recurrenceRuleSchema,
 });
 
@@ -622,10 +622,6 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   }
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
-
-  if (mode === 'draft') {
-    return;
-  }
 
   // Fire-and-forget: worker resolves members and sends push off the request cycle
   const church = await prisma.church.findUnique({ where: { id: primaryChurchId }, select: { name: true } });

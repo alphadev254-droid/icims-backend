@@ -233,7 +233,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
     const userId = req.user?.userId;
     const { title, content, teamId, deliveryMode, scheduledAt } = req.body;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
-    const mode = ['draft', 'now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : 'now';
+    const mode = ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : 'now';
     const files = req.files as Express.Multer.File[];
 
     if (!title || !content || !teamId) {
@@ -299,17 +299,15 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       select: { id: true, firstName: true, lastName: true, avatar: true }
     });
 
-    if (mode !== 'draft') {
-      const startAt = mode === 'scheduled' ? new Date(scheduledAt) : new Date();
-      const recurrenceRuleId = mode === 'scheduled'
-        ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
-        : null;
-      await syncTeamCommunicationToSchedule({
-        ...communication,
-        scheduledAt: startAt,
-        recurrenceRuleId,
-      });
-    }
+    const startAt = mode === 'scheduled' ? new Date(scheduledAt) : new Date();
+    const recurrenceRuleId = mode === 'scheduled'
+      ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
+      : null;
+    await syncTeamCommunicationToSchedule({
+      ...communication,
+      scheduledAt: startAt,
+      recurrenceRuleId,
+    });
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([
       { ...communication, author, team: { id: communication.team.id, name: communication.team.name, color: communication.team.color } },
@@ -328,7 +326,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { title, content, deliveryMode, scheduledAt } = req.body;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
-    const mode = deliveryMode && ['draft', 'now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : undefined;
+    const mode = deliveryMode && ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : undefined;
     const files = req.files as Express.Multer.File[];
     let existingMediaUrls = req.body.existingMediaUrls;
 
@@ -442,14 +440,6 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
         scheduledAt: new Date(),
         recurrenceRuleId: null,
       });
-    } else if (mode === 'draft') {
-      if (existingSchedule.length > 0) {
-        const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
-        if (!scheduleAccess.allowed) {
-          return res.status(403).json({ error: scheduleAccess.message });
-        }
-        await deleteScheduledEventForSource('team_communications', String(id));
-      }
     }
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([{ ...communication, author }]);

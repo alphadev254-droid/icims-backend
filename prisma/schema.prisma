@@ -406,6 +406,24 @@ model ScheduledEvent {
   @@map("scheduled_events")
 }
 
+model ScheduledEventOccurrence {
+  id                    String   @id @default(cuid())
+  scheduledEventId      String
+  occurrenceStartAt     DateTime
+  occurrenceEndAt       DateTime
+  status                String   @default("pending")
+  generatedSourceModule String?
+  generatedSourceId     String?
+  errorMessage          String?  @db.Text
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([scheduledEventId, occurrenceStartAt], map: "scheduled_event_occurrence_key")
+  @@index([scheduledEventId, status])
+  @@index([generatedSourceModule, generatedSourceId], map: "scheduled_event_occ_generated_idx")
+  @@map("scheduled_event_occurrences")
+}
+
 // ─── Event Tickets ────────────────────────────────────────────────────────────
 
 model EventChurch {
