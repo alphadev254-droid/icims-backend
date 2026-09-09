@@ -29,6 +29,11 @@ import {
   publicInvoicePaymentQuote,
 } from '../services/packageInvoiceService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
+import {
+  assertPaystackMatchesPendingTransaction,
+  clearStalePaystackPending,
+  withPaystackReferenceLock,
+} from '../lib/paystackCompletionGuards';
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY!;
 const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co';
@@ -682,7 +687,8 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
     });
 
     if (data.status === 'success') {
-      const { metadata } = data;
+      await withPaystackReferenceLock(String(reference), traceId, async () => {
+      const metadata = data.metadata || {};
       const amount = data.amount / 100;
       const type = metadata.type || 'event_ticket';
       const originalTraceId = metadata.traceId || 'UNKNOWN';
@@ -702,11 +708,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const existingPayment = await prisma.payment.findFirst({ where: { reference: data.reference } });
         if (existingPayment) {
           console.log(`[${traceId}] Payment already processed: ${existingPayment.id}`);
-          if (metadata.pendingTxId) {
-            await prisma.pendingTransaction.delete({ where: { id: metadata.pendingTxId } }).catch(() => {});
-          }
-          await prisma.pendingTransaction.deleteMany({ where: { reference: String(reference) } }).catch(() => {});
-          console.log(`[${traceId}] Stale pending transaction cleared after existing payment`);
+          await clearStalePaystackPending(String(reference), metadata.pendingTxId, traceId);
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=package_subscription`);
           return;
         }
@@ -716,13 +718,29 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         console.log(`[${traceId}] Package: ${pkg ? pkg.name : 'NOT FOUND'}`);
 
         // Get pending transaction
-        const pendingTx = await prisma.pendingTransaction.findUnique({
-          where: { id: metadata.pendingTxId },
-        });
+        const pendingTx = metadata.pendingTxId
+          ? await prisma.pendingTransaction.findUnique({ where: { id: metadata.pendingTxId } })
+          : await prisma.pendingTransaction.findUnique({ where: { reference: String(reference) } });
         console.log(`[${traceId}] PendingTransaction: ${pendingTx ? pendingTx.id : 'NOT FOUND'}`);
+        if (!pendingTx) {
+          console.log(`[${traceId}] Pending transaction not found and no existing payment`);
+          recordPaymentEvent('paystack', 'package_subscription', 'failed', {
+            traceId,
+            reference: String(reference),
+            errorMessage: 'Pending transaction not found',
+          });
+          res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed&type=package_subscription`);
+          return;
+        }
+        assertPaystackMatchesPendingTransaction({
+          paystackData: data,
+          pendingTx,
+          traceId,
+          paymentType: 'package_subscription',
+        });
 
         // Parse metadata from pending transaction
-        const pendingMetadata = pendingTx?.metadata ? JSON.parse(pendingTx.metadata) : {};
+        const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] PendingMetadata:`, pendingMetadata);
         const baseAmount = pendingMetadata.baseAmount || amount;
         const convenienceFee = pendingMetadata.convenienceFee || 0;
@@ -864,8 +882,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
         if (existingTransaction) {
           console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
-          await prisma.pendingTransaction.deleteMany({ where: { reference: String(reference) } }).catch(() => {});
-          console.log(`[${traceId}] Stale pending transaction cleared after existing event transaction`);
+          await clearStalePaystackPending(String(reference), null, traceId);
           const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
           const callbackUrl = isGuest
             ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=event_ticket&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail)}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}&eventId=${metadata.eventId}`
@@ -888,6 +905,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
+        assertPaystackMatchesPendingTransaction({
+          paystackData: data,
+          pendingTx,
+          traceId,
+          paymentType: 'event_ticket',
+        });
         
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
@@ -1090,8 +1113,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         const existingTransaction = await prisma.transaction.findFirst({ where: { reference: data.reference } });
         if (existingTransaction) {
           console.log(`[${traceId}] Already processed by webhook: ${existingTransaction.id}`);
-          await prisma.pendingTransaction.deleteMany({ where: { reference: String(reference) } }).catch(() => {});
-          console.log(`[${traceId}] Stale pending transaction cleared after existing donation transaction`);
+          await clearStalePaystackPending(String(reference), null, traceId);
           const isGuest = metadata.isGuest === 'true' || metadata.isGuest === true;
           const callbackUrl = isGuest
             ? `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=success&type=donation&isGuest=true&guestEmail=${encodeURIComponent(metadata.guestEmail || '')}&guestName=${encodeURIComponent(metadata.guestName)}&amount=${metadata.baseAmount}&currency=${data.currency}`
@@ -1114,6 +1136,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
           res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}&status=failed`);
           return;
         }
+        assertPaystackMatchesPendingTransaction({
+          paystackData: data,
+          pendingTx,
+          traceId,
+          paymentType: 'donation',
+        });
         
         const pendingMetadata = pendingTx.metadata ? JSON.parse(pendingTx.metadata) : {};
         console.log(`[${traceId}] Fee breakdown - Base: ${pendingMetadata.baseAmount}, Convenience: ${pendingMetadata.convenienceFee}, System Fee: ${pendingMetadata.systemFeeAmount}, Total: ${pendingMetadata.totalAmount}`);
@@ -1198,6 +1226,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
         console.log(`[${traceId}] Other payment type, redirecting to callback`);
         res.redirect(`${process.env.FRONTEND_URL}/payment/callback?reference=${reference}`);
       }
+      });
     } else {
       console.log(`[${traceId}] Payment NOT successful - Status: ${data.status}`);
       res.redirect(`${process.env.FRONTEND_URL}/dashboard/packages?reference=${reference}&status=failed`);

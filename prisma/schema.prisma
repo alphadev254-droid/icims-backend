@@ -1153,7 +1153,7 @@ model Payment {
   status               String    @default("pending")
   // denormalized package name for historical records
   packageName          String    @default("basic")
-  reference            String?
+  reference            String?   @unique
   notes                String?   @db.Text
   // Transaction details
   transactionId        String? // Link to Transaction record

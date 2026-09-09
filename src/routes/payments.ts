@@ -5,6 +5,7 @@ import { initiateGuestTicketPurchase, getGuestTicketFees, getTransactionByRefere
 import { getGuestDonationFees } from '../controllers/givingController';
 import { authenticate } from '../middleware/auth';
 import { requireFeature } from '../middleware/packageCheck';
+import { simpleRateLimit } from '../middleware/simpleRateLimit';
 
 const router = Router();
 
@@ -15,6 +16,6 @@ router.post('/guest-ticket', initiateGuestTicketPurchase);
 router.get('/guest-ticket/fees', getGuestTicketFees);
 router.get('/guest-donation/fees', getGuestDonationFees);
 router.get('/transaction/:reference', getTransactionByReference);
-router.get('/verify', verifyPayment);
+router.get('/verify', simpleRateLimit({ keyPrefix: 'paystack_verify', windowMs: 60_000, max: 30 }), verifyPayment);
 
 export default router;

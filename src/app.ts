@@ -50,6 +50,8 @@ declare global {
 
 const app = express();
 
+app.set('trust proxy', 'loopback');
+
 app.use(requestLogger);
 
 // ─── CORS — allow frontend origin with credentials ─────────────────────────

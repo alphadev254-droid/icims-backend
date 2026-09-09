@@ -27,6 +27,7 @@
     "packages:markets-seed:apply": "ts-node scripts/seed-pricing-markets-countries.ts --apply",
     "wallets:market-audit": "ts-node scripts/backfill-church-wallets.ts",
     "wallets:market-backfill": "ts-node scripts/backfill-church-wallets.ts --apply",
+    "payments:reference-audit": "ts-node scripts/audit-duplicate-payment-references.ts",
     "scheduler:backfill": "ts-node scripts/backfill-scheduled-events.ts",
     "scheduler:backfill:apply": "ts-node scripts/backfill-scheduled-events.ts --apply",
     "giving:merge-duplicates": "ts-node scripts/merge-duplicate-giving-campaigns.ts",
