@@ -396,6 +396,7 @@ model ScheduledEvent {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   occurrences      ScheduledEventOccurrence[]
+  notificationLogs ScheduledEventNotificationLog[]
 
   @@index([ministryId, startAt])
   @@index([churchId, startAt])
@@ -419,11 +420,34 @@ model ScheduledEventOccurrence {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
   scheduledEvent        ScheduledEvent @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  notificationLogs      ScheduledEventNotificationLog[]
 
   @@unique([scheduledEventId, occurrenceStartAt], map: "scheduled_event_occurrence_key")
   @@index([scheduledEventId, status])
   @@index([generatedSourceModule, generatedSourceId], map: "scheduled_event_occ_generated_idx")
   @@map("scheduled_event_occurrences")
+}
+
+model ScheduledEventNotificationLog {
+  id                       String   @id @default(cuid())
+  scheduledEventId         String
+  scheduledEventOccurrenceId String?
+  reminderType             String
+  channel                  String
+  sourceModule             String
+  sourceId                 String?
+  recipientCount           Int      @default(0)
+  scheduledFor             DateTime
+  sentAt                   DateTime @default(now())
+  errorMessage             String?  @db.Text
+  scheduledEvent           ScheduledEvent @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "sched_notif_event_fkey")
+  scheduledEventOccurrence ScheduledEventOccurrence? @relation(fields: [scheduledEventOccurrenceId], references: [id], onDelete: SetNull, onUpdate: Cascade, map: "sched_notif_occ_fkey")
+
+  @@unique([scheduledEventId, scheduledFor, reminderType, channel], map: "scheduled_event_notification_once")
+  @@index([scheduledEventId, sentAt])
+  @@index([scheduledEventOccurrenceId])
+  @@index([sourceModule, sourceId])
+  @@map("scheduled_event_notification_logs")
 }
 
 // ─── Event Tickets ────────────────────────────────────────────────────────────

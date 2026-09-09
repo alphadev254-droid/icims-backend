@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import prisma from '../lib/prisma';
-import { sendPushNotification, sendPushToUsers } from '../lib/fcm';
+import { sendPushNotification } from '../lib/fcm';
 
 // Runs daily at 2 AM
 cron.schedule('0 2 * * *', async () => {
@@ -350,47 +350,6 @@ export async function refreshReminderCache() {
     console.error('[ReminderCache] Failed to send push notifications:', pushError);
   }
 
-  // Send push notifications for today's cell meetings
-  try {
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const todayDayName = dayNames[today.getDay()];
-
-    const todayCells = await prisma.cell.findMany({
-      where: {
-        meetingDay: todayDayName,
-        status: 'active',
-      },
-      select: {
-        id: true,
-        name: true,
-        meetingTime: true,
-        church: { select: { name: true } },
-        members: {
-          where: { status: 'active' },
-          select: { userId: true },
-        },
-      },
-    });
-
-    for (const cell of todayCells) {
-      const memberIds = cell.members.map(m => m.userId);
-      if (memberIds.length === 0) continue;
-
-      const timeStr = cell.meetingTime ? ` at ${cell.meetingTime}` : '';
-      await sendPushToUsers(
-        memberIds,
-        `${cell.church.name} · Cell Meeting Today`,
-        `${cell.name}${timeStr}`,
-        { type: 'cell_meeting', cellId: cell.id }
-      );
-    }
-
-    if (todayCells.length > 0) {
-      console.log(`[ReminderCache] Sent cell meeting notifications for ${todayCells.length} cells`);
-    }
-  } catch (pushError) {
-    console.error('[ReminderCache] Failed to send cell meeting push notifications:', pushError);
-  }
 }
 
 function getNextOccurrence(date: Date, from: Date): Date {

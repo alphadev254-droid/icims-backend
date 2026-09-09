@@ -46,6 +46,20 @@ type DueCellMeetingOccurrenceRow = ScheduledEventRow & {
   occurrenceGeneratedSourceId: string | null;
 };
 
+type CellMeetingNotificationCandidate = {
+  scheduledEventId: string;
+  scheduledEventOccurrenceId: string | null;
+  sourceId: string | null;
+  title: string;
+  startAt: Date;
+  cellId: string;
+  cellName: string;
+  churchId: string;
+  churchName: string;
+  time: string | null;
+  meetingTime: string | null;
+};
+
 type CellMeetingTemplateRow = {
   id: string;
   cellId: string;
@@ -66,8 +80,35 @@ const WEEK_DAY_INDEX: Record<string, number> = {
   saturday: 6,
 };
 
+const CELL_MEETING_NOTIFICATION_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+const CELL_MEETING_REMINDER_LABELS: Record<string, string> = {
+  two_days_before: 'Cell Meeting in 2 Days',
+  day_of: 'Cell Meeting Today',
+  one_hour_before: 'Cell Meeting in 1 Hour',
+};
+
 function formatTimeForMeeting(date: Date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function isSameCalendarDay(left: Date, right: Date) {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function getDueCellMeetingReminderTypes(startAt: Date, now = new Date()) {
+  const msUntil = startAt.getTime() - now.getTime();
+  if (msUntil <= 0 || msUntil > CELL_MEETING_NOTIFICATION_LOOKAHEAD_MS) return [];
+
+  const types: string[] = [];
+  if (msUntil > ONE_DAY_MS) types.push('two_days_before');
+  if (isSameCalendarDay(startAt, now)) types.push('day_of');
+  if (msUntil <= ONE_HOUR_MS) types.push('one_hour_before');
+  return types;
 }
 
 function truncateErrorMessage(error: unknown) {
@@ -392,6 +433,136 @@ async function getCellMeetingTemplate(db: PrismaExecutor, sourceId: string) {
   return rows[0] ?? null;
 }
 
+async function createNotificationLogIfNew(
+  candidate: CellMeetingNotificationCandidate,
+  reminderType: string,
+  recipientCount: number,
+) {
+  const id = randomUUID();
+  const inserted = await prisma.$executeRaw`
+    INSERT IGNORE INTO scheduled_event_notification_logs (
+      id, scheduledEventId, scheduledEventOccurrenceId, reminderType, channel,
+      sourceModule, sourceId, recipientCount, scheduledFor, sentAt, errorMessage
+    ) VALUES (
+      ${id}, ${candidate.scheduledEventId}, ${candidate.scheduledEventOccurrenceId}, ${reminderType}, 'push',
+      'cell_meetings', ${candidate.sourceId}, ${recipientCount}, ${candidate.startAt}, NOW(3), NULL
+    )
+  `;
+  return inserted > 0;
+}
+
+async function markNotificationLogFailed(
+  candidate: CellMeetingNotificationCandidate,
+  reminderType: string,
+  error: unknown,
+) {
+  const message = truncateErrorMessage(error);
+  console.error(`[ScheduledEvents] Cell meeting reminder send failed: ${message}`);
+  await prisma.$executeRaw`
+    DELETE FROM scheduled_event_notification_logs
+    WHERE scheduledEventId = ${candidate.scheduledEventId}
+      AND scheduledFor = ${candidate.startAt}
+      AND reminderType = ${reminderType}
+      AND channel = 'push'
+  `;
+}
+
+async function sendCellMeetingReminder(candidate: CellMeetingNotificationCandidate, reminderType: string) {
+  const members = await prisma.cellMember.findMany({
+    where: { cellId: candidate.cellId, status: 'active' },
+    select: { userId: true },
+  });
+  const memberIds = members.map(member => member.userId);
+  if (memberIds.length === 0) return false;
+
+  const createdLog = await createNotificationLogIfNew(candidate, reminderType, memberIds.length);
+  if (!createdLog) return false;
+
+  const time = candidate.time || candidate.meetingTime || formatTimeForMeeting(candidate.startAt);
+  try {
+    await sendPushToUsers(
+      memberIds,
+      `${candidate.churchName} · ${CELL_MEETING_REMINDER_LABELS[reminderType]}`,
+      `${candidate.title || candidate.cellName} at ${time}`,
+      {
+        type: 'cell_meeting_reminder',
+        cellId: candidate.cellId,
+        scheduledEventId: candidate.scheduledEventId,
+        occurrenceId: candidate.scheduledEventOccurrenceId ?? '',
+        reminderType,
+      }
+    );
+    return true;
+  } catch (error) {
+    await markNotificationLogFailed(candidate, reminderType, error);
+    throw error;
+  }
+}
+
+async function getUpcomingCellMeetingNotificationCandidates() {
+  const now = new Date();
+  const until = new Date(now.getTime() + CELL_MEETING_NOTIFICATION_LOOKAHEAD_MS);
+  const customOccurrences = await prisma.$queryRaw<CellMeetingNotificationCandidate[]>`
+    SELECT
+      se.id AS scheduledEventId,
+      seo.id AS scheduledEventOccurrenceId,
+      se.sourceId,
+      se.title,
+      seo.occurrenceStartAt AS startAt,
+      cm.cellId,
+      c.name AS cellName,
+      c.churchId,
+      ch.name AS churchName,
+      cm.time,
+      c.meetingTime
+    FROM scheduled_event_occurrences seo
+    JOIN scheduled_events se ON se.id = seo.scheduledEventId
+    JOIN cell_meetings cm ON cm.id = se.sourceId
+    JOIN cells c ON c.id = cm.cellId
+    JOIN churches ch ON ch.id = c.churchId
+    WHERE se.status = 'scheduled'
+      AND se.sourceModule = 'cell_meetings'
+      AND se.recurrenceRuleId IS NULL
+      AND seo.status IN ('pending', 'failed')
+      AND seo.occurrenceStartAt > ${now}
+      AND seo.occurrenceStartAt <= ${until}
+    ORDER BY seo.occurrenceStartAt ASC
+  `;
+
+  const scheduledEvents = await prisma.$queryRaw<CellMeetingNotificationCandidate[]>`
+    SELECT
+      se.id AS scheduledEventId,
+      NULL AS scheduledEventOccurrenceId,
+      se.sourceId,
+      se.title,
+      se.startAt,
+      cm.cellId,
+      c.name AS cellName,
+      c.churchId,
+      ch.name AS churchName,
+      cm.time,
+      c.meetingTime
+    FROM scheduled_events se
+    JOIN cell_meetings cm ON cm.id = se.sourceId
+    JOIN cells c ON c.id = cm.cellId
+    JOIN churches ch ON ch.id = c.churchId
+    WHERE se.status = 'scheduled'
+      AND se.sourceModule = 'cell_meetings'
+      AND se.startAt > ${now}
+      AND se.startAt <= ${until}
+      AND (
+        se.recurrenceRuleId IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM scheduled_event_occurrences seo
+          WHERE seo.scheduledEventId = se.id
+        )
+      )
+    ORDER BY se.startAt ASC
+  `;
+
+  return [...customOccurrences, ...scheduledEvents];
+}
+
 async function createCellMeetingOccurrence(
   event: ScheduledEventRow,
   selectedOccurrence?: ScheduledEventOccurrenceRow,
@@ -647,12 +818,37 @@ export async function processDueScheduledCellMeetingEvents() {
   }
 }
 
+export async function processScheduledCellMeetingNotifications() {
+  const candidates = await getUpcomingCellMeetingNotificationCandidates();
+  let sentCount = 0;
+
+  for (const candidate of candidates) {
+    const reminderTypes = getDueCellMeetingReminderTypes(candidate.startAt);
+    for (const reminderType of reminderTypes) {
+      try {
+        const sent = await sendCellMeetingReminder(candidate, reminderType);
+        if (sent) sentCount += 1;
+      } catch (error) {
+        console.error(
+          `[ScheduledEvents] Failed to send ${reminderType} cell meeting reminder for ${candidate.scheduledEventId}`,
+          error,
+        );
+      }
+    }
+  }
+
+  if (sentCount > 0) {
+    console.log(`[ScheduledEvents] Sent ${sentCount} cell meeting reminder notification(s)`);
+  }
+}
+
 export function startScheduledEventWorker() {
   const expression = process.env.SCHEDULED_EVENTS_CRON || '* * * * *';
   cron.schedule(expression, () => {
     Promise.all([
       processDueScheduledCommunicationEvents(),
       processDueScheduledCellMeetingEvents(),
+      processScheduledCellMeetingNotifications(),
     ]).catch(error => {
       console.error('[ScheduledEvents] Worker failed:', error);
     });
