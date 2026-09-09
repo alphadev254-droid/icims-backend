@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueEmail } from '../lib/emailQueue';
 import { cellMemberAddedTemplate } from '../lib/cellEmailTemplates';
+import { deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncCellMeetingToSchedule } from '../services/schedulerService';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -908,7 +909,7 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
     prisma.cellMeeting.findMany({
       where,
       select: {
-        id: true, cellId: true, date: true, topic: true, notes: true, createdAt: true, updatedAt: true,
+        id: true, cellId: true, date: true, time: true, topic: true, notes: true, recurrenceRuleId: true, createdAt: true, updatedAt: true,
         _count: { select: { attendance: true } },
         attendance: { select: { status: true, isVisitor: true } },
       },
@@ -918,8 +919,10 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
     }),
   ]);
 
+  const recurrenceRulesById = await getRecurrenceRulesById(meetings.map(m => m.recurrenceRuleId).filter((id): id is string => Boolean(id)));
   const enriched = meetings.map(m => ({
-    id: m.id, cellId: m.cellId, date: m.date, topic: m.topic, notes: m.notes,
+    id: m.id, cellId: m.cellId, date: m.date, time: m.time, topic: m.topic, notes: m.notes, recurrenceRuleId: m.recurrenceRuleId,
+    recurrenceRule: m.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(m.recurrenceRuleId)) : null,
     createdAt: m.createdAt, updatedAt: m.updatedAt,
     presentCount: m.attendance.filter(a => a.status === 'present').length,
     visitorCount: m.attendance.filter(a => a.isVisitor).length,
@@ -937,18 +940,151 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
 
 export async function createCellMeeting(req: Request, res: Response): Promise<void> {
   const cellId = String(req.params.id);
+  const userId = req.user?.userId!;
+  const roleName = req.user?.role ?? 'member';
+  const churchId = req.user?.churchId;
   const schema = z.object({
     date: z.string().min(1),
+    time: z.string().optional(),
     topic: z.string().optional(),
     notes: z.string().optional(),
+    recurrenceRule: z.object({
+      frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional(),
+      interval: z.number().int().positive().optional(),
+      daysOfWeek: z.array(z.string()).optional(),
+      dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+      monthOfYear: z.number().int().min(1).max(12).nullable().optional(),
+      startsAt: z.string().optional(),
+      endsAt: z.string().nullable().optional(),
+      count: z.number().int().positive().nullable().optional(),
+    }).nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const meeting = await prisma.cellMeeting.create({
-    data: { cellId, ...parsed.data, date: new Date(parsed.data.date) },
+  const cell = await prisma.cell.findUnique({
+    where: { id: cellId },
+    select: {
+      id: true,
+      name: true,
+      zone: true,
+      meetingTime: true,
+      churchId: true,
+      church: { select: { ministryAdminId: true } },
+    },
   });
+
+  if (!cell) {
+    res.status(404).json({ success: false, message: 'Cell not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (!accessibleChurchIds.includes(cell.churchId)) {
+    res.status(403).json({ success: false, message: 'You do not have access to this cell' });
+    return;
+  }
+
+  const { recurrenceRule, ...meetingData } = parsed.data;
+  const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, new Date(meetingData.date));
+
+  const meeting = await prisma.cellMeeting.create({
+    data: { cellId, ...meetingData, recurrenceRuleId, date: new Date(meetingData.date) },
+  });
+  syncCellMeetingToSchedule({ ...meeting, cell }, userId)
+    .catch(err => console.error('[Scheduler] Failed to sync created cell meeting:', err));
   res.status(201).json({ success: true, data: meeting });
+}
+
+// ─── PUT /api/cells/meetings/:meetingId ──────────────────────────────────────
+
+export async function updateCellMeeting(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId!;
+  const roleName = req.user?.role ?? 'member';
+  const churchId = req.user?.churchId;
+  const meetingId = String(req.params.meetingId);
+  const schema = z.object({
+    date: z.string().min(1).optional(),
+    time: z.string().optional(),
+    topic: z.string().optional(),
+    notes: z.string().optional(),
+    recurrenceRule: z.object({
+      frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional(),
+      interval: z.number().int().positive().optional(),
+      daysOfWeek: z.array(z.string()).optional(),
+      dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+      monthOfYear: z.number().int().min(1).max(12).nullable().optional(),
+      startsAt: z.string().optional(),
+      endsAt: z.string().nullable().optional(),
+      count: z.number().int().positive().nullable().optional(),
+    }).nullable().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+
+  const existingMeeting = await prisma.cellMeeting.findUnique({
+    where: { id: meetingId },
+    include: {
+      cell: {
+        select: {
+          id: true,
+          name: true,
+          zone: true,
+          meetingTime: true,
+          churchId: true,
+          church: { select: { ministryAdminId: true } },
+        },
+      },
+    },
+  });
+
+  if (!existingMeeting) {
+    res.status(404).json({ success: false, message: 'Meeting not found' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+
+  if (!accessibleChurchIds.includes(existingMeeting.cell.churchId)) {
+    res.status(403).json({ success: false, message: 'You do not have access to this cell meeting' });
+    return;
+  }
+
+  const { recurrenceRule, ...meetingData } = parsed.data;
+  const recurrenceRuleId = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
+    ? await saveRecurrenceRule(recurrenceRule ?? null, meetingData.date ? new Date(meetingData.date) : existingMeeting.date, existingMeeting.recurrenceRuleId)
+    : existingMeeting.recurrenceRuleId;
+
+  const meeting = await prisma.cellMeeting.update({
+    where: { id: meetingId },
+    data: {
+      ...meetingData,
+      recurrenceRuleId,
+      date: meetingData.date ? new Date(meetingData.date) : undefined,
+    },
+    include: {
+      cell: {
+        select: {
+          id: true,
+          name: true,
+          zone: true,
+          meetingTime: true,
+          churchId: true,
+          church: { select: { ministryAdminId: true } },
+        },
+      },
+    },
+  });
+
+  syncCellMeetingToSchedule(meeting, userId)
+    .catch(err => console.error('[Scheduler] Failed to sync updated cell meeting:', err));
+
+  res.json({ success: true, data: meeting });
 }
 
 // ─── DELETE /api/cells/meetings/:meetingId ───────────────────────────────────
@@ -979,6 +1115,8 @@ export async function deleteCellMeeting(req: Request, res: Response): Promise<vo
   }
 
   await prisma.cellMeeting.delete({ where: { id: meetingId } });
+  deleteScheduledEventForSource('cell_meetings', meetingId)
+    .catch(err => console.error('[Scheduler] Failed to delete cell meeting schedule:', err));
 
   res.json({ success: true, message: 'Meeting deleted' });
 }

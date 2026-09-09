@@ -5,9 +5,10 @@ import { subdomainQueue, subdomainWorker } from './lib/subdomainQueue';
 import { paymentQueue, paymentWorker } from './lib/paymentQueue';
 import { notificationQueue, notificationWorker } from './lib/notificationQueue';
 import './workers/reminderCacheWorker';
-import './workers/scheduledReminderWorker';
+import { startScheduledReminderWorker } from './workers/scheduledReminderWorker';
 import { startSubscriptionCron, startKPICron, startPendingTransactionCleanup, startWithdrawalReviewCron } from './workers/subscriptionCron';
 import { startEventStatusWorker } from './workers/eventStatusWorker';
+import { startScheduledEventWorker } from './workers/scheduledEventWorker';
 
 const PORT = process.env.PORT || 5000;
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
@@ -35,9 +36,11 @@ async function main() {
   console.log('📅 Reminder cache worker initialized');
 
   // Cron jobs
+  startScheduledReminderWorker();
   startSubscriptionCron();
   startKPICron();
   startEventStatusWorker();
+  startScheduledEventWorker();
   startPendingTransactionCleanup();
   startWithdrawalReviewCron();
   console.log('⏰ Cron jobs initialized');

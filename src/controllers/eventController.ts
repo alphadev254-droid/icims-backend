@@ -12,6 +12,7 @@ import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { eventCreatedTemplate } from '../lib/emailTemplates';
 import { hasFeature } from '../lib/packageChecker';
 import { refreshReminderCache } from '../workers/reminderCacheWorker';
+import { cancelScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule } from '../services/schedulerService';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
 
@@ -68,6 +69,17 @@ async function createEventTicketWithUniqueNumber(
   throw new Error('Unable to generate a unique ticket number');
 }
 
+const recurrenceRuleSchema = z.object({
+  frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional(),
+  interval: z.number().int().positive().optional(),
+  daysOfWeek: z.array(z.string()).optional(),
+  dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+  monthOfYear: z.number().int().min(1).max(12).nullable().optional(),
+  startsAt: z.string().optional(),
+  endsAt: z.string().nullable().optional(),
+  count: z.number().int().positive().nullable().optional(),
+}).nullable().optional();
+
 const baseEventSchema = z.object({
   title: z.string().min(1, 'Title required'),
   description: z.string().optional().default(''),
@@ -91,6 +103,7 @@ const baseEventSchema = z.object({
   imageUrl: z.string().nullable().optional(),
   scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
   churchIds: z.array(z.string().min(1)).optional(),
+  recurrenceRule: recurrenceRuleSchema,
 });
 
 const eventSchema = baseEventSchema.refine(data => new Date(data.endDate) >= new Date(data.date), {
@@ -154,6 +167,14 @@ function decorateEventAvailability<T extends EventWithChurchLinks>(event: T, sco
     .filter(church => availableChurchIds.includes(church.id));
 
   return { ...event, availableChurchIds, availableChurches };
+}
+
+async function attachEventRecurrenceRules<T extends Array<{ recurrenceRuleId?: string | null }>>(events: T) {
+  const rulesById = await getRecurrenceRulesById(events.map(event => event.recurrenceRuleId).filter((id): id is string => Boolean(id)));
+  return events.map(event => ({
+    ...event,
+    recurrenceRule: event.recurrenceRuleId ? parseRecurrenceRuleForApi(rulesById.get(event.recurrenceRuleId)) : null,
+  })) as Array<T[number] & { recurrenceRule: ReturnType<typeof parseRecurrenceRuleForApi> }>;
 }
 
 function eventAccessWhere(churchIds: string[]): Prisma.EventWhereInput {
@@ -260,6 +281,7 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
       time: true,
       churchId: true,
       scopeType: true,
+      recurrenceRuleId: true,
       requiresTicket: true,
       linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
       church: { select: { id: true, name: true } },
@@ -268,7 +290,8 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
     take: 500,
   });
 
-  res.json({ success: true, data: events.map(event => decorateEventAvailability(event, scopedChurchIds)) });
+  const eventsWithRecurrence = await attachEventRecurrenceRules(events);
+  res.json({ success: true, data: eventsWithRecurrence.map(event => decorateEventAvailability(event, scopedChurchIds)) });
 }
 
 export async function getEvents(req: Request, res: Response): Promise<void> {
@@ -343,6 +366,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         time: true,
         churchId: true,
         scopeType: true,
+        recurrenceRuleId: true,
         requiresTicket: true,
         linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
         church: { select: { id: true, name: true } },
@@ -350,7 +374,8 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
       orderBy: { date: 'desc' },
       take: 500,
     });
-    res.json({ success: true, data: events.map(event => decorateEventAvailability(event, scopedChurchIds)) });
+    const eventsWithRecurrence = await attachEventRecurrenceRules(events);
+    res.json({ success: true, data: eventsWithRecurrence.map(event => decorateEventAvailability(event, scopedChurchIds)) });
     return;
   }
   if (endDate) {
@@ -384,6 +409,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         imageUrl: true,
         churchId: true,
         scopeType: true,
+        recurrenceRuleId: true,
         createdById: true,
         createdAt: true,
         updatedAt: true,
@@ -410,7 +436,8 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const ticketMap = new Map(userTickets.map(t => [t.eventId, { id: t.id, ticketNumber: t.ticketNumber }]));
 
   // Map events with ticket status
-  const eventsWithTicketStatus = events.map(event => {
+  const eventsWithRecurrence = await attachEventRecurrenceRules(events);
+  const eventsWithTicketStatus = eventsWithRecurrence.map(event => {
     const ticket = ticketMap.get(event.id);
     return {
       ...decorateEventAvailability(event, scopedChurchIds),
@@ -446,7 +473,8 @@ export async function getPublicEvent(req: Request, res: Response): Promise<void>
     return;
   }
   
-  res.json({ success: true, data: decorateEventAvailability(event) });
+  const [eventWithRecurrence] = await attachEventRecurrenceRules([event]);
+  res.json({ success: true, data: decorateEventAvailability(eventWithRecurrence) });
 }
 
 export async function getEvent(req: Request, res: Response): Promise<void> {
@@ -458,7 +486,8 @@ export async function getEvent(req: Request, res: Response): Promise<void> {
     },
   });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
-  res.json({ success: true, data: decorateEventAvailability(event) });
+  const [eventWithRecurrence] = await attachEventRecurrenceRules([event]);
+  res.json({ success: true, data: decorateEventAvailability(eventWithRecurrence) });
 }
 
 export async function createEvent(req: Request, res: Response): Promise<void> {
@@ -485,7 +514,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const parsed = eventSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, ...eventData } = parsed.data;
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, recurrenceRule, ...eventData } = parsed.data;
 
   if (eventData.requiresTicket && !(await hasFeature(userId, 'event_ticketing'))) {
     res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
@@ -547,11 +576,14 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     }
   }
 
+  const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, new Date(eventData.date));
+
   const event = await prisma.event.create({
     data: {
       ...eventData,
       churchId: primaryChurchId,
       scopeType,
+      recurrenceRuleId,
       date: new Date(eventData.date),
       endDate: new Date(eventData.endDate),
       ticketSalesCutoff: eventData.ticketSalesCutoff && eventData.ticketSalesCutoff !== '' 
@@ -563,10 +595,11 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
       },
     },
     include: {
-      church: { select: { id: true, name: true } },
+      church: { select: { id: true, name: true, ministryAdminId: true } },
       linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
+  syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync created event:', err));
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
 
@@ -606,7 +639,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
   const oldEvent = await prisma.event.findUnique({ where: { id: eventId } });
   if (!oldEvent) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
-  const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, ...eventData } = parsed.data;
+  const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, recurrenceRule, ...eventData } = parsed.data;
   const userId = req.user!.userId;
   const nextRequiresTicket = eventData.requiresTicket ?? oldEvent.requiresTicket;
   const nextIsFree = eventData.isFree ?? oldEvent.isFree;
@@ -667,10 +700,15 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     }
   }
 
+  const recurrenceRuleId = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
+    ? await saveRecurrenceRule(recurrenceRule ?? null, eventData.date ? new Date(eventData.date) : oldEvent.date, oldEvent.recurrenceRuleId)
+    : oldEvent.recurrenceRuleId;
+
   const event = await prisma.event.update({
     where: { id: eventId },
     data: {
       ...eventData,
+      recurrenceRuleId,
       ...(nextPrimaryChurchId ? { churchId: nextPrimaryChurchId } : {}),
       ...(hasBodyKey('scopeType') ? { scopeType } : {}),
       date: eventData.date ? new Date(eventData.date) : undefined,
@@ -692,10 +730,11 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
       } : {}),
     },
     include: {
-      church: { select: { id: true, name: true } },
+      church: { select: { id: true, name: true, ministryAdminId: true } },
       linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
+  syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync updated event:', err));
   res.json({ success: true, data: decorateEventAvailability(event) });
 
   // Refresh reminder cache if date changed so reminders stay accurate
@@ -739,6 +778,7 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
     where: { id: event.id },
     data: { status: 'cancelled' },
   });
+  cancelScheduledEventForSource('events', event.id).catch(err => console.error('[Scheduler] Failed to cancel event schedule:', err));
   res.json({ success: true, message: 'Event cancelled' });
 }
 

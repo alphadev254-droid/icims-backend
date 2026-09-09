@@ -1,12 +1,28 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
-import { sendPushToUsers } from '../lib/fcm';
-import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
-import { announcementCreatedTemplate } from '../lib/emailTemplates';
+import {
+  deleteScheduledEventForSource,
+  getRecurrenceRulesById,
+  parseRecurrenceRuleForApi,
+  saveRecurrenceRule,
+  syncAnnouncementToSchedule,
+} from '../services/schedulerService';
+
+const recurrenceRuleSchema = z.object({
+  frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional().nullable(),
+  interval: z.coerce.number().int().min(1).max(365).optional().nullable(),
+  daysOfWeek: z.array(z.string()).optional().nullable(),
+  dayOfMonth: z.coerce.number().int().min(1).max(31).optional().nullable(),
+  monthOfYear: z.coerce.number().int().min(1).max(12).optional().nullable(),
+  startsAt: z.string().datetime().optional().nullable(),
+  endsAt: z.string().datetime().optional().nullable(),
+  count: z.coerce.number().int().min(1).max(1000).optional().nullable(),
+}).optional().nullable();
 
 const schema = z.object({
   title: z.string().min(1, 'Title required'),
@@ -15,6 +31,9 @@ const schema = z.object({
   priority: z.enum(['normal', 'urgent']).default('normal'),
   churchId: z.string().min(1, 'Church ID required'),
   attachments: z.string().optional(),
+  deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
+  scheduledAt: z.string().datetime().optional().nullable(),
+  recurrenceRule: recurrenceRuleSchema,
 });
 
 function deleteUploadedFile(url: string) {
@@ -27,6 +46,47 @@ function deleteUploadedFile(url: string) {
 function parseAttachments(json: unknown): string[] {
   if (!json) return [];
   try { return JSON.parse(json as string) as string[]; } catch { return []; }
+}
+
+function wantsScheduledDelivery(deliveryMode?: string, scheduledAt?: string | null, recurrenceRule?: { frequency?: string | null } | null) {
+  return deliveryMode === 'scheduled' || Boolean(scheduledAt) || Boolean(recurrenceRule?.frequency && recurrenceRule.frequency !== 'none');
+}
+
+async function attachAnnouncementSchedules<T extends Array<{ id: string }>>(announcements: T) {
+  const ids = announcements.map(item => item.id);
+  if (ids.length === 0) return announcements.map(item => ({ ...item, scheduledEvent: null }));
+
+  const rows = await prisma.$queryRaw<Array<{
+    sourceId: string;
+    startAt: Date;
+    endAt: Date;
+    status: string;
+    timezone: string;
+    recurrenceRuleId: string | null;
+  }>>`
+    SELECT sourceId, startAt, endAt, status, timezone, recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'announcements' AND sourceId IN (${Prisma.join(ids)})
+  `;
+  const recurrenceRulesById = await getRecurrenceRulesById(rows.map(row => row.recurrenceRuleId).filter((id): id is string => Boolean(id)));
+  const schedulesBySourceId = new Map(rows.map(row => [row.sourceId, row]));
+
+  return announcements.map(item => {
+    const schedule = schedulesBySourceId.get(item.id);
+    return {
+      ...item,
+      scheduledEvent: schedule
+        ? {
+          startAt: schedule.startAt,
+          endAt: schedule.endAt,
+          status: schedule.status,
+          timezone: schedule.timezone,
+          recurrenceRuleId: schedule.recurrenceRuleId,
+          recurrenceRule: schedule.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedule.recurrenceRuleId)) : null,
+        }
+        : null,
+    };
+  });
 }
 
 export async function getAnnouncements(req: Request, res: Response): Promise<void> {
@@ -73,7 +133,11 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
     },
     orderBy: { createdAt: 'desc' },
   });
-  res.json({ success: true, data: items });
+  const itemsWithSchedules = await attachAnnouncementSchedules(items);
+  const visibleItems = roleName === 'member'
+    ? itemsWithSchedules.filter(item => !item.scheduledEvent || item.scheduledEvent.status === 'completed')
+    : itemsWithSchedules;
+  res.json({ success: true, data: visibleItems });
 }
 
 export async function createAnnouncement(req: Request, res: Response): Promise<void> {
@@ -87,7 +151,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { churchId: targetChurchId } = parsed.data;
+  const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, ...announcementData } = parsed.data;
 
   // Verify user has access to this church
   const accessibleChurchIds = await getAccessibleChurchIds(
@@ -106,67 +170,29 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
 
   const item = await prisma.announcement.create({
     data: {
-      ...parsed.data,
+      ...announcementData,
+      churchId: targetChurchId,
       createdById: userId!,
     },
+    include: { church: { select: { ministryAdminId: true } } },
   });
 
-  // Send push notification to all active members of the church
-  try {
-    const church = await prisma.church.findUnique({
-      where: { id: targetChurchId },
-      select: { name: true },
-    });
-    const churchName = church?.name || 'Church';
-
-    const churchMembers = await prisma.user.findMany({
-      where: {
-        churchId: targetChurchId,
-        status: 'active',
-      },
-      select: { id: true },
-    });
-    if (churchMembers.length > 0) {
-      const memberIds = churchMembers.map(m => m.id);
-      const typeLabel = item.type === 'newsletter' ? 'Newsletter' : item.type === 'prayer_request' ? 'Prayer Request' : 'Announcement';
-      const prefix = parsed.data.priority === 'urgent' ? 'URGENT - ' : '';
-      await sendPushToUsers(
-        memberIds,
-        `${churchName} · ${prefix}${typeLabel}`,
-        item.title,
-        { type: 'announcement', id: item.id, churchId: targetChurchId }
-      );
-    }
-  } catch (pushError) {
-    console.error('[Announcement] Failed to send push notifications:', pushError);
+  if (deliveryMode === 'scheduled' && !scheduledAt) {
+    await prisma.announcement.delete({ where: { id: item.id } });
+    res.status(400).json({ success: false, message: 'Scheduled date and time required' });
+    return;
   }
 
-  try {
-    const church = await prisma.church.findUnique({
-      where: { id: targetChurchId },
-      select: { name: true },
-    });
-    const typeLabel = item.type === 'newsletter' ? 'Newsletter' : item.type === 'prayer_request' ? 'Prayer Request' : 'Announcement';
-    const prefix = parsed.data.priority === 'urgent' ? 'URGENT - ' : '';
+  const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
+  const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt);
+  await syncAnnouncementToSchedule({
+    ...item,
+    scheduledAt: startAt,
+    recurrenceRuleId,
+  });
 
-    await queueChurchMemberEmails({
-      churchId: targetChurchId,
-      subject: `${church?.name || 'Your Church'} - ${prefix}${typeLabel}: ${item.title}`,
-      buildHtml: member => announcementCreatedTemplate({
-        firstName: member.firstName,
-        title: item.title,
-        content: item.content,
-        type: item.type,
-        priority: item.priority,
-        churchName: church?.name || 'Your Church',
-      }),
-      emailType: 'notification',
-    });
-  } catch (emailError) {
-    console.error('[Announcement] Failed to queue member emails:', emailError);
-  }
-
-  res.status(201).json({ success: true, data: item });
+  const [itemWithSchedule] = await attachAnnouncementSchedules([item]);
+  res.status(201).json({ success: true, data: itemWithSchedule });
 }
 
 export async function updateAnnouncement(req: Request, res: Response): Promise<void> {
@@ -205,11 +231,38 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
+  const { deliveryMode, scheduledAt, recurrenceRule, ...announcementData } = parsed.data;
+
   const updated = await prisma.announcement.update({
     where: { id },
-    data: parsed.data,
+    data: announcementData,
+    include: { church: { select: { ministryAdminId: true } } },
   });
-  res.json({ success: true, data: updated });
+
+  const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
+    SELECT recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'announcements' AND sourceId = ${id}
+    LIMIT 1
+  `;
+
+  if (deliveryMode === 'now' || wantsScheduledDelivery(deliveryMode, scheduledAt, recurrenceRule)) {
+    if (deliveryMode === 'scheduled' && !scheduledAt) {
+      res.status(400).json({ success: false, message: 'Scheduled date and time required' });
+      return;
+    }
+
+    const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
+    const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
+    await syncAnnouncementToSchedule({
+      ...updated,
+      scheduledAt: startAt,
+      recurrenceRuleId,
+    });
+  }
+
+  const [updatedWithSchedule] = await attachAnnouncementSchedules([updated]);
+  res.json({ success: true, data: updatedWithSchedule });
 }
 
 export async function deleteAnnouncement(req: Request, res: Response): Promise<void> {
@@ -245,6 +298,7 @@ export async function deleteAnnouncement(req: Request, res: Response): Promise<v
   // Delete all attached files
   for (const url of parseAttachments(item.attachments)) deleteUploadedFile(url);
 
+  await deleteScheduledEventForSource('announcements', id);
   await prisma.announcement.delete({ where: { id } });
   res.json({ success: true, message: 'Deleted' });
 }

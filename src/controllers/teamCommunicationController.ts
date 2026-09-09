@@ -1,14 +1,89 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import fs from 'fs';
 import path from 'path';
 import { getAccessibleChurchIds } from '../lib/churchScope';
-import { queueEmail } from '../lib/emailQueue';
-import { teamCommunicationNotificationTemplate } from '../lib/teamEmailTemplates';
-import { sendPushToUsers } from '../lib/fcm';
 import { groupByDateRanges } from '../lib/dateGrouping';
+import {
+  deleteScheduledEventForSource,
+  getRecurrenceRulesById,
+  parseRecurrenceRuleForApi,
+  type RecurrenceRuleInput,
+  saveRecurrenceRule,
+  syncTeamCommunicationToSchedule,
+} from '../services/schedulerService';
 
 const prisma = new PrismaClient();
+
+function parseOptionalNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseRecurrenceRuleBody(value: unknown): RecurrenceRuleInput {
+  if (!value) return null;
+  let raw = value;
+  if (typeof value === 'string') {
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  const rule = raw as Record<string, unknown>;
+  return {
+    frequency: typeof rule.frequency === 'string' ? rule.frequency : null,
+    interval: parseOptionalNumber(rule.interval),
+    daysOfWeek: Array.isArray(rule.daysOfWeek) ? rule.daysOfWeek.filter((day): day is string => typeof day === 'string') : null,
+    dayOfMonth: parseOptionalNumber(rule.dayOfMonth),
+    monthOfYear: parseOptionalNumber(rule.monthOfYear),
+    startsAt: typeof rule.startsAt === 'string' ? rule.startsAt : null,
+    endsAt: typeof rule.endsAt === 'string' ? rule.endsAt : null,
+    count: parseOptionalNumber(rule.count),
+  };
+}
+
+function wantsScheduledDelivery(deliveryMode?: string, scheduledAt?: string | null, recurrenceRule?: RecurrenceRuleInput) {
+  return deliveryMode === 'scheduled' || Boolean(scheduledAt) || Boolean(recurrenceRule?.frequency && recurrenceRule.frequency !== 'none');
+}
+
+async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>(communications: T): Promise<Array<T[number] & { scheduledEvent: any | null }>> {
+  const ids = communications.map(item => item.id);
+  if (ids.length === 0) return communications.map(item => ({ ...item, scheduledEvent: null }));
+
+  const rows = await prisma.$queryRaw<Array<{
+    sourceId: string;
+    startAt: Date;
+    endAt: Date;
+    status: string;
+    timezone: string;
+    recurrenceRuleId: string | null;
+  }>>`
+    SELECT sourceId, startAt, endAt, status, timezone, recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'team_communications' AND sourceId IN (${Prisma.join(ids)})
+  `;
+  const recurrenceRulesById = await getRecurrenceRulesById(rows.map(row => row.recurrenceRuleId).filter((id): id is string => Boolean(id)));
+  const schedulesBySourceId = new Map(rows.map(row => [row.sourceId, row]));
+
+  return communications.map(item => {
+    const schedule = schedulesBySourceId.get(item.id);
+    return {
+      ...item,
+      scheduledEvent: schedule
+        ? {
+          startAt: schedule.startAt,
+          endAt: schedule.endAt,
+          status: schedule.status,
+          timezone: schedule.timezone,
+          recurrenceRuleId: schedule.recurrenceRuleId,
+          recurrenceRule: schedule.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedule.recurrenceRuleId)) : null,
+        }
+        : null,
+    };
+  });
+}
 
 // Get all communications for user's teams
 export const getTeamCommunications = async (req: Request, res: Response) => {
@@ -140,8 +215,13 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
       };
     }));
 
+    const resultWithSchedules = await attachTeamCommunicationSchedules(result);
+    const visibleResult = isAdmin
+      ? resultWithSchedules
+      : resultWithSchedules.filter(post => post.canEdit || !post.scheduledEvent || post.scheduledEvent.status === 'completed');
+
     // Group by date ranges
-    const grouped = groupByDateRanges(result);
+    const grouped = groupByDateRanges(visibleResult);
 
     res.json(grouped);
   } catch (error: any) {
@@ -154,7 +234,8 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
 export const createTeamCommunication = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
-    const { title, content, teamId } = req.body;
+    const { title, content, teamId, deliveryMode, scheduledAt } = req.body;
+    const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
     const files = req.files as Express.Multer.File[];
 
     if (!title || !content || !teamId) {
@@ -190,7 +271,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       include: {
         team: {
           include: {
-            church: { select: { name: true } },
+            church: { select: { name: true, ministryAdminId: true } },
             members: {
               include: {
                 user: { select: { id: true, firstName: true, email: true } }
@@ -206,41 +287,23 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       select: { id: true, firstName: true, lastName: true, avatar: true }
     });
 
-    // Send email notifications to all team members except author
-    const teamMembers = communication.team.members.filter(m => m.userId !== userId);
-    const recipientEmails = teamMembers.map(m => m.user.email).join(',');
-    
-    if (recipientEmails) {
-      queueEmail(
-        recipientEmails,
-        `New Team Communication - ${communication.team.name}`,
-        teamCommunicationNotificationTemplate({
-          firstName: 'Team Member',
-          teamName: communication.team.name,
-          churchName: communication.team.church.name,
-          postTitle: title,
-          postContent: content,
-          authorName: `${author?.firstName} ${author?.lastName}`
-        })
-      );
+    if (deliveryMode === 'scheduled' && !scheduledAt) {
+      await prisma.teamCommunication.delete({ where: { id: communication.id } });
+      return res.status(400).json({ error: 'Scheduled date and time required' });
     }
 
-    // Send push notifications to all team members except author
-    try {
-      const teamMemberIds = teamMembers.map(m => m.userId);
-      if (teamMemberIds.length > 0) {
-        await sendPushToUsers(
-          teamMemberIds,
-          `${communication.team.church.name} · ${communication.team.name}`,
-          `${author?.firstName} ${author?.lastName}: ${title}`,
-          { type: 'team_communication', id: communication.id, teamId }
-        );
-      }
-    } catch (pushError) {
-      console.error('[TeamCommunication] Failed to send push notifications:', pushError);
-    }
+    const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
+    const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt);
+    await syncTeamCommunicationToSchedule({
+      ...communication,
+      scheduledAt: startAt,
+      recurrenceRuleId,
+    });
 
-    res.status(201).json({ ...communication, author, team: { id: communication.team.id, name: communication.team.name, color: communication.team.color } });
+    const [communicationWithSchedule] = await attachTeamCommunicationSchedules([
+      { ...communication, author, team: { id: communication.team.id, name: communication.team.name, color: communication.team.color } },
+    ]);
+    res.status(201).json(communicationWithSchedule);
   } catch (error: any) {
     console.error('Create team communication error:', error);
     res.status(500).json({ error: 'Failed to create communication' });
@@ -252,7 +315,8 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
     const { id } = req.params;
-    const { title, content } = req.body;
+    const { title, content, deliveryMode, scheduledAt } = req.body;
+    const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
     const files = req.files as Express.Multer.File[];
     let existingMediaUrls = req.body.existingMediaUrls;
 
@@ -316,7 +380,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       },
       include: {
         team: {
-          select: { id: true, name: true, color: true }
+          select: { id: true, name: true, color: true, churchId: true, church: { select: { ministryAdminId: true } } }
         }
       }
     });
@@ -326,7 +390,29 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       select: { id: true, firstName: true, lastName: true, avatar: true }
     });
 
-    res.json({ ...communication, author });
+    const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
+      SELECT recurrenceRuleId
+      FROM scheduled_events
+      WHERE sourceModule = 'team_communications' AND sourceId = ${String(id)}
+      LIMIT 1
+    `;
+
+    if (deliveryMode === 'now' || wantsScheduledDelivery(deliveryMode, scheduledAt, recurrenceRule)) {
+      if (deliveryMode === 'scheduled' && !scheduledAt) {
+        return res.status(400).json({ error: 'Scheduled date and time required' });
+      }
+
+      const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
+      const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
+      await syncTeamCommunicationToSchedule({
+        ...communication,
+        scheduledAt: startAt,
+        recurrenceRuleId,
+      });
+    }
+
+    const [communicationWithSchedule] = await attachTeamCommunicationSchedules([{ ...communication, author }]);
+    res.json(communicationWithSchedule);
   } catch (error: any) {
     console.error('Update team communication error:', error);
     res.status(500).json({ error: 'Failed to update communication' });
@@ -362,6 +448,8 @@ export const deleteTeamCommunication = async (req: Request, res: Response) => {
         }
       });
     }
+
+    await deleteScheduledEventForSource('team_communications', String(id));
 
     await prisma.teamCommunication.delete({
       where: { id: String(id) }

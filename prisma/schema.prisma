@@ -340,6 +340,7 @@ model Event {
   imageUrl             String?
   churchId             String
   scopeType            String    @default("one_church") // one_church | selected_churches | all_churches
+  recurrenceRuleId     String?
   createdById          String
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
@@ -351,7 +352,58 @@ model Event {
 
   @@index([churchId, date])
   @@index([scopeType])
+  @@index([recurrenceRuleId])
   @@map("events")
+}
+
+model ScheduleRecurrenceRule {
+  id          String   @id @default(cuid())
+  frequency   String
+  interval    Int      @default(1)
+  daysOfWeek  String?  @db.Text
+  dayOfMonth  Int?
+  monthOfYear Int?
+  startsAt    DateTime
+  endsAt      DateTime?
+  count       Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([frequency])
+  @@index([startsAt])
+  @@index([endsAt])
+  @@map("schedule_recurrence_rules")
+}
+
+model ScheduledEvent {
+  id               String    @id @default(cuid())
+  ministryId       String
+  churchId         String?
+  title            String
+  description      String?   @db.Text
+  type             String
+  sourceModule     String
+  sourceId         String?
+  startAt          DateTime
+  endAt            DateTime
+  timezone         String    @default("UTC")
+  locationText     String?
+  status           String    @default("scheduled")
+  approvalStatus   String    @default("not_required")
+  organizerUserId  String?
+  createdById      String?
+  recurrenceRuleId String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([ministryId, startAt])
+  @@index([churchId, startAt])
+  @@unique([sourceModule, sourceId], map: "scheduled_events_source_key")
+  @@index([type, status])
+  @@index([approvalStatus])
+  @@index([organizerUserId])
+  @@index([recurrenceRuleId])
+  @@map("scheduled_events")
 }
 
 // ─── Event Tickets ────────────────────────────────────────────────────────────
@@ -1588,8 +1640,10 @@ model CellMeeting {
   id        String   @id @default(cuid())
   cellId    String
   date      DateTime
+  time      String?
   topic     String?
   notes     String?  @db.Text
+  recurrenceRuleId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1598,6 +1652,7 @@ model CellMeeting {
 
   @@index([cellId])
   @@index([date])
+  @@index([recurrenceRuleId])
   @@map("cell_meetings")
 }
 

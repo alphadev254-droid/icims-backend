@@ -304,17 +304,19 @@ export async function cleanupScheduledReminderLogs(runDate = new Date()) {
   }
 }
 
-cron.schedule('0 8 * * *', async () => {
-  console.log('[ScheduledReminders] Starting daily processing...');
-  await processScheduledReminders();
-});
+export function startScheduledReminderWorker() {
+  cron.schedule('0 8 * * *', async () => {
+    console.log('[ScheduledReminders] Starting daily processing...');
+    await processScheduledReminders();
+  });
 
-cron.schedule('30 3 * * 0', async () => {
-  console.log('[ScheduledReminders] Starting weekly log cleanup...');
-  await cleanupScheduledReminderLogs();
-});
+  cron.schedule('30 3 * * 0', async () => {
+    console.log('[ScheduledReminders] Starting weekly log cleanup...');
+    await cleanupScheduledReminderLogs();
+  });
 
-console.log('[ScheduledReminders] Running startup processing...');
-processScheduledReminders().catch(err => {
-  console.error('[ScheduledReminders] Startup processing failed:', err.message);
-});
+  console.log('[ScheduledReminders] Running startup processing...');
+  processScheduledReminders().catch(err => {
+    console.error('[ScheduledReminders] Startup processing failed:', err.message);
+  });
+}

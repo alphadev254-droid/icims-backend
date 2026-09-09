@@ -45,6 +45,15 @@ const FEATURES = [
   { name: 'giving_wallets', displayName: 'Wallets', description: 'Track ministry and church wallet balances from giving, event, and other collection flows.', category: 'giving', sortOrder: 29 },
   { name: 'giving_withdrawals', displayName: 'Withdrawals', description: 'Request withdrawals from ministry and church wallet balances.', category: 'giving', sortOrder: 30 },
   { name: 'giving_cell_offering', displayName: 'Cell/Fellowship Offering', description: 'Track giving connected to cell and fellowship offerings.', category: 'giving', sortOrder: 31 },
+  { name: 'scheduler_calendar_view', displayName: 'Calendar View', description: 'View scheduled church activities, meetings, events, and deadlines in one calendar.', category: 'scheduling', sortOrder: 40 },
+  { name: 'scheduler_event_creation', displayName: 'Schedule Creation', description: 'Create scheduled activities that can be linked to ICIMS modules.', category: 'scheduling', sortOrder: 41 },
+  { name: 'scheduler_recurring_events', displayName: 'Recurring Schedules', description: 'Create daily, weekly, monthly, annual, and custom recurring schedules.', category: 'scheduling', sortOrder: 42 },
+  { name: 'scheduler_participants', displayName: 'Schedule Participants', description: 'Assign members, teams, cells, and guests to scheduled activities.', category: 'scheduling', sortOrder: 43 },
+  { name: 'scheduler_resource_booking', displayName: 'Resource Booking', description: 'Reserve rooms, equipment, vehicles, and other resources for scheduled activities.', category: 'scheduling', sortOrder: 44 },
+  { name: 'scheduler_conflict_detection', displayName: 'Conflict Detection', description: 'Detect overlapping people, room, equipment, and vehicle bookings.', category: 'scheduling', sortOrder: 45 },
+  { name: 'scheduler_approval_workflow', displayName: 'Schedule Approvals', description: 'Require approval before selected scheduled activities appear on the master calendar.', category: 'scheduling', sortOrder: 46 },
+  { name: 'scheduler_notifications', displayName: 'Schedule Notifications', description: 'Send reminders and assignment notifications for scheduled activities.', category: 'scheduling', sortOrder: 47 },
+  { name: 'scheduler_reports', displayName: 'Schedule Reports', description: 'Report on scheduled, completed, cancelled, and missed activities.', category: 'scheduling', sortOrder: 48 },
 ];
 
 const MODULE_BUNDLES = [
@@ -127,6 +136,24 @@ const MODULE_BUNDLES = [
     category: 'management',
     sortOrder: 7,
     features: ['resources_library', 'users_management', 'roles_permissions', 'church_website', 'cell_management'],
+  },
+  {
+    key: 'scheduling_full',
+    name: 'Scheduling Full',
+    description: 'Calendar, recurring schedules, participants, resources, conflicts, approvals, notifications, and schedule reports.',
+    category: 'scheduling',
+    sortOrder: 8,
+    features: [
+      'scheduler_calendar_view',
+      'scheduler_event_creation',
+      'scheduler_recurring_events',
+      'scheduler_participants',
+      'scheduler_resource_booking',
+      'scheduler_conflict_detection',
+      'scheduler_approval_workflow',
+      'scheduler_notifications',
+      'scheduler_reports',
+    ],
   },
 ];
 
