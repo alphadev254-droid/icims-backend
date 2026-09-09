@@ -395,6 +395,7 @@ model ScheduledEvent {
   recurrenceRuleId String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+  occurrences      ScheduledEventOccurrence[]
 
   @@index([ministryId, startAt])
   @@index([churchId, startAt])
@@ -417,6 +418,7 @@ model ScheduledEventOccurrence {
   errorMessage          String?  @db.Text
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
+  scheduledEvent        ScheduledEvent @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@unique([scheduledEventId, occurrenceStartAt], map: "scheduled_event_occurrence_key")
   @@index([scheduledEventId, status])

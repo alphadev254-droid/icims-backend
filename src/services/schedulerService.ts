@@ -27,6 +27,8 @@ export type ScheduleRecurrenceRuleRow = {
   count: number | null;
 };
 
+export type ExactScheduleOccurrenceInput = Date | string;
+
 type UpsertScheduledEventInput = {
   ministryId: string;
   churchId?: string | null;
@@ -216,7 +218,7 @@ export function parseRecurrenceRuleForApi(rule?: ScheduleRecurrenceRuleRow | nul
   };
 }
 
-export async function upsertScheduledEvent(input: UpsertScheduledEventInput): Promise<void> {
+export async function upsertScheduledEvent(input: UpsertScheduledEventInput): Promise<string> {
   await prisma.$executeRaw`
     INSERT INTO scheduled_events (
       id, ministryId, churchId, title, description, type, sourceModule, sourceId,
@@ -246,6 +248,66 @@ export async function upsertScheduledEvent(input: UpsertScheduledEventInput): Pr
       createdById = VALUES(createdById),
       recurrenceRuleId = VALUES(recurrenceRuleId),
       updatedAt = NOW(3)
+  `;
+
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT id
+    FROM scheduled_events
+    WHERE sourceModule = ${input.sourceModule} AND sourceId = ${input.sourceId}
+    LIMIT 1
+  `;
+
+  if (!rows[0]?.id) {
+    throw new Error(`Scheduled event was not saved for ${input.sourceModule}:${input.sourceId}`);
+  }
+
+  return rows[0].id;
+}
+
+export async function replaceScheduledEventOccurrences(
+  scheduledEventId: string,
+  occurrenceStarts: ExactScheduleOccurrenceInput[],
+  durationMs: number,
+): Promise<void> {
+  const uniqueStarts = [...new Set(
+    occurrenceStarts
+      .map(value => new Date(value))
+      .filter(date => !Number.isNaN(date.getTime()))
+      .map(date => date.toISOString()),
+  )].map(value => new Date(value)).sort((a, b) => a.getTime() - b.getTime());
+
+  await prisma.$transaction(async tx => {
+    await tx.$executeRaw`
+      DELETE FROM scheduled_event_occurrences
+      WHERE scheduledEventId = ${scheduledEventId}
+        AND status <> 'generated'
+    `;
+
+    for (const startAt of uniqueStarts) {
+      const endAt = new Date(startAt.getTime() + Math.max(60_000, durationMs));
+      await tx.$executeRaw`
+        INSERT INTO scheduled_event_occurrences (
+          id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+          generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+        ) VALUES (
+          ${randomUUID()}, ${scheduledEventId}, ${startAt}, ${endAt}, 'pending',
+          NULL, NULL, NULL, NOW(3), NOW(3)
+        )
+        ON DUPLICATE KEY UPDATE
+          occurrenceEndAt = VALUES(occurrenceEndAt),
+          status = IF(status = 'generated', status, VALUES(status)),
+          errorMessage = NULL,
+          updatedAt = NOW(3)
+      `;
+    }
+  });
+}
+
+export async function clearPendingScheduledEventOccurrences(scheduledEventId: string): Promise<void> {
+  await prisma.$executeRaw`
+    DELETE FROM scheduled_event_occurrences
+    WHERE scheduledEventId = ${scheduledEventId}
+      AND status <> 'generated'
   `;
 }
 
@@ -302,13 +364,18 @@ export async function syncEventToSchedule(event: EventScheduleSource): Promise<v
   });
 }
 
-export async function syncCellMeetingToSchedule(meeting: CellMeetingScheduleSource, createdById?: string | null): Promise<void> {
+export async function syncCellMeetingToSchedule(
+  meeting: CellMeetingScheduleSource,
+  createdById?: string | null,
+  exactOccurrences?: ExactScheduleOccurrenceInput[],
+): Promise<void> {
   const ministryId = meeting.cell.church?.ministryAdminId ?? createdById ?? meeting.cell.churchId;
   const title = meeting.topic ? `${meeting.cell.name}: ${meeting.topic}` : `${meeting.cell.name} Meeting`;
   const startAt = combineDateAndTime(meeting.date, meeting.time || meeting.cell.meetingTime);
   const endAt = new Date(startAt.getTime() + 120 * 60 * 1000);
+  const durationMs = endAt.getTime() - startAt.getTime();
 
-  await upsertScheduledEvent({
+  const scheduledEventId = await upsertScheduledEvent({
     ministryId,
     churchId: meeting.cell.churchId,
     title,
@@ -325,6 +392,12 @@ export async function syncCellMeetingToSchedule(meeting: CellMeetingScheduleSour
     createdById: createdById ?? null,
     recurrenceRuleId: meeting.recurrenceRuleId,
   });
+
+  if (exactOccurrences) {
+    await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, durationMs);
+  } else {
+    await clearPendingScheduledEventOccurrences(scheduledEventId);
+  }
 }
 
 export async function syncAnnouncementToSchedule(announcement: AnnouncementScheduleSource): Promise<void> {

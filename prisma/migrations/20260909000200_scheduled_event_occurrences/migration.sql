@@ -13,5 +13,8 @@ CREATE TABLE `scheduled_event_occurrences` (
     UNIQUE INDEX `scheduled_event_occurrence_key`(`scheduledEventId`, `occurrenceStartAt`),
     INDEX `scheduled_event_occurrences_scheduledEventId_status_idx`(`scheduledEventId`, `status`),
     INDEX `scheduled_event_occ_generated_idx`(`generatedSourceModule`, `generatedSourceId`),
-    PRIMARY KEY (`id`)
+    PRIMARY KEY (`id`),
+    CONSTRAINT `scheduled_event_occurrences_scheduledEventId_fkey`
+      FOREIGN KEY (`scheduledEventId`) REFERENCES `scheduled_events`(`id`)
+      ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
