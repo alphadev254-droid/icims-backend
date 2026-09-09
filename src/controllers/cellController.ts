@@ -1,9 +1,11 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueEmail } from '../lib/emailQueue';
 import { cellMemberAddedTemplate } from '../lib/cellEmailTemplates';
+import { assertScheduleAccess } from '../lib/scheduleAccess';
 import { deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncCellMeetingToSchedule } from '../services/schedulerService';
 
 type CellChurchMemberSearchRow = {
@@ -919,10 +921,37 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
     }),
   ]);
 
-  const recurrenceRulesById = await getRecurrenceRulesById(meetings.map(m => m.recurrenceRuleId).filter((id): id is string => Boolean(id)));
+  const meetingIds = meetings.map(m => m.id);
+  const scheduleRows = meetingIds.length > 0
+    ? await prisma.$queryRaw<Array<{
+      sourceId: string;
+      startAt: Date;
+      endAt: Date;
+      status: string;
+      recurrenceRuleId: string | null;
+    }>>`
+      SELECT sourceId, startAt, endAt, status, recurrenceRuleId
+      FROM scheduled_events
+      WHERE sourceModule = 'cell_meetings' AND sourceId IN (${Prisma.join(meetingIds)})
+    `
+    : [];
+  const schedulesByMeetingId = new Map(scheduleRows.map(row => [row.sourceId, row]));
+  const recurrenceRulesById = await getRecurrenceRulesById([
+    ...meetings.map(m => m.recurrenceRuleId).filter((id): id is string => Boolean(id)),
+    ...scheduleRows.map(row => row.recurrenceRuleId).filter((id): id is string => Boolean(id)),
+  ]);
   const enriched = meetings.map(m => ({
     id: m.id, cellId: m.cellId, date: m.date, time: m.time, topic: m.topic, notes: m.notes, recurrenceRuleId: m.recurrenceRuleId,
     recurrenceRule: m.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(m.recurrenceRuleId)) : null,
+    scheduledEvent: schedulesByMeetingId.has(m.id) ? {
+      startAt: schedulesByMeetingId.get(m.id)!.startAt,
+      endAt: schedulesByMeetingId.get(m.id)!.endAt,
+      status: schedulesByMeetingId.get(m.id)!.status,
+      recurrenceRuleId: schedulesByMeetingId.get(m.id)!.recurrenceRuleId,
+      recurrenceRule: schedulesByMeetingId.get(m.id)!.recurrenceRuleId
+        ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedulesByMeetingId.get(m.id)!.recurrenceRuleId!))
+        : null,
+    } : null,
     createdAt: m.createdAt, updatedAt: m.updatedAt,
     presentCount: m.attendance.filter(a => a.status === 'present').length,
     visitorCount: m.attendance.filter(a => a.isVisitor).length,
@@ -944,6 +973,7 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
   const roleName = req.user?.role ?? 'member';
   const churchId = req.user?.churchId;
   const schema = z.object({
+    deliveryMode: z.enum(['draft', 'now', 'scheduled']).default('now').optional(),
     date: z.string().min(1),
     time: z.string().optional(),
     topic: z.string().optional(),
@@ -988,14 +1018,26 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const { recurrenceRule, ...meetingData } = parsed.data;
-  const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, new Date(meetingData.date));
+  const { deliveryMode, recurrenceRule, ...meetingData } = parsed.data;
+  const shouldSchedule = deliveryMode === 'scheduled';
+  if (shouldSchedule) {
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, 'create');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  }
+  const recurrenceRuleId = shouldSchedule
+    ? await saveRecurrenceRule(recurrenceRule ?? null, new Date(meetingData.date))
+    : null;
 
   const meeting = await prisma.cellMeeting.create({
     data: { cellId, ...meetingData, recurrenceRuleId, date: new Date(meetingData.date) },
   });
-  syncCellMeetingToSchedule({ ...meeting, cell }, userId)
-    .catch(err => console.error('[Scheduler] Failed to sync created cell meeting:', err));
+  if (shouldSchedule) {
+    syncCellMeetingToSchedule({ ...meeting, cell }, userId)
+      .catch(err => console.error('[Scheduler] Failed to sync created cell meeting:', err));
+  }
   res.status(201).json({ success: true, data: meeting });
 }
 
@@ -1007,6 +1049,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   const churchId = req.user?.churchId;
   const meetingId = String(req.params.meetingId);
   const schema = z.object({
+    deliveryMode: z.enum(['draft', 'now', 'scheduled']).optional(),
     date: z.string().min(1).optional(),
     time: z.string().optional(),
     topic: z.string().optional(),
@@ -1055,10 +1098,36 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const { recurrenceRule, ...meetingData } = parsed.data;
-  const recurrenceRuleId = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
-    ? await saveRecurrenceRule(recurrenceRule ?? null, meetingData.date ? new Date(meetingData.date) : existingMeeting.date, existingMeeting.recurrenceRuleId)
-    : existingMeeting.recurrenceRuleId;
+  const { deliveryMode, recurrenceRule, ...meetingData } = parsed.data;
+  const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
+    SELECT recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'cell_meetings' AND sourceId = ${meetingId}
+    LIMIT 1
+  `;
+  const existingRecurrenceRuleId = existingSchedule[0]?.recurrenceRuleId ?? existingMeeting.recurrenceRuleId;
+  const hasDeliveryMode = Object.prototype.hasOwnProperty.call(req.body, 'deliveryMode');
+  const shouldSchedule = deliveryMode === 'scheduled';
+  const shouldClearSchedule = hasDeliveryMode && deliveryMode !== 'scheduled';
+  if (shouldSchedule) {
+    const scheduleAction = existingRecurrenceRuleId ? 'update' : 'create';
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, scheduleAction);
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  } else if (shouldClearSchedule && (existingSchedule.length > 0 || existingMeeting.recurrenceRuleId)) {
+    const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  }
+  const recurrenceRuleId = shouldSchedule
+    ? await saveRecurrenceRule(recurrenceRule ?? null, meetingData.date ? new Date(meetingData.date) : existingMeeting.date, existingRecurrenceRuleId)
+    : shouldClearSchedule
+      ? null
+      : existingMeeting.recurrenceRuleId;
 
   const meeting = await prisma.cellMeeting.update({
     where: { id: meetingId },
@@ -1081,8 +1150,17 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     },
   });
 
-  syncCellMeetingToSchedule(meeting, userId)
-    .catch(err => console.error('[Scheduler] Failed to sync updated cell meeting:', err));
+  if (shouldSchedule) {
+    syncCellMeetingToSchedule(meeting, userId)
+      .catch(err => console.error('[Scheduler] Failed to sync updated cell meeting:', err));
+  } else if (shouldClearSchedule) {
+    deleteScheduledEventForSource('cell_meetings', meetingId)
+      .catch(err => console.error('[Scheduler] Failed to delete cleared cell meeting schedule:', err));
+    if (existingMeeting.recurrenceRuleId && existingSchedule.length === 0) {
+      saveRecurrenceRule(null, existingMeeting.date, existingMeeting.recurrenceRuleId)
+        .catch(err => console.error('[Scheduler] Failed to delete orphaned cell meeting recurrence:', err));
+    }
+  }
 
   res.json({ success: true, data: meeting });
 }

@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import {
   deleteScheduledEventForSource,
   getRecurrenceRulesById,
@@ -31,7 +32,7 @@ const schema = z.object({
   priority: z.enum(['normal', 'urgent']).default('normal'),
   churchId: z.string().min(1, 'Church ID required'),
   attachments: z.string().optional(),
-  deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
+  deliveryMode: z.enum(['draft', 'now', 'scheduled']).default('now').optional(),
   scheduledAt: z.string().datetime().optional().nullable(),
   recurrenceRule: recurrenceRuleSchema,
 });
@@ -46,10 +47,6 @@ function deleteUploadedFile(url: string) {
 function parseAttachments(json: unknown): string[] {
   if (!json) return [];
   try { return JSON.parse(json as string) as string[]; } catch { return []; }
-}
-
-function wantsScheduledDelivery(deliveryMode?: string, scheduledAt?: string | null, recurrenceRule?: { frequency?: string | null } | null) {
-  return deliveryMode === 'scheduled' || Boolean(scheduledAt) || Boolean(recurrenceRule?.frequency && recurrenceRule.frequency !== 'none');
 }
 
 async function attachAnnouncementSchedules<T extends Array<{ id: string }>>(announcements: T) {
@@ -152,6 +149,24 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
   }
 
   const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, ...announcementData } = parsed.data;
+  const mode = deliveryMode ?? 'now';
+
+  if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+    res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
+    return;
+  }
+
+  if (mode === 'scheduled') {
+    if (!scheduledAt) {
+      res.status(400).json({ success: false, message: 'Scheduled date and time required' });
+      return;
+    }
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, 'create');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  }
 
   // Verify user has access to this church
   const accessibleChurchIds = await getAccessibleChurchIds(
@@ -177,19 +192,17 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     include: { church: { select: { ministryAdminId: true } } },
   });
 
-  if (deliveryMode === 'scheduled' && !scheduledAt) {
-    await prisma.announcement.delete({ where: { id: item.id } });
-    res.status(400).json({ success: false, message: 'Scheduled date and time required' });
-    return;
+  if (mode !== 'draft') {
+    const startAt = mode === 'scheduled' ? new Date(scheduledAt!) : new Date();
+    const recurrenceRuleId = mode === 'scheduled'
+      ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
+      : null;
+    await syncAnnouncementToSchedule({
+      ...item,
+      scheduledAt: startAt,
+      recurrenceRuleId,
+    });
   }
-
-  const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
-  const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt);
-  await syncAnnouncementToSchedule({
-    ...item,
-    scheduledAt: startAt,
-    recurrenceRuleId,
-  });
 
   const [itemWithSchedule] = await attachAnnouncementSchedules([item]);
   res.status(201).json({ success: true, data: itemWithSchedule });
@@ -232,6 +245,12 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
   }
 
   const { deliveryMode, scheduledAt, recurrenceRule, ...announcementData } = parsed.data;
+  const mode = deliveryMode ?? undefined;
+
+  if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+    res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
+    return;
+  }
 
   const updated = await prisma.announcement.update({
     where: { id },
@@ -246,19 +265,47 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     LIMIT 1
   `;
 
-  if (deliveryMode === 'now' || wantsScheduledDelivery(deliveryMode, scheduledAt, recurrenceRule)) {
-    if (deliveryMode === 'scheduled' && !scheduledAt) {
+  if (mode === 'scheduled') {
+    if (!scheduledAt) {
       res.status(400).json({ success: false, message: 'Scheduled date and time required' });
       return;
     }
+    const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, scheduleAction);
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
 
-    const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
+    const startAt = new Date(scheduledAt);
     const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
     await syncAnnouncementToSchedule({
       ...updated,
       scheduledAt: startAt,
       recurrenceRuleId,
     });
+  } else if (mode === 'now') {
+    if (existingSchedule.length > 0) {
+      const scheduleAccess = await assertScheduleAccess(req, null, 'update');
+      if (!scheduleAccess.allowed) {
+        res.status(403).json({ success: false, message: scheduleAccess.message });
+        return;
+      }
+    }
+    await syncAnnouncementToSchedule({
+      ...updated,
+      scheduledAt: new Date(),
+      recurrenceRuleId: null,
+    });
+  } else if (mode === 'draft') {
+    if (existingSchedule.length > 0) {
+      const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+      if (!scheduleAccess.allowed) {
+        res.status(403).json({ success: false, message: scheduleAccess.message });
+        return;
+      }
+      await deleteScheduledEventForSource('announcements', id);
+    }
   }
 
   const [updatedWithSchedule] = await attachAnnouncementSchedules([updated]);

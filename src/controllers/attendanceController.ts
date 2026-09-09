@@ -1320,22 +1320,24 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
 
   const linkedChurchIds = await getAttendanceLinkedChurchIds(access.record);
   const terms = q.split(/\s+/).filter(Boolean);
+  const phoneVariants = phoneLookupKeys(q);
   const where: any = {
     churchId: { in: linkedChurchIds },
     status: 'active',
     memberType: { not: 'child' },
     OR: [
-      { firstName: { contains: q } },
-      { lastName: { contains: q } },
-      { email: { contains: q } },
+      { firstName: { contains: q, mode: 'insensitive' } },
+      { lastName: { contains: q, mode: 'insensitive' } },
+      { email: { contains: q, mode: 'insensitive' } },
       { phone: { contains: q } },
+      ...(phoneVariants.length > 1 ? phoneVariants.map(v => ({ phone: { contains: v } })) : []),
       ...(terms.length > 1
         ? [{
             AND: terms.map(term => ({
               OR: [
-                { firstName: { contains: term } },
-                { lastName: { contains: term } },
-                { email: { contains: term } },
+                { firstName: { contains: term, mode: 'insensitive' } },
+                { lastName: { contains: term, mode: 'insensitive' } },
+                { email: { contains: term, mode: 'insensitive' } },
                 { phone: { contains: term } },
               ],
             })),

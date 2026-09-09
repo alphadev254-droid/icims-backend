@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { groupByDateRanges } from '../lib/dateGrouping';
+import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import {
   deleteScheduledEventForSource,
   getRecurrenceRulesById,
@@ -42,10 +43,6 @@ function parseRecurrenceRuleBody(value: unknown): RecurrenceRuleInput {
     endsAt: typeof rule.endsAt === 'string' ? rule.endsAt : null,
     count: parseOptionalNumber(rule.count),
   };
-}
-
-function wantsScheduledDelivery(deliveryMode?: string, scheduledAt?: string | null, recurrenceRule?: RecurrenceRuleInput) {
-  return deliveryMode === 'scheduled' || Boolean(scheduledAt) || Boolean(recurrenceRule?.frequency && recurrenceRule.frequency !== 'none');
 }
 
 async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>(communications: T): Promise<Array<T[number] & { scheduledEvent: any | null }>> {
@@ -236,6 +233,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
     const userId = req.user?.userId;
     const { title, content, teamId, deliveryMode, scheduledAt } = req.body;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
+    const mode = ['draft', 'now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : 'now';
     const files = req.files as Express.Multer.File[];
 
     if (!title || !content || !teamId) {
@@ -246,6 +244,20 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
     const canPost = await canUserPostToTeam(userId!, teamId);
     if (!canPost) {
       return res.status(403).json({ error: 'You do not have permission to post to this team' });
+    }
+
+    if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+      return res.status(400).json({ error: 'Recurrence is only available when delivery mode is Schedule.' });
+    }
+
+    if (mode === 'scheduled') {
+      if (!scheduledAt) {
+        return res.status(400).json({ error: 'Scheduled date and time required' });
+      }
+      const scheduleAccess = await assertScheduleAccess(req, recurrenceRule, 'create');
+      if (!scheduleAccess.allowed) {
+        return res.status(403).json({ error: scheduleAccess.message });
+      }
     }
 
     // Process uploaded files
@@ -287,18 +299,17 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       select: { id: true, firstName: true, lastName: true, avatar: true }
     });
 
-    if (deliveryMode === 'scheduled' && !scheduledAt) {
-      await prisma.teamCommunication.delete({ where: { id: communication.id } });
-      return res.status(400).json({ error: 'Scheduled date and time required' });
+    if (mode !== 'draft') {
+      const startAt = mode === 'scheduled' ? new Date(scheduledAt) : new Date();
+      const recurrenceRuleId = mode === 'scheduled'
+        ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
+        : null;
+      await syncTeamCommunicationToSchedule({
+        ...communication,
+        scheduledAt: startAt,
+        recurrenceRuleId,
+      });
     }
-
-    const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
-    const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt);
-    await syncTeamCommunicationToSchedule({
-      ...communication,
-      scheduledAt: startAt,
-      recurrenceRuleId,
-    });
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([
       { ...communication, author, team: { id: communication.team.id, name: communication.team.name, color: communication.team.color } },
@@ -317,6 +328,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { title, content, deliveryMode, scheduledAt } = req.body;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
+    const mode = deliveryMode && ['draft', 'now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : undefined;
     const files = req.files as Express.Multer.File[];
     let existingMediaUrls = req.body.existingMediaUrls;
 
@@ -341,6 +353,10 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     const canUpdate = await canUserEditOrDelete(userId!, existing.teamId, existing.authorId);
     if (!canUpdate) {
       return res.status(403).json({ error: 'Permission denied' });
+    }
+
+    if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+      return res.status(400).json({ error: 'Recurrence is only available when delivery mode is Schedule.' });
     }
 
     // Delete removed media files from server
@@ -397,18 +413,43 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       LIMIT 1
     `;
 
-    if (deliveryMode === 'now' || wantsScheduledDelivery(deliveryMode, scheduledAt, recurrenceRule)) {
-      if (deliveryMode === 'scheduled' && !scheduledAt) {
+    if (mode === 'scheduled') {
+      if (!scheduledAt) {
         return res.status(400).json({ error: 'Scheduled date and time required' });
       }
+      const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
+      const scheduleAccess = await assertScheduleAccess(req, recurrenceRule, scheduleAction);
+      if (!scheduleAccess.allowed) {
+        return res.status(403).json({ error: scheduleAccess.message });
+      }
 
-      const startAt = scheduledAt ? new Date(scheduledAt) : new Date();
+      const startAt = new Date(scheduledAt);
       const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
       await syncTeamCommunicationToSchedule({
         ...communication,
         scheduledAt: startAt,
         recurrenceRuleId,
       });
+    } else if (mode === 'now') {
+      if (existingSchedule.length > 0) {
+        const scheduleAccess = await assertScheduleAccess(req, null, 'update');
+        if (!scheduleAccess.allowed) {
+          return res.status(403).json({ error: scheduleAccess.message });
+        }
+      }
+      await syncTeamCommunicationToSchedule({
+        ...communication,
+        scheduledAt: new Date(),
+        recurrenceRuleId: null,
+      });
+    } else if (mode === 'draft') {
+      if (existingSchedule.length > 0) {
+        const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+        if (!scheduleAccess.allowed) {
+          return res.status(403).json({ error: scheduleAccess.message });
+        }
+        await deleteScheduledEventForSource('team_communications', String(id));
+      }
     }
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([{ ...communication, author }]);

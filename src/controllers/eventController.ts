@@ -11,8 +11,9 @@ import { queueChurchPush } from '../lib/notificationQueue';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { eventCreatedTemplate } from '../lib/emailTemplates';
 import { hasFeature } from '../lib/packageChecker';
+import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import { refreshReminderCache } from '../workers/reminderCacheWorker';
-import { cancelScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule } from '../services/schedulerService';
+import { cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule } from '../services/schedulerService';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
 
@@ -103,6 +104,7 @@ const baseEventSchema = z.object({
   imageUrl: z.string().nullable().optional(),
   scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
   churchIds: z.array(z.string().min(1)).optional(),
+  deliveryMode: z.enum(['draft', 'now', 'scheduled']).default('now').optional(),
   recurrenceRule: recurrenceRuleSchema,
 });
 
@@ -514,7 +516,21 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const parsed = eventSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, recurrenceRule, ...eventData } = parsed.data;
+  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, deliveryMode, recurrenceRule, ...eventData } = parsed.data;
+  const mode = deliveryMode ?? 'now';
+
+  if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+    res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
+    return;
+  }
+
+  if (mode === 'scheduled') {
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, 'create');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  }
 
   if (eventData.requiresTicket && !(await hasFeature(userId, 'event_ticketing'))) {
     res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
@@ -576,7 +592,9 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     }
   }
 
-  const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, new Date(eventData.date));
+  const recurrenceRuleId = mode === 'scheduled'
+    ? await saveRecurrenceRule(recurrenceRule ?? null, new Date(eventData.date))
+    : null;
 
   const event = await prisma.event.create({
     data: {
@@ -599,9 +617,15 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
       linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
-  syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync created event:', err));
+  if (mode === 'scheduled') {
+    syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync created event:', err));
+  }
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
+
+  if (mode === 'draft') {
+    return;
+  }
 
   // Fire-and-forget: worker resolves members and sends push off the request cycle
   const church = await prisma.church.findUnique({ where: { id: primaryChurchId }, select: { name: true } });
@@ -639,7 +663,8 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
   const oldEvent = await prisma.event.findUnique({ where: { id: eventId } });
   if (!oldEvent) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
-  const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, recurrenceRule, ...eventData } = parsed.data;
+  const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, deliveryMode, recurrenceRule, ...eventData } = parsed.data;
+  const mode = deliveryMode ?? undefined;
   const userId = req.user!.userId;
   const nextRequiresTicket = eventData.requiresTicket ?? oldEvent.requiresTicket;
   const nextIsFree = eventData.isFree ?? oldEvent.isFree;
@@ -662,6 +687,37 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   if (nextRequiresTicket && !nextIsFree && !(await hasFeature(userId, 'event_online_payments'))) {
     res.status(403).json({ success: false, message: featureUnavailableMessage('event_online_payments') });
     return;
+  }
+
+  if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+    res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
+    return;
+  }
+
+  const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
+    SELECT recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'events' AND sourceId = ${eventId}
+    LIMIT 1
+  `;
+  const existingRecurrenceRuleId = existingSchedule[0]?.recurrenceRuleId ?? oldEvent.recurrenceRuleId;
+  const hasDeliveryMode = Object.prototype.hasOwnProperty.call(req.body, 'deliveryMode');
+  const shouldSchedule = mode === 'scheduled';
+  const shouldClearSchedule = hasDeliveryMode && mode !== 'scheduled';
+
+  if (shouldSchedule) {
+    const scheduleAction = existingRecurrenceRuleId ? 'update' : 'create';
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, scheduleAction);
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  } else if (shouldClearSchedule && (existingSchedule.length > 0 || oldEvent.recurrenceRuleId)) {
+    const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
   }
 
   const hasBodyKey = (key: string) => Object.prototype.hasOwnProperty.call(req.body, key);
@@ -700,9 +756,11 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     }
   }
 
-  const recurrenceRuleId = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
-    ? await saveRecurrenceRule(recurrenceRule ?? null, eventData.date ? new Date(eventData.date) : oldEvent.date, oldEvent.recurrenceRuleId)
-    : oldEvent.recurrenceRuleId;
+  const recurrenceRuleId = shouldSchedule
+    ? await saveRecurrenceRule(recurrenceRule ?? null, eventData.date ? new Date(eventData.date) : oldEvent.date, existingRecurrenceRuleId)
+    : shouldClearSchedule
+      ? null
+      : oldEvent.recurrenceRuleId;
 
   const event = await prisma.event.update({
     where: { id: eventId },
@@ -734,7 +792,15 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
       linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
     },
   });
-  syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync updated event:', err));
+  if (shouldSchedule) {
+    syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync updated event:', err));
+  } else if (shouldClearSchedule) {
+    deleteScheduledEventForSource('events', eventId).catch(err => console.error('[Scheduler] Failed to delete cleared event schedule:', err));
+    if (oldEvent.recurrenceRuleId && existingSchedule.length === 0) {
+      saveRecurrenceRule(null, oldEvent.date, oldEvent.recurrenceRuleId)
+        .catch(err => console.error('[Scheduler] Failed to delete orphaned event recurrence:', err));
+    }
+  }
   res.json({ success: true, data: decorateEventAvailability(event) });
 
   // Refresh reminder cache if date changed so reminders stay accurate
