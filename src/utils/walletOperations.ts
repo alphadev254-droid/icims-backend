@@ -1,4 +1,6 @@
 import prisma from '../lib/prisma';
+import { logger } from './logger';
+import { resolvePricingMarketForChurch, resolvePricingMarketForMinistryAdmin } from './pricingMarkets';
 
 type WithdrawalWalletDebit = {
   walletId: string;
@@ -15,6 +17,123 @@ function fromCents(amount: number): number {
   return Math.round(amount) / 100;
 }
 
+type EnsureChurchWalletOptions = {
+  expectedCurrency?: string | null;
+  source?: string;
+  traceId?: string | null;
+};
+
+function normalizeCurrency(currency?: string | null) {
+  return String(currency || '').trim().toUpperCase();
+}
+
+export async function expectedWalletCurrencyForChurch(churchId: string): Promise<string> {
+  const market = await resolvePricingMarketForChurch(churchId);
+  return normalizeCurrency(market.currencyCode || 'MWK');
+}
+
+export async function expectedWalletCurrencyForMinistryAdmin(ministryAdminId: string): Promise<string> {
+  const market = await resolvePricingMarketForMinistryAdmin(ministryAdminId);
+  return normalizeCurrency(market.currencyCode || 'MWK');
+}
+
+export async function ensureChurchWallet(churchId: string, options: EnsureChurchWalletOptions = {}) {
+  const church = await prisma.church.findUnique({
+    where: { id: churchId },
+    select: { id: true, name: true, ministryAdminId: true },
+  });
+
+  if (!church?.ministryAdminId) {
+    logger.error('wallet_create_failed', {
+      auditKind: 'wallet',
+      churchId,
+      source: options.source || 'unknown',
+      traceId: options.traceId || undefined,
+      reason: 'church_or_ministry_admin_missing',
+    });
+    throw new Error('Church or ministry admin not found for wallet creation.');
+  }
+
+  const marketCurrency = await expectedWalletCurrencyForMinistryAdmin(church.ministryAdminId);
+  const expectedCurrency = normalizeCurrency(options.expectedCurrency || marketCurrency);
+
+  if (expectedCurrency !== marketCurrency) {
+    logger.error('wallet_market_currency_mismatch', {
+      auditKind: 'wallet',
+      churchId,
+      churchName: church.name,
+      ministryAdminId: church.ministryAdminId,
+      requestedCurrency: expectedCurrency,
+      marketCurrency,
+      source: options.source || 'unknown',
+      traceId: options.traceId || undefined,
+    });
+    throw new Error(`Payment currency ${expectedCurrency} does not match this church market currency ${marketCurrency}.`);
+  }
+
+  let wallet = await prisma.wallet.findUnique({ where: { churchId } });
+
+  if (!wallet) {
+    wallet = await prisma.wallet.create({
+      data: {
+        churchId,
+        ministryAdminId: church.ministryAdminId,
+        balance: 0,
+        currency: marketCurrency,
+      },
+    });
+    logger.info('wallet_created', {
+      auditKind: 'wallet',
+      walletId: wallet.id,
+      churchId,
+      churchName: church.name,
+      ministryAdminId: church.ministryAdminId,
+      currency: marketCurrency,
+      source: options.source || 'unknown',
+      traceId: options.traceId || undefined,
+    });
+    return wallet;
+  }
+
+  const walletCurrency = normalizeCurrency(wallet.currency);
+  if (walletCurrency !== marketCurrency) {
+    if (Number(wallet.balance) === 0) {
+      wallet = await prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { currency: marketCurrency },
+      });
+      logger.warn('wallet_currency_auto_repaired', {
+        auditKind: 'wallet',
+        walletId: wallet.id,
+        churchId,
+        churchName: church.name,
+        ministryAdminId: church.ministryAdminId,
+        previousCurrency: walletCurrency,
+        currency: marketCurrency,
+        source: options.source || 'unknown',
+        traceId: options.traceId || undefined,
+      });
+      return wallet;
+    }
+
+    logger.error('wallet_currency_mismatch', {
+      auditKind: 'wallet',
+      walletId: wallet.id,
+      churchId,
+      churchName: church.name,
+      ministryAdminId: church.ministryAdminId,
+      walletCurrency,
+      marketCurrency,
+      balance: wallet.balance,
+      source: options.source || 'unknown',
+      traceId: options.traceId || undefined,
+    });
+    throw new Error(`Wallet currency mismatch. This church wallet is ${walletCurrency}, but the market currency is ${marketCurrency}.`);
+  }
+
+  return wallet;
+}
+
 export async function creditChurchWallet(
   churchId: string,
   amount: number,
@@ -23,28 +142,24 @@ export async function creditChurchWallet(
   description: string,
   currency = 'MWK'
 ) {
-  let wallet = await prisma.wallet.findUnique({
-    where: { churchId }
+  const expectedCurrency = normalizeCurrency(currency);
+  const wallet = await ensureChurchWallet(churchId, {
+    expectedCurrency,
+    source,
+    traceId: sourceId,
   });
 
-  if (!wallet) {
-    const church = await prisma.church.findUnique({
-      where: { id: churchId },
-      select: { ministryAdminId: true }
+  if (normalizeCurrency(wallet.currency) !== expectedCurrency) {
+    logger.error('wallet_credit_currency_mismatch', {
+      auditKind: 'wallet',
+      walletId: wallet.id,
+      churchId,
+      source,
+      sourceId,
+      walletCurrency: wallet.currency,
+      creditCurrency: expectedCurrency,
     });
-
-    wallet = await prisma.wallet.create({
-      data: {
-        churchId,
-        ministryAdminId: church!.ministryAdminId!,
-        balance: 0,
-        currency
-      }
-    });
-  }
-
-  if (wallet.currency !== currency) {
-    throw new Error(`Wallet currency mismatch. This church wallet is ${wallet.currency}, but the credit is ${currency}.`);
+    throw new Error(`Wallet currency mismatch. This church wallet is ${wallet.currency}, but the credit is ${expectedCurrency}.`);
   }
 
   const balanceBefore = wallet.balance;
@@ -66,6 +181,18 @@ export async function creditChurchWallet(
       sourceId,
       description
     }
+  });
+
+  logger.info('wallet_credited', {
+    auditKind: 'wallet',
+    walletId: wallet.id,
+    churchId,
+    amount,
+    currency: expectedCurrency,
+    source,
+    sourceId,
+    balanceBefore,
+    balanceAfter,
   });
 
   return { balanceBefore, balanceAfter };

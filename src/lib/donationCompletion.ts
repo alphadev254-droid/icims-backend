@@ -2,8 +2,9 @@ import prisma from './prisma';
 import { queueEmail } from './emailQueue';
 import { donationReceiptTemplate } from './emailTemplates';
 import { generateReceiptPDF } from './receiptPDF';
-import { creditChurchWallet } from '../utils/walletOperations';
+import { creditChurchWallet, ensureChurchWallet } from '../utils/walletOperations';
 import { getEffectiveDonationDonor } from './donationMemberMatching';
+import { logger } from '../utils/logger';
 
 type DonationLine = {
   campaignId: string;
@@ -54,64 +55,117 @@ export async function createDonationRecordsForTransaction(args: {
   const lines = getDonationLines(metadata);
   const { effectiveUserId, effectiveIsGuest } = getEffectiveDonationDonor(pendingTx, metadata);
   const created: any[] = [];
+  const churchIds = [
+    ...new Set(lines
+      .map(line => line.churchId || pendingTx.churchId)
+      .filter((churchId): churchId is string => Boolean(churchId))),
+  ];
 
-  for (const line of lines) {
+  try {
+    await Promise.all(churchIds.map(churchId => ensureChurchWallet(churchId, {
+      expectedCurrency: currency,
+      source: 'donation_preflight',
+      traceId: reference,
+    })));
+  } catch (error) {
+    logger.error('donation_wallet_preflight_failed', {
+      auditKind: 'wallet',
+      transactionId,
+      reference,
+      currency,
+      churchIds,
+      lineCount: lines.length,
+      error,
+    });
+    throw error;
+  }
+
+  for (const [lineIndex, line] of lines.entries()) {
     const lineChurchId = line.churchId || pendingTx.churchId;
-    const donationTx = await prisma.donationTransaction.create({
-      data: {
+    try {
+      const donationTx = await prisma.donationTransaction.create({
+        data: {
+          campaignId: line.campaignId,
+          userId: effectiveUserId,
+          churchId: lineChurchId,
+          amount: line.amount,
+          currency,
+          transactionId,
+          reference,
+          paymentMethod,
+          status: 'completed',
+          isAnonymous: metadata.isAnonymous || false,
+          isGuest: effectiveIsGuest,
+          guestName: effectiveIsGuest ? metadata.guestName : null,
+          guestEmail: effectiveIsGuest ? metadata.guestEmail : null,
+          guestPhone: effectiveIsGuest ? metadata.guestPhone : null,
+          donorName: metadata.donorName,
+          donorEmail: metadata.donorEmail,
+          donorPhone: metadata.donorPhone,
+          notes: metadata.notes,
+          cellId: line.cellId || null,
+          pledgeId: line.pledgeId || null,
+        },
+      });
+
+      let pledgeId = line.pledgeId || null;
+      if (!pledgeId && !effectiveIsGuest && effectiveUserId && line.campaignId) {
+        const activePledge = await prisma.pledge.findFirst({
+          where: {
+            userId: effectiveUserId,
+            campaignId: line.campaignId,
+            status: { in: ['pending', 'partial', 'overdue'] },
+          },
+        });
+        pledgeId = activePledge?.id ?? null;
+        if (pledgeId) {
+          await prisma.donationTransaction.update({ where: { id: donationTx.id }, data: { pledgeId } });
+        }
+      }
+
+      if (pledgeId) {
+        const { recalculatePledgeStatus } = await import('../controllers/pledgeController');
+        await recalculatePledgeStatus(pledgeId);
+      }
+
+      await creditChurchWallet(
+        lineChurchId,
+        line.amount,
+        'donation',
+        transactionId,
+        `Donation - ${line.campaignName || line.campaignId}`,
+        currency,
+      );
+
+      logger.info('donation_line_created', {
+        auditKind: 'money_api',
+        transactionId,
+        reference,
+        donationTransactionId: donationTx.id,
+        lineIndex,
+        lineCount: lines.length,
         campaignId: line.campaignId,
-        userId: effectiveUserId,
         churchId: lineChurchId,
         amount: line.amount,
         currency,
+      });
+
+      created.push(donationTx);
+    } catch (error) {
+      logger.error('donation_line_completion_failed', {
+        auditKind: 'money_api',
         transactionId,
         reference,
-        paymentMethod,
-        status: 'completed',
-        isAnonymous: metadata.isAnonymous || false,
-        isGuest: effectiveIsGuest,
-        guestName: effectiveIsGuest ? metadata.guestName : null,
-        guestEmail: effectiveIsGuest ? metadata.guestEmail : null,
-        guestPhone: effectiveIsGuest ? metadata.guestPhone : null,
-        donorName: metadata.donorName,
-        donorEmail: metadata.donorEmail,
-        donorPhone: metadata.donorPhone,
-        notes: metadata.notes,
-        cellId: line.cellId || null,
-        pledgeId: line.pledgeId || null,
-      },
-    });
-
-    let pledgeId = line.pledgeId || null;
-    if (!pledgeId && !effectiveIsGuest && effectiveUserId && line.campaignId) {
-      const activePledge = await prisma.pledge.findFirst({
-        where: {
-          userId: effectiveUserId,
-          campaignId: line.campaignId,
-          status: { in: ['pending', 'partial', 'overdue'] },
-        },
+        lineIndex,
+        lineCount: lines.length,
+        campaignId: line.campaignId,
+        churchId: lineChurchId,
+        amount: line.amount,
+        currency,
+        error,
       });
-      pledgeId = activePledge?.id ?? null;
-      if (pledgeId) {
-        await prisma.donationTransaction.update({ where: { id: donationTx.id }, data: { pledgeId } });
-      }
+      throw error;
     }
-
-    if (pledgeId) {
-      const { recalculatePledgeStatus } = await import('../controllers/pledgeController');
-      await recalculatePledgeStatus(pledgeId);
-    }
-
-    await creditChurchWallet(
-      lineChurchId,
-      line.amount,
-      'donation',
-      transactionId,
-      `Donation - ${line.campaignName || line.campaignId}`,
-      currency,
-    );
-
-    created.push(donationTx);
   }
 
   const donor = effectiveIsGuest || !effectiveUserId

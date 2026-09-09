@@ -5,6 +5,8 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { optionalPhoneSchema } from '../lib/inputValidation';
+import { logger } from '../utils/logger';
+import { expectedWalletCurrencyForMinistryAdmin } from '../utils/walletOperations';
 
 async function resolveAccessibleChurchIds(req: Request, status: 'active' | 'cancelled' | 'all' = 'active'): Promise<string[]> {
   const role = req.user?.role ?? 'member';
@@ -182,24 +184,56 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
   // Handle logo upload
   const logoUrl = req.file ? `/uploads/churches/${req.file.filename}` : undefined;
 
-  await (prisma.church.create as any)({
-    data: {
-      name, location, country,
-      region, district, traditionalAuthority, village,
-      address, phone, email: email || undefined, website, pastorName, yearFounded,
-      branchCode,
-      logoUrl,
-      ministryAdminId: adminUserId,
-      latitude: latitude ?? null,
-      longitude: longitude ?? null,
-    },
-    include: { _count: { select: { users: true } } },
-  });
+  const walletCurrency = await expectedWalletCurrencyForMinistryAdmin(adminUserId);
+  let church;
+  try {
+    church = await prisma.$transaction(async (tx) => {
+      const createdChurch = await (tx.church.create as any)({
+        data: {
+          name, location, country,
+          region, district, traditionalAuthority, village,
+          address, phone, email: email || undefined, website, pastorName, yearFounded,
+          branchCode,
+          logoUrl,
+          ministryAdminId: adminUserId,
+          latitude: latitude ?? null,
+          longitude: longitude ?? null,
+        },
+        include: { _count: { select: { users: true } } },
+      });
 
-  const church = await prisma.church.findFirst({
-    where: { branchCode },
-    include: { _count: { select: { users: true } } },
-  });
+      await tx.wallet.create({
+        data: {
+          churchId: createdChurch.id,
+          ministryAdminId: adminUserId,
+          balance: 0,
+          currency: walletCurrency,
+        },
+      });
+
+      return createdChurch;
+    });
+
+    logger.info('wallet_created', {
+      auditKind: 'wallet',
+      churchId: church.id,
+      churchName: church.name,
+      ministryAdminId: adminUserId,
+      currency: walletCurrency,
+      source: 'church_creation',
+    });
+  } catch (error) {
+    logger.error('church_wallet_creation_failed', {
+      auditKind: 'wallet',
+      churchName: name,
+      ministryAdminId: adminUserId,
+      currency: walletCurrency,
+      source: 'church_creation',
+      error,
+    });
+    res.status(500).json({ success: false, message: 'Failed to create church wallet. Please try again.' });
+    return;
+  }
 
   res.status(201).json({ success: true, data: church });
 }
