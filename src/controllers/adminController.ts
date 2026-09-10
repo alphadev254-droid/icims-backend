@@ -84,6 +84,12 @@ function summarizePaymentRows(rows: any[]) {
     rounding: number;
     totalRevenue: number;
     totalPaymentCost: number;
+    gatewayFeesCollected: number;
+    actualGatewayCharges: number;
+    netPlatformRevenue: number;
+    providerCostVariance: number;
+    gatewayChargeRecordedCount: number;
+    gatewayChargeMissingCount: number;
   }>();
 
   for (const row of rows) {
@@ -99,27 +105,43 @@ function summarizePaymentRows(rows: any[]) {
       rounding: 0,
       totalRevenue: 0,
       totalPaymentCost: 0,
+      gatewayFeesCollected: 0,
+      actualGatewayCharges: 0,
+      netPlatformRevenue: 0,
+      providerCostVariance: 0,
+      gatewayChargeRecordedCount: 0,
+      gatewayChargeMissingCount: 0,
     };
-    const packageRevenue = Number(row.baseAmount ?? row.amount ?? 0);
-    const gatewayCost = Number(row.convenienceFee ?? 0);
-    const feeOnly = Number(row.systemFeeAmount ?? 0);
-    const rounding = Number(row.ceilRoundingAmount ?? 0);
-    const icimsFee = feeOnly + rounding;
-
-    current.count += 1;
-    current.totalCollected += Number(row.totalAmount ?? row.amount ?? 0);
-    current.packageRevenue += packageRevenue;
-    current.gatewayCost += gatewayCost;
-    current.icimsFee += icimsFee;
-    current.feeOnly += feeOnly;
-    current.rounding += rounding;
-    current.totalRevenue += packageRevenue + icimsFee;
-    current.totalPaymentCost += gatewayCost + icimsFee;
-    byCurrency.set(currency, current);
 
     incrementCount(byStatus, row.status);
     incrementCount(byType, row.type);
     incrementCount(byGateway, row.gateway);
+    if (row.status !== 'completed') continue;
+
+    const packageRevenue = Number(row.baseAmount ?? row.amount ?? 0);
+    const gatewayFeesCollected = Number(row.convenienceFee ?? 0);
+    const actualGatewayCharges = Number(row.gatewayCharge ?? 0);
+    const feeOnly = Number(row.systemFeeAmount ?? 0);
+    const rounding = Number(row.ceilRoundingAmount ?? 0);
+    const icimsFee = feeOnly + rounding;
+    const totalCollected = Number(row.totalAmount ?? row.amount ?? 0);
+
+    current.count += 1;
+    current.totalCollected += totalCollected;
+    current.packageRevenue += packageRevenue;
+    current.gatewayCost += actualGatewayCharges;
+    current.icimsFee += icimsFee;
+    current.feeOnly += feeOnly;
+    current.rounding += rounding;
+    current.totalRevenue += totalCollected - actualGatewayCharges;
+    current.totalPaymentCost += gatewayFeesCollected + icimsFee;
+    current.gatewayFeesCollected += gatewayFeesCollected;
+    current.actualGatewayCharges += actualGatewayCharges;
+    current.netPlatformRevenue += totalCollected - actualGatewayCharges;
+    current.providerCostVariance += gatewayFeesCollected - actualGatewayCharges;
+    if (row.gatewayCharge == null) current.gatewayChargeMissingCount += 1;
+    else current.gatewayChargeRecordedCount += 1;
+    byCurrency.set(currency, current);
   }
 
   return { byStatus, byType, byGateway, byCurrency: Array.from(byCurrency.values()) };
@@ -138,6 +160,11 @@ function summarizeSystemTransactionRows(rows: any[]) {
     totalGatewayFee: number;
     totalTransactionCost: number;
     totalCharged: number;
+    gatewayFeesCollected: number;
+    actualGatewayCharges: number;
+    gatewayChargeRecordedCount: number;
+    gatewayChargeMissingCount: number;
+    providerCostVariance: number;
   }>();
 
   for (const row of rows) {
@@ -152,8 +179,18 @@ function summarizeSystemTransactionRows(rows: any[]) {
       totalGatewayFee: 0,
       totalTransactionCost: 0,
       totalCharged: 0,
+      gatewayFeesCollected: 0,
+      actualGatewayCharges: 0,
+      gatewayChargeRecordedCount: 0,
+      gatewayChargeMissingCount: 0,
+      providerCostVariance: 0,
     };
+    incrementCount(byStatus, row.status);
+    incrementCount(byType, row.type);
+    if (row.status !== 'completed') continue;
+
     const gatewayFee = Number(row.convenienceFee ?? 0);
+    const actualGatewayCharge = Number(row.gatewayCharge ?? 0);
     const systemFeeOnly = Number(row.systemFeeAmount ?? 0);
     const rounding = Number(row.ceilRoundingAmount ?? 0);
     const systemFee = systemFeeOnly + rounding;
@@ -166,10 +203,12 @@ function summarizeSystemTransactionRows(rows: any[]) {
     current.totalGatewayFee += gatewayFee;
     current.totalTransactionCost += gatewayFee + systemFee;
     current.totalCharged += Number(row.totalAmount ?? row.amount ?? 0);
+    current.gatewayFeesCollected += gatewayFee;
+    current.actualGatewayCharges += actualGatewayCharge;
+    current.providerCostVariance += gatewayFee - actualGatewayCharge;
+    if (row.gatewayCharge == null) current.gatewayChargeMissingCount += 1;
+    else current.gatewayChargeRecordedCount += 1;
     byCurrency.set(currency, current);
-
-    incrementCount(byStatus, row.status);
-    incrementCount(byType, row.type);
   }
 
   return { byStatus, byType, byCurrency: Array.from(byCurrency.values()) };
@@ -1164,6 +1203,7 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
         systemFeeAmount: true,
         ceilRoundingAmount: true,
         totalAmount: true,
+        gatewayCharge: true,
       } as any,
     }),
   ]);
@@ -1299,6 +1339,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
         systemFeeAmount: true,
         ceilRoundingAmount: true,
         totalAmount: true,
+        gatewayCharge: true,
         currency: true,
         status: true,
         paymentMethod: true,
@@ -1337,6 +1378,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
         systemFeeAmount: true,
         ceilRoundingAmount: true,
         totalAmount: true,
+        gatewayCharge: true,
       } as any,
     }),
   ]);
@@ -1665,7 +1707,8 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
     where.churchId = churchId;
   }
 
-  const [rows, total] = await Promise.all([
+  const now = new Date();
+  const [rows, total, statusGroups, typeGroups, currencyGroups, expiredPendingCount, withReferenceCount] = await Promise.all([
     prisma.pendingTransaction.findMany({
       where,
       orderBy: { createdAt: 'desc' },
@@ -1673,6 +1716,11 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
       take: limit,
     }),
     prisma.pendingTransaction.count({ where }),
+    prisma.pendingTransaction.groupBy({ by: ['status'], where, _count: { _all: true } }),
+    prisma.pendingTransaction.groupBy({ by: ['type'], where, _count: { _all: true } }),
+    prisma.pendingTransaction.groupBy({ by: ['currency'], where, _count: { _all: true }, _sum: { amount: true } }),
+    prisma.pendingTransaction.count({ where: { AND: [where, { status: 'pending', expiresAt: { lt: now } }] } }),
+    prisma.pendingTransaction.count({ where: { AND: [where, { reference: { not: null } }] } }),
   ]);
 
   // Resolve userId → user name/email in one batch
@@ -1709,6 +1757,20 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
     success: true,
     data: enriched,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    summary: {
+      total,
+      byStatus: Object.fromEntries(statusGroups.map(item => [item.status, item._count._all])),
+      byType: Object.fromEntries(typeGroups.map(item => [item.type, item._count._all])),
+      byCurrency: currencyGroups.map(item => ({
+        currency: item.currency,
+        count: item._count._all,
+        attemptedCheckoutValue: Number(item._sum.amount || 0),
+      })),
+      expiredPendingCount,
+      withReferenceCount,
+      withoutReferenceCount: total - withReferenceCount,
+      reconciliationReadyCount: withReferenceCount,
+    },
   });
 }
 

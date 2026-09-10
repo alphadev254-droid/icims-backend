@@ -442,8 +442,50 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
       orderBy: { updatedAt: 'desc' },
     });
 
-    const walletsByMinistry = new Map<string, typeof wallets>();
-    wallets.forEach((wallet) => {
+    const walletIds = wallets.map(wallet => wallet.id);
+    const [ledgerGroups, reservationGroups, payoutGroups] = walletIds.length === 0
+      ? [[], [], []] as any[]
+      : await Promise.all([
+        prisma.ledgerEntry.groupBy({
+          by: ['walletId', 'direction'], where: { walletId: { in: walletIds } },
+          _sum: { amount: true }, _count: { _all: true },
+        }),
+        prisma.payoutReservation.groupBy({
+          by: ['walletId'], where: { walletId: { in: walletIds }, status: 'active' },
+          _sum: { amount: true }, _count: { _all: true },
+        }),
+        prisma.payout.groupBy({
+          by: ['walletId', 'reconciliationStatus'],
+          where: { walletId: { in: walletIds }, status: 'completed' },
+          _sum: { payoutAmount: true }, _count: { _all: true },
+        }),
+      ]);
+
+    const financialWallets = wallets.map(wallet => {
+      const credits = ledgerGroups.find((item: any) => item.walletId === wallet.id && item.direction === 'credit');
+      const debits = ledgerGroups.find((item: any) => item.walletId === wallet.id && item.direction === 'debit');
+      const reservation = reservationGroups.find((item: any) => item.walletId === wallet.id);
+      const walletPayouts = payoutGroups.filter((item: any) => item.walletId === wallet.id);
+      const totalCredits = Number(credits?._sum.amount || 0);
+      const totalDebits = Number(debits?._sum.amount || 0);
+      const ledgerBalance = Math.round((totalCredits - totalDebits) * 100) / 100;
+      const reservedBalance = Number(reservation?._sum.amount || 0);
+      const providerConfirmedPayoutAmount = walletPayouts.reduce((sum: number, item: any) => sum + Number(item._sum.payoutAmount || 0), 0);
+      const reconciledPayoutAmount = walletPayouts.filter((item: any) => item.reconciliationStatus === 'matched')
+        .reduce((sum: number, item: any) => sum + Number(item._sum.payoutAmount || 0), 0);
+      const unreconciledPayoutAmount = Math.round((providerConfirmedPayoutAmount - reconciledPayoutAmount) * 100) / 100;
+      return {
+        ...wallet, totalCredits, totalDebits, ledgerBalance, reservedBalance,
+        providerConfirmedPayoutAmount, reconciledPayoutAmount, unreconciledPayoutAmount,
+        effectiveAvailableBalance: Math.round((ledgerBalance - reservedBalance - unreconciledPayoutAmount) * 100) / 100,
+        ledgerEntryCount: Number(credits?._count._all || 0) + Number(debits?._count._all || 0),
+        activeReservationCount: Number(reservation?._count._all || 0),
+        legacyCachedBalance: wallet.balance,
+      };
+    });
+
+    const walletsByMinistry = new Map<string, typeof financialWallets>();
+    financialWallets.forEach((wallet) => {
       const current = walletsByMinistry.get(wallet.ministryAdminId) ?? [];
       current.push(wallet);
       walletsByMinistry.set(wallet.ministryAdminId, current);
@@ -451,9 +493,21 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
 
     const data = ministries.map((ministry) => {
       const ministryWallets = walletsByMinistry.get(ministry.id) ?? [];
-      const totalBalance = ministryWallets.reduce((sum, wallet) => sum + wallet.balance, 0);
       const currencies = [...new Set(ministryWallets.map((wallet) => wallet.currency || 'MWK'))];
       const currency = currencies.length === 1 ? currencies[0] : 'mixed';
+      const byCurrency = currencies.map(currencyCode => {
+        const currencyWallets = ministryWallets.filter(wallet => wallet.currency === currencyCode);
+        return {
+          currency: currencyCode,
+          ledgerBalance: currencyWallets.reduce((sum, wallet) => sum + wallet.ledgerBalance, 0),
+          reservedBalance: currencyWallets.reduce((sum, wallet) => sum + wallet.reservedBalance, 0),
+          providerConfirmedPayoutAmount: currencyWallets.reduce((sum, wallet) => sum + wallet.providerConfirmedPayoutAmount, 0),
+          unreconciledPayoutAmount: currencyWallets.reduce((sum, wallet) => sum + wallet.unreconciledPayoutAmount, 0),
+          effectiveAvailableBalance: currencyWallets.reduce((sum, wallet) => sum + wallet.effectiveAvailableBalance, 0),
+          walletCount: currencyWallets.length,
+        };
+      });
+      const totalBalance = byCurrency.length === 1 ? byCurrency[0].effectiveAvailableBalance : 0;
       const pricingMarket = marketContext.resolveMarket(ministry.accountCountry ?? null);
       return {
         ministryId: ministry.id,
@@ -464,11 +518,23 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
         pricingMarket: serializePricingMarket(pricingMarket),
         currency,
         totalBalance,
+        byCurrency,
         walletCount: ministryWallets.length,
         churchCount: new Set(ministryWallets.map((wallet) => wallet.church?.id).filter(Boolean)).size,
         wallets: ministryWallets.map((wallet) => ({
           id: wallet.id,
-          balance: wallet.balance,
+          balance: wallet.effectiveAvailableBalance,
+          totalCredits: wallet.totalCredits,
+          totalDebits: wallet.totalDebits,
+          ledgerBalance: wallet.ledgerBalance,
+          reservedBalance: wallet.reservedBalance,
+          providerConfirmedPayoutAmount: wallet.providerConfirmedPayoutAmount,
+          reconciledPayoutAmount: wallet.reconciledPayoutAmount,
+          unreconciledPayoutAmount: wallet.unreconciledPayoutAmount,
+          effectiveAvailableBalance: wallet.effectiveAvailableBalance,
+          ledgerEntryCount: wallet.ledgerEntryCount,
+          activeReservationCount: wallet.activeReservationCount,
+          legacyCachedBalance: wallet.legacyCachedBalance,
           currency: wallet.currency,
           updatedAt: wallet.updatedAt,
           church: wallet.church,
@@ -480,17 +546,33 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
       data.reduce((map, row) => {
         row.wallets.forEach(wallet => {
           const currency = wallet.currency || 'unknown';
-          const current = map.get(currency) ?? { currency, totalBalance: 0, walletCount: 0, ministryIds: new Set<string>() };
-          current.totalBalance += wallet.balance;
+          const current = map.get(currency) ?? {
+            currency, totalBalance: 0, ledgerBalance: 0, reservedBalance: 0,
+            providerConfirmedPayoutAmount: 0, unreconciledPayoutAmount: 0,
+            walletCount: 0, ministryIds: new Set<string>(),
+          };
+          current.totalBalance += wallet.effectiveAvailableBalance;
+          current.ledgerBalance += wallet.ledgerBalance;
+          current.reservedBalance += wallet.reservedBalance;
+          current.providerConfirmedPayoutAmount += wallet.providerConfirmedPayoutAmount;
+          current.unreconciledPayoutAmount += wallet.unreconciledPayoutAmount;
           current.walletCount += 1;
           current.ministryIds.add(row.ministryId);
           map.set(currency, current);
         });
         return map;
-      }, new Map<string, { currency: string; totalBalance: number; walletCount: number; ministryIds: Set<string> }>())
+      }, new Map<string, {
+        currency: string; totalBalance: number; ledgerBalance: number; reservedBalance: number;
+        providerConfirmedPayoutAmount: number; unreconciledPayoutAmount: number;
+        walletCount: number; ministryIds: Set<string>;
+      }>())
     ).map(([, row]) => ({
       currency: row.currency,
       totalBalance: row.totalBalance,
+      ledgerBalance: row.ledgerBalance,
+      reservedBalance: row.reservedBalance,
+      providerConfirmedPayoutAmount: row.providerConfirmedPayoutAmount,
+      unreconciledPayoutAmount: row.unreconciledPayoutAmount,
       walletCount: row.walletCount,
       ministryCount: row.ministryIds.size,
     }));
