@@ -6,9 +6,10 @@ import { paymentQueue, paymentWorker } from './lib/paymentQueue';
 import { notificationQueue, notificationWorker } from './lib/notificationQueue';
 import './workers/reminderCacheWorker';
 import { startScheduledReminderWorker } from './workers/scheduledReminderWorker';
-import { startSubscriptionCron, startKPICron, startPendingTransactionCleanup, startWithdrawalReviewCron } from './workers/subscriptionCron';
+import { startSubscriptionCron, startKPICron, startWithdrawalReviewCron } from './workers/subscriptionCron';
 import { startEventStatusWorker } from './workers/eventStatusWorker';
 import { startScheduledEventWorker } from './workers/scheduledEventWorker';
+import { startPaymentReconciliationWorker } from './workers/paymentReconciliationWorker';
 
 const PORT = process.env.PORT || 5000;
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
@@ -41,7 +42,7 @@ async function main() {
   startKPICron();
   startEventStatusWorker();
   startScheduledEventWorker();
-  startPendingTransactionCleanup();
+  startPaymentReconciliationWorker();
   startWithdrawalReviewCron();
   console.log('⏰ Cron jobs initialized');
 
