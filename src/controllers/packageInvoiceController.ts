@@ -5,6 +5,11 @@ import {
   findPackageMarketPriceWithFallback,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
+import {
+  buildUserCountryWhereForMarket,
+  getPricingMarketContext,
+  serializePricingMarket,
+} from '../utils/adminPricingMarketContext';
 import { queueEmail } from '../lib/emailQueue';
 import { packageInvoiceTemplate } from '../lib/emailTemplates';
 import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
@@ -60,11 +65,14 @@ const listSchema = z.object({
   status: z.string().optional(),
   ministry: z.string().optional(),
   package: z.string().optional(),
+  country: z.string().optional(),
+  market: z.string().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
 });
 
-function serializeInvoice(invoice: any) {
+function serializeInvoice(invoice: any, marketContext?: Awaited<ReturnType<typeof getPricingMarketContext>>) {
+  const pricingMarket = marketContext?.resolveMarket(invoice.ministryAdmin?.accountCountry ?? null);
   const linkedPayments = (invoice.paymentLinks || []).map((link: any) => ({
     ...link.payment,
     amount: link.amount,
@@ -80,6 +88,7 @@ function serializeInvoice(invoice: any) {
   });
   return {
     ...invoice,
+    pricingMarket: serializePricingMarket(pricingMarket),
     lineItems: invoice.lineItems ? JSON.parse(invoice.lineItems) : null,
     payments: Array.from(paymentsById.values()).sort((a, b) =>
       new Date(b.paidAt || b.createdAt || 0).getTime() - new Date(a.paidAt || a.createdAt || 0).getTime()
@@ -99,10 +108,12 @@ async function withPublicInvoiceTokens<T extends { id: string; publicToken?: str
 export async function getAdminPackageInvoices(req: Request, res: Response): Promise<void> {
   const params = listSchema.parse(req.query);
   const where: any = {};
+  const adminIdFilters: string[][] = [];
+  const marketContext = await getPricingMarketContext();
 
   if (params.status && params.status !== 'all') where.status = params.status;
   if (params.package && params.package !== 'all') where.packageId = params.package;
-  if (params.ministry && params.ministry !== 'all') where.ministryAdminId = params.ministry;
+  if (params.ministry && params.ministry !== 'all') adminIdFilters.push([params.ministry]);
   if (params.dateFrom || params.dateTo) {
     where.dueDate = {};
     if (params.dateFrom) where.dueDate.gte = parseDate(params.dateFrom, 'dateFrom');
@@ -120,8 +131,30 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
     ];
   }
 
+  if (params.country && params.country !== 'all') {
+    const countryAdmins = await prisma.user.findMany({
+      where: { accountCountry: params.country },
+      select: { id: true },
+    });
+    adminIdFilters.push(countryAdmins.map(admin => admin.id));
+  }
+
+  if (params.market && params.market !== 'all') {
+    const marketAdmins = await prisma.user.findMany({
+      where: buildUserCountryWhereForMarket(params.market, marketContext),
+      select: { id: true },
+    });
+    adminIdFilters.push(marketAdmins.map(admin => admin.id));
+  }
+
+  if (adminIdFilters.length > 0) {
+    const [firstIds, ...restIds] = adminIdFilters;
+    const matchingIds = firstIds.filter(id => restIds.every(ids => ids.includes(id)));
+    where.ministryAdminId = { in: matchingIds };
+  }
+
   const skip = (params.page - 1) * params.limit;
-  const [invoices, total, statusCounts, amountAgg] = await Promise.all([
+  const [invoices, total, statusCounts, currencyAggs] = await Promise.all([
     prisma.packageInvoice.findMany({
       where,
       include: packageInvoiceListInclude,
@@ -131,32 +164,47 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
     }),
     prisma.packageInvoice.count({ where }),
     prisma.packageInvoice.groupBy({ by: ['status'], where, _count: { _all: true } }),
-    prisma.packageInvoice.aggregate({ where, _sum: { amount: true, amountPaid: true, balanceDue: true } }),
+    prisma.packageInvoice.groupBy({
+      by: ['currency'],
+      where,
+      _count: { _all: true },
+      _sum: { amount: true, amountPaid: true, balanceDue: true },
+    }),
   ]);
 
   const invoicesWithLinks = await withPublicInvoiceTokens(invoices);
+  const byCurrency = currencyAggs.map(row => ({
+    currency: row.currency,
+    count: row._count._all,
+    totalAmount: row._sum.amount ?? 0,
+    amountPaid: row._sum.amountPaid ?? 0,
+    balanceDue: row._sum.balanceDue ?? 0,
+  }));
 
   res.json({
     success: true,
-    data: invoicesWithLinks.map(serializeInvoice),
+    data: invoicesWithLinks.map(invoice => serializeInvoice(invoice, marketContext)),
     pagination: { page: params.page, limit: params.limit, total, totalPages: Math.ceil(total / params.limit) },
     summary: {
-      totalAmount: amountAgg._sum.amount ?? 0,
-      amountPaid: amountAgg._sum.amountPaid ?? 0,
-      balanceDue: amountAgg._sum.balanceDue ?? 0,
+      total,
+      totalAmount: byCurrency.reduce((sum, row) => sum + row.totalAmount, 0),
+      amountPaid: byCurrency.reduce((sum, row) => sum + row.amountPaid, 0),
+      balanceDue: byCurrency.reduce((sum, row) => sum + row.balanceDue, 0),
       byStatus: Object.fromEntries(statusCounts.map(row => [row.status, row._count._all])),
+      byCurrency,
     },
   });
 }
 
 export async function getAdminPackageInvoice(req: Request, res: Response): Promise<void> {
+  const marketContext = await getPricingMarketContext();
   const invoice = await prisma.packageInvoice.findUnique({
     where: { id: String(req.params.id) },
     include: packageInvoiceInclude,
   });
   if (!invoice) { res.status(404).json({ success: false, message: 'Invoice not found' }); return; }
   const [invoiceWithLink] = await withPublicInvoiceTokens([invoice]);
-  res.json({ success: true, data: serializeInvoice(invoiceWithLink) });
+  res.json({ success: true, data: serializeInvoice(invoiceWithLink, marketContext) });
 }
 
 export async function getPublicPackageInvoice(req: Request, res: Response): Promise<void> {
@@ -205,6 +253,7 @@ const invoiceSchema = z.object({
 });
 
 export async function createAdminPackageInvoice(req: Request, res: Response): Promise<void> {
+  const marketContext = await getPricingMarketContext();
   const parsed = invoiceSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
@@ -266,12 +315,13 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
     include: packageInvoiceInclude,
   });
 
-  res.status(201).json({ success: true, data: serializeInvoice(invoice) });
+  res.status(201).json({ success: true, data: serializeInvoice(invoice, marketContext) });
 }
 
 const invoiceUpdateSchema = invoiceSchema.partial().omit({ ministryAdminId: true });
 
 export async function updateAdminPackageInvoice(req: Request, res: Response): Promise<void> {
+  const marketContext = await getPricingMarketContext();
   const id = String(req.params.id);
   const current = await prisma.packageInvoice.findUnique({ where: { id } });
   if (!current) { res.status(404).json({ success: false, message: 'Invoice not found' }); return; }
@@ -298,10 +348,11 @@ export async function updateAdminPackageInvoice(req: Request, res: Response): Pr
 
   await prisma.packageInvoice.update({ where: { id }, data });
   const invoice = await recalculatePackageInvoice(id);
-  res.json({ success: true, data: serializeInvoice(invoice) });
+  res.json({ success: true, data: serializeInvoice(invoice, marketContext) });
 }
 
 export async function sendAdminPackageInvoice(req: Request, res: Response): Promise<void> {
+  const marketContext = await getPricingMarketContext();
   const id = String(req.params.id);
   const publicToken = await ensureInvoicePublicToken(id);
   const invoice = await prisma.packageInvoice.update({
@@ -364,10 +415,11 @@ export async function sendAdminPackageInvoice(req: Request, res: Response): Prom
       'package_subscription',
     );
   }
-  res.json({ success: true, data: serializeInvoice(invoice), message: 'Invoice marked as sent' });
+  res.json({ success: true, data: serializeInvoice(invoice, marketContext), message: 'Invoice marked as sent' });
 }
 
 export async function cancelAdminPackageInvoice(req: Request, res: Response): Promise<void> {
+  const marketContext = await getPricingMarketContext();
   const current = await prisma.packageInvoice.findUnique({
     where: { id: String(req.params.id) },
     select: { id: true, status: true, amountPaid: true },
@@ -383,7 +435,7 @@ export async function cancelAdminPackageInvoice(req: Request, res: Response): Pr
     data: { status: 'cancelled' },
     include: packageInvoiceInclude,
   });
-  res.json({ success: true, data: serializeInvoice(invoice) });
+  res.json({ success: true, data: serializeInvoice(invoice, marketContext) });
 }
 
 const recordPaymentSchema = z.object({
@@ -395,6 +447,7 @@ const recordPaymentSchema = z.object({
 });
 
 export async function recordAdminPackageInvoicePayment(req: Request, res: Response): Promise<void> {
+  const marketContext = await getPricingMarketContext();
   const invoice = await prisma.packageInvoice.findUnique({ where: { id: String(req.params.id) } });
   if (!invoice) { res.status(404).json({ success: false, message: 'Invoice not found' }); return; }
   if (invoice.status === 'cancelled') { res.status(400).json({ success: false, message: 'Cannot record payment for a cancelled invoice' }); return; }
@@ -441,7 +494,7 @@ export async function recordAdminPackageInvoicePayment(req: Request, res: Respon
   });
 
   const updated = await recalculatePackageInvoice(invoice.id);
-  res.status(201).json({ success: true, data: serializeInvoice(updated) });
+  res.status(201).json({ success: true, data: serializeInvoice(updated, marketContext) });
 }
 
 export async function getMyPackageInvoices(req: Request, res: Response): Promise<void> {
@@ -458,7 +511,7 @@ export async function getMyPackageInvoices(req: Request, res: Response): Promise
     orderBy: { createdAt: 'desc' },
   });
   const invoicesWithLinks = await withPublicInvoiceTokens(invoices);
-  res.json({ success: true, data: invoicesWithLinks.map(serializeInvoice) });
+  res.json({ success: true, data: invoicesWithLinks.map(invoice => serializeInvoice(invoice)) });
 }
 
 export async function getMyPackageInvoice(req: Request, res: Response): Promise<void> {

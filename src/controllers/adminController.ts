@@ -5,6 +5,11 @@ import { hashPassword } from '../lib/password';
 import { cancelUserAccount } from '../lib/userCancellation';
 import { optionalPhoneSchema } from '../lib/inputValidation';
 import { reconcilePendingTransactionById } from '../services/paymentReconciliationService';
+import {
+  buildUserCountryWhereForMarket,
+  getPricingMarketContext,
+  serializePricingMarket,
+} from '../utils/adminPricingMarketContext';
 
 function groupDonationDetails(rows: any[]) {
   const grouped = new Map<string, any[]>();
@@ -57,79 +62,115 @@ function tryParse(val: string) {
   try { return JSON.parse(val); } catch { return val; }
 }
 
-type PricingMarketLite = {
-  id: string;
-  code: string;
-  name: string;
-  currencyCode: string;
-  isDefault: boolean;
-};
-
-async function getPricingMarketContext() {
-  const [markets, countries] = await Promise.all([
-    prisma.pricingMarket.findMany({
-      where: { isActive: true },
-      select: { id: true, code: true, name: true, currencyCode: true, isDefault: true },
-      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-    }),
-    prisma.country.findMany({
-      where: { isActive: true },
-      select: { name: true, pricingMarketId: true },
-    }),
-  ]);
-
-  const defaultMarket = markets.find((market: PricingMarketLite) => market.isDefault)
-    ?? markets.find((market: PricingMarketLite) => market.code === 'general')
-    ?? markets[0]
-    ?? null;
-  const marketById = new Map(markets.map((market: PricingMarketLite) => [market.id, market]));
-  const marketByCountry = new Map<string, PricingMarketLite>();
-  const countryNamesByMarket = new Map<string, string[]>();
-  const countriesAssignedToNonDefaultMarkets = new Set<string>();
-
-  for (const country of countries) {
-    const normalizedName = country.name.trim();
-    if (!normalizedName) continue;
-
-    const market = country.pricingMarketId ? marketById.get(country.pricingMarketId) ?? defaultMarket : defaultMarket;
-    if (!market) continue;
-
-    marketByCountry.set(normalizedName.toLowerCase(), market);
-    countryNamesByMarket.set(market.id, [...(countryNamesByMarket.get(market.id) ?? []), normalizedName]);
-
-    if (!market.isDefault) {
-      countriesAssignedToNonDefaultMarkets.add(normalizedName);
-    }
-  }
-
-  const resolveMarket = (country?: string | null) => {
-    if (!country) return defaultMarket;
-    return marketByCountry.get(country.trim().toLowerCase()) ?? defaultMarket;
-  };
-
-  return {
-    defaultMarket,
-    marketById,
-    countryNamesByMarket,
-    countriesAssignedToNonDefaultMarkets,
-    resolveMarket,
-  };
+function incrementCount(map: Record<string, number>, key?: string | null) {
+  const normalizedKey = key || 'unknown';
+  map[normalizedKey] = (map[normalizedKey] ?? 0) + 1;
 }
 
-function buildMarketCountryFilter(marketId: string, context: Awaited<ReturnType<typeof getPricingMarketContext>>) {
-  const market = context.marketById.get(marketId);
-  if (!market) return { accountCountry: '__no_market_match__' };
+function summarizePaymentRows(rows: any[]) {
+  const byStatus: Record<string, number> = {};
+  const byType: Record<string, number> = {};
+  const byGateway: Record<string, number> = {};
+  const byCurrency = new Map<string, {
+    currency: string;
+    count: number;
+    totalCollected: number;
+    packageRevenue: number;
+    gatewayCost: number;
+    icimsFee: number;
+    feeOnly: number;
+    rounding: number;
+    totalRevenue: number;
+    totalPaymentCost: number;
+  }>();
 
-  if (market.isDefault) {
-    return {
-      OR: [
-        { accountCountry: null },
-        { accountCountry: { notIn: [...context.countriesAssignedToNonDefaultMarkets] } },
-      ],
+  for (const row of rows) {
+    const currency = row.currency || 'unknown';
+    const current = byCurrency.get(currency) ?? {
+      currency,
+      count: 0,
+      totalCollected: 0,
+      packageRevenue: 0,
+      gatewayCost: 0,
+      icimsFee: 0,
+      feeOnly: 0,
+      rounding: 0,
+      totalRevenue: 0,
+      totalPaymentCost: 0,
     };
+    const packageRevenue = Number(row.baseAmount ?? row.amount ?? 0);
+    const gatewayCost = Number(row.convenienceFee ?? 0);
+    const feeOnly = Number(row.systemFeeAmount ?? 0);
+    const rounding = Number(row.ceilRoundingAmount ?? 0);
+    const icimsFee = feeOnly + rounding;
+
+    current.count += 1;
+    current.totalCollected += Number(row.totalAmount ?? row.amount ?? 0);
+    current.packageRevenue += packageRevenue;
+    current.gatewayCost += gatewayCost;
+    current.icimsFee += icimsFee;
+    current.feeOnly += feeOnly;
+    current.rounding += rounding;
+    current.totalRevenue += packageRevenue + icimsFee;
+    current.totalPaymentCost += gatewayCost + icimsFee;
+    byCurrency.set(currency, current);
+
+    incrementCount(byStatus, row.status);
+    incrementCount(byType, row.type);
+    incrementCount(byGateway, row.gateway);
   }
 
-  return { accountCountry: { in: context.countryNamesByMarket.get(market.id) ?? ['__no_market_country_match__'] } };
+  return { byStatus, byType, byGateway, byCurrency: Array.from(byCurrency.values()) };
+}
+
+function summarizeSystemTransactionRows(rows: any[]) {
+  const byStatus: Record<string, number> = {};
+  const byType: Record<string, number> = {};
+  const byCurrency = new Map<string, {
+    currency: string;
+    count: number;
+    totalBaseAmount: number;
+    totalSystemFee: number;
+    totalSystemFeeOnly: number;
+    totalRounding: number;
+    totalGatewayFee: number;
+    totalTransactionCost: number;
+    totalCharged: number;
+  }>();
+
+  for (const row of rows) {
+    const currency = row.currency || 'unknown';
+    const current = byCurrency.get(currency) ?? {
+      currency,
+      count: 0,
+      totalBaseAmount: 0,
+      totalSystemFee: 0,
+      totalSystemFeeOnly: 0,
+      totalRounding: 0,
+      totalGatewayFee: 0,
+      totalTransactionCost: 0,
+      totalCharged: 0,
+    };
+    const gatewayFee = Number(row.convenienceFee ?? 0);
+    const systemFeeOnly = Number(row.systemFeeAmount ?? 0);
+    const rounding = Number(row.ceilRoundingAmount ?? 0);
+    const systemFee = systemFeeOnly + rounding;
+
+    current.count += 1;
+    current.totalBaseAmount += Number(row.baseAmount ?? row.amount ?? 0);
+    current.totalSystemFee += systemFee;
+    current.totalSystemFeeOnly += systemFeeOnly;
+    current.totalRounding += rounding;
+    current.totalGatewayFee += gatewayFee;
+    current.totalTransactionCost += gatewayFee + systemFee;
+    current.totalCharged += Number(row.totalAmount ?? row.amount ?? 0);
+    byCurrency.set(currency, current);
+
+    incrementCount(byStatus, row.status);
+    incrementCount(byType, row.type);
+  }
+
+  return { byStatus, byType, byCurrency: Array.from(byCurrency.values()) };
 }
 
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
@@ -1044,10 +1085,12 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
   const statusFilter = req.query.status as string | undefined;
   const countryFilter = req.query.country as string | undefined;
   const gatewayFilter = req.query.gateway as string | undefined;
+  const marketFilter = req.query.market as string | undefined;
   const cycleFilter = req.query.cycle as string | undefined;
   const ministryFilter = req.query.ministry as string | undefined;
   const dateFrom = req.query.dateFrom as string | undefined;
   const dateTo = req.query.dateTo as string | undefined;
+  const marketContext = await getPricingMarketContext();
 
   const where: any = {};
   const adminIdFilters: string[][] = [];
@@ -1077,13 +1120,21 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
     adminIdFilters.push(countryAdmins.map((u: any) => u.id));
   }
 
+  if (marketFilter) {
+    const marketAdmins = await prisma.user.findMany({
+      where: buildUserCountryWhereForMarket(marketFilter, marketContext),
+      select: { id: true },
+    });
+    adminIdFilters.push(marketAdmins.map((u: any) => u.id));
+  }
+
   if (adminIdFilters.length > 0) {
     const [firstIds, ...restIds] = adminIdFilters;
     const matchingIds = firstIds.filter((id: string) => restIds.every(ids => ids.includes(id)));
     where.ministryAdminId = { in: matchingIds };
   }
 
-  const [payments, total, byCurrency, byStatus, byType, byGateway] = await Promise.all([
+  const [payments, total, summaryPayments] = await Promise.all([
     prisma.payment.findMany({
       where,
       include: { package: { select: { name: true, displayName: true } } },
@@ -1092,15 +1143,21 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
       take: limit,
     }),
     prisma.payment.count({ where }),
-    prisma.payment.groupBy({
-      by: ['currency'],
+    prisma.payment.findMany({
       where,
-      _count: { _all: true },
-      _sum: { amount: true, baseAmount: true, convenienceFee: true, systemFeeAmount: true, ceilRoundingAmount: true, totalAmount: true } as any,
+      select: {
+        currency: true,
+        status: true,
+        type: true,
+        gateway: true,
+        amount: true,
+        baseAmount: true,
+        convenienceFee: true,
+        systemFeeAmount: true,
+        ceilRoundingAmount: true,
+        totalAmount: true,
+      } as any,
     }),
-    prisma.payment.groupBy({ by: ['status'], where, _count: { _all: true } }),
-    prisma.payment.groupBy({ by: ['type'], where, _count: { _all: true } }),
-    prisma.payment.groupBy({ by: ['gateway'], where, _count: { _all: true } }),
   ]);
 
   const adminIds = [...new Set(payments.map((p: any) => p.ministryAdminId))];
@@ -1110,34 +1167,26 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
   });
   const adminMap = Object.fromEntries(admins.map((a: any) => [a.id, a]));
 
+  const paymentSummary = summarizePaymentRows(summaryPayments as any[]);
+
   res.json({
     success: true,
-    data: payments.map((p: any) => ({ ...p, ministryAdmin: adminMap[p.ministryAdminId] ?? null })),
+    data: payments.map((p: any) => {
+      const ministryAdmin = adminMap[p.ministryAdminId] ?? null;
+      const pricingMarket = marketContext.resolveMarket(ministryAdmin?.accountCountry ?? null);
+      return {
+        ...p,
+        ministryAdmin,
+        pricingMarket: serializePricingMarket(pricingMarket),
+      };
+    }),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     summary: {
       total,
-      byStatus: Object.fromEntries(byStatus.map((item: any) => [item.status || 'unknown', item._count._all])),
-      byType: Object.fromEntries(byType.map((item: any) => [item.type || 'unknown', item._count._all])),
-      byGateway: Object.fromEntries(byGateway.map((item: any) => [item.gateway || 'unknown', item._count._all])),
-      byCurrency: byCurrency.map((item: any) => {
-        const packageRevenue = item._sum.baseAmount ?? item._sum.amount ?? 0;
-        const gatewayCost = item._sum.convenienceFee ?? 0;
-        const feeOnly = item._sum.systemFeeAmount ?? 0;
-        const rounding = item._sum.ceilRoundingAmount ?? 0;
-        const icimsFee = feeOnly + rounding;
-        return {
-          currency: item.currency,
-          count: item._count._all,
-          totalCollected: item._sum.totalAmount ?? item._sum.amount ?? 0,
-          packageRevenue,
-          gatewayCost,
-          icimsFee,
-          feeOnly,
-          rounding,
-          totalRevenue: packageRevenue + icimsFee,
-          totalPaymentCost: gatewayCost + icimsFee,
-        };
-      }),
+      byStatus: paymentSummary.byStatus,
+      byType: paymentSummary.byType,
+      byGateway: paymentSummary.byGateway,
+      byCurrency: paymentSummary.byCurrency,
     },
   });
 }
@@ -1201,7 +1250,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   });
 
   if (countryFilter) andConditions.push(ministryAdminCountryFilter({ accountCountry: countryFilter }));
-  if (marketFilter) andConditions.push(ministryAdminCountryFilter(buildMarketCountryFilter(marketFilter, marketContext)));
+  if (marketFilter) andConditions.push(ministryAdminCountryFilter(buildUserCountryWhereForMarket(marketFilter, marketContext)));
 
   // Ministry filter — resolve all churchIds belonging to this ministry admin
   if (ministryFilter) {
@@ -1230,7 +1279,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
 
   const where: any = andConditions.length > 0 ? { AND: andConditions } : {};
 
-  const [transactions, total, currencyAggs, statusCounts, typeCounts] = await Promise.all([
+  const [transactions, total, summaryTransactions] = await Promise.all([
     prisma.transaction.findMany({
       where,
       select: {
@@ -1268,14 +1317,20 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
       take: limit,
     }),
     prisma.transaction.count({ where }),
-    prisma.transaction.groupBy({
-      by: ['currency'],
+    prisma.transaction.findMany({
       where,
-      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, ceilRoundingAmount: true, totalAmount: true } as any,
-      _count: { _all: true },
+      select: {
+        currency: true,
+        status: true,
+        type: true,
+        amount: true,
+        baseAmount: true,
+        convenienceFee: true,
+        systemFeeAmount: true,
+        ceilRoundingAmount: true,
+        totalAmount: true,
+      } as any,
     }),
-    prisma.transaction.groupBy({ by: ['status'], where, _count: { _all: true } }),
-    prisma.transaction.groupBy({ by: ['type'], where, _count: { _all: true } }),
   ]);
 
   // Enrich with campaign and event names for display (single batch each)
@@ -1310,36 +1365,12 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
         church: t.church ? church : null,
       }, donationLinesByTx),
       ministryCountry,
-      pricingMarket: pricingMarket ? {
-        id: pricingMarket.id,
-        code: pricingMarket.code,
-        name: pricingMarket.name,
-        currencyCode: pricingMarket.currencyCode,
-      } : null,
+      pricingMarket: serializePricingMarket(pricingMarket),
       eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
     };
   });
 
-  const buildCurrencySummary = (agg: any) => {
-    const currency = agg.currency || 'unknown';
-    const totalBaseAmount = agg._sum?.baseAmount ?? 0;
-    const totalGatewayFee = agg._sum?.convenienceFee ?? 0;
-    const totalSystemFeeOnly = agg._sum?.systemFeeAmount ?? 0;
-    const totalRounding = agg._sum?.ceilRoundingAmount ?? 0;
-    const totalSystemFee = totalSystemFeeOnly + totalRounding;
-    const totalCharged = agg._sum?.totalAmount ?? 0;
-    return {
-      currency,
-      count: agg._count?._all ?? 0,
-      totalBaseAmount,
-      totalSystemFee,
-      totalSystemFeeOnly,
-      totalRounding,
-      totalGatewayFee,
-      totalTransactionCost: totalGatewayFee + totalSystemFee,
-      totalCharged,
-    };
-  };
+  const transactionSummary = summarizeSystemTransactionRows(summaryTransactions as any[]);
 
   res.json({
     success: true,
@@ -1347,9 +1378,9 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     summary: {
       total,
-      byStatus: Object.fromEntries(statusCounts.map((row: any) => [row.status, row._count._all])),
-      byType: Object.fromEntries(typeCounts.map((row: any) => [row.type, row._count._all])),
-      byCurrency: currencyAggs.map(buildCurrencySummary),
+      byStatus: transactionSummary.byStatus,
+      byType: transactionSummary.byType,
+      byCurrency: transactionSummary.byCurrency,
     },
   });
 }
@@ -1411,12 +1442,7 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
       ...tx,
       church: tx.church ? church : null,
       ministryCountry,
-      pricingMarket: pricingMarket ? {
-        id: pricingMarket.id,
-        code: pricingMarket.code,
-        name: pricingMarket.name,
-        currencyCode: pricingMarket.currencyCode,
-      } : null,
+      pricingMarket: serializePricingMarket(pricingMarket),
       campaignName,
       campaignCategory,
       cellName,
