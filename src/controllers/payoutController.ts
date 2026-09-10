@@ -55,7 +55,8 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
     ];
   }
 
-  const [payouts, total, statusGroups, reconciliationGroups, methodGroups, currencyGroups, completedCurrencyGroups, walletBalances] = await Promise.all([
+  const completedWhere = { ...where, status: 'completed' };
+  const [payouts, total, statusGroups, reconciliationGroups, methodGroups, gatewayGroups] = await Promise.all([
     prisma.payout.findMany({
       where,
       include: {
@@ -74,30 +75,20 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
     }),
     prisma.payout.count({ where }),
     prisma.payout.groupBy({ by: ['status'], where, _count: { _all: true } }),
-    prisma.payout.groupBy({ by: ['reconciliationStatus'], where, _count: { _all: true } }),
+    prisma.payout.groupBy({
+      by: ['reconciliationStatus'], where,
+      _count: { _all: true },
+      _sum: { payoutAmount: true },
+    }),
     prisma.payout.groupBy({ by: ['method'], where, _count: { _all: true } }),
     prisma.payout.groupBy({
-      by: ['currency'], where,
+      by: ['currency', 'gateway', 'type'],
+      where: completedWhere,
       _count: { _all: true },
       _sum: {
-        requestedAmount: true, feeAmount: true, gatewayFeeAmount: true,
-        fixedFeeAmount: true, systemFeeAmount: true, totalDebitAmount: true, payoutAmount: true,
+        grossAmount: true, deductionAmount: true, gatewayFeeAmount: true,
+        fixedFeeAmount: true, systemFeeAmount: true, payoutAmount: true,
       },
-    }),
-    prisma.payout.groupBy({
-      by: ['currency'],
-      where: { ...where, status: 'completed' },
-      _count: { _all: true },
-      _sum: { systemFeeAmount: true },
-    }),
-    prisma.wallet.groupBy({
-      by: ['currency'],
-      where: {
-        ...(ministryAdminId ? { church: { ministryAdminId } } : {}),
-        ...(currency ? { currency } : {}),
-      },
-      _sum: { balance: true },
-      _count: { _all: true },
     }),
   ]);
 
@@ -107,8 +98,25 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
     select: { id: true, firstName: true, lastName: true, email: true, phone: true, ministryName: true, accountCountry: true },
   }) : [];
   const userMap = new Map(users.map(item => [item.id, item]));
-  const completedCurrencyMap = new Map(completedCurrencyGroups.map(item => [item.currency, item]));
-
+  const completedByCurrency = new Map<string, {
+    count: number; grossProcessed: number; paidToAccounts: number;
+    providerDeductions: number; gatewayFee: number; bankFixedFee: number; icimsRevenue: number;
+  }>();
+  for (const item of gatewayGroups) {
+    const current = completedByCurrency.get(item.currency) || {
+      count: 0, grossProcessed: 0, paidToAccounts: 0, providerDeductions: 0,
+      gatewayFee: 0, bankFixedFee: 0, icimsRevenue: 0,
+    };
+    const gatewayFee = decimal(item._sum.gatewayFeeAmount);
+    current.count += item._count._all;
+    current.grossProcessed += decimal(item._sum.grossAmount);
+    current.paidToAccounts += decimal(item._sum.payoutAmount);
+    current.providerDeductions += item.gateway === 'paystack' ? decimal(item._sum.deductionAmount) : gatewayFee;
+    current.gatewayFee += gatewayFee;
+    current.bankFixedFee += decimal(item._sum.fixedFeeAmount);
+    current.icimsRevenue += decimal(item._sum.systemFeeAmount);
+    completedByCurrency.set(item.currency, current);
+  }
   res.json({
     success: true,
     data: payouts.map(payout => ({
@@ -120,6 +128,9 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
       requestedAmount: decimal(payout.requestedAmount) || decimal(payout.grossAmount),
       fee: decimal(payout.feeAmount),
       gatewayFeeAmount: decimal(payout.gatewayFeeAmount),
+      providerDeductionAmount: payout.gateway === 'paystack'
+        ? decimal(payout.deductionAmount)
+        : decimal(payout.gatewayFeeAmount),
       gatewayFeeRate: payout.gatewayFeeRate == null ? null : decimal(payout.gatewayFeeRate),
       bankFixedFeeAmount: decimal(payout.fixedFeeAmount),
       systemFeeAmount: decimal(payout.systemFeeAmount),
@@ -151,21 +162,25 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
       total,
       byStatus: Object.fromEntries(statusGroups.map(item => [item.status, item._count._all])),
       byReconciliation: Object.fromEntries(reconciliationGroups.map(item => [item.reconciliationStatus, item._count._all])),
-      byMethod: Object.fromEntries(methodGroups.map(item => [item.method || 'unknown', item._count._all])),
-      byCurrencyCount: Object.fromEntries(currencyGroups.map(item => [item.currency, item._count._all])),
-      walletBalances: walletBalances.map(item => ({ currency: item.currency, balance: item._sum.balance || 0, walletCount: item._count._all })),
-      byCurrency: currencyGroups.map(item => ({
-        currency: item.currency,
+      reconciliation: reconciliationGroups.map(item => ({
+        status: item.reconciliationStatus,
         count: item._count._all,
-        totalRequested: decimal(item._sum.requestedAmount),
-        totalFee: decimal(item._sum.feeAmount),
-        gatewayFee: decimal(item._sum.gatewayFeeAmount),
-        bankFixedFee: decimal(item._sum.fixedFeeAmount),
-        systemFee: decimal(item._sum.systemFeeAmount),
-        netAmount: decimal(item._sum.totalDebitAmount),
         payoutAmount: decimal(item._sum.payoutAmount),
-        completedSystemRevenue: decimal(completedCurrencyMap.get(item.currency)?._sum.systemFeeAmount),
-        completedCount: completedCurrencyMap.get(item.currency)?._count._all || 0,
+      })),
+      byMethod: Object.fromEntries(methodGroups.map(item => [item.method || 'unknown', item._count._all])),
+      byCurrencyCount: Object.fromEntries([...completedByCurrency].map(([currencyCode, item]) => [currencyCode, item.count])),
+      byCurrency: [...completedByCurrency].map(([currencyCode, item]) => ({ currency: currencyCode, ...item })),
+      byGateway: gatewayGroups.map(item => ({
+        currency: item.currency,
+        gateway: item.gateway,
+        payoutType: item.type,
+        count: item._count._all,
+        grossProcessed: decimal(item._sum.grossAmount),
+        paidToAccounts: decimal(item._sum.payoutAmount),
+        providerDeductions: item.gateway === 'paystack'
+          ? decimal(item._sum.deductionAmount)
+          : decimal(item._sum.gatewayFeeAmount),
+        icimsRevenue: decimal(item._sum.systemFeeAmount),
       })),
     },
   });
