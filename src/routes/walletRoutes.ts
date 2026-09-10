@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth';
 import { requireFeature } from '../middleware/packageCheck';
 import {
   getWalletBalance,
+  getWalletFinancialSummary,
   getWalletTransactions,
   getWithdrawalFeePreview,
   sendWithdrawalOtp,
@@ -14,6 +15,7 @@ import {
 const router = Router();
 
 router.get('/balance', authenticate, requireFeature('giving_wallets'), getWalletBalance);
+router.get('/financial-summary', authenticate, requireFeature('giving_wallets'), getWalletFinancialSummary);
 router.get('/transactions', authenticate, requireFeature('giving_wallets'), getWalletTransactions);
 router.get('/withdraw/fees', authenticate, requireFeature('giving_withdrawals'), getWithdrawalFeePreview);
 router.post('/withdraw/otp', authenticate, requireFeature('giving_withdrawals'), sendWithdrawalOtp);

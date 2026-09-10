@@ -476,6 +476,93 @@ export async function sendWithdrawalOtp(req: Request, res: Response): Promise<vo
   });
 }
 
+export async function getWalletFinancialSummary(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId;
+  const churchId = req.user?.churchId;
+  const roleName = req.user?.role ?? 'member';
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const churchIds = roleName === 'ministry_admin'
+    ? (await prisma.church.findMany({ where: { ministryAdminId: userId, status: 'active' }, select: { id: true } })).map(item => item.id)
+    : roleName === 'member'
+      ? (churchId ? [churchId] : [])
+      : await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
+
+  if (!churchIds.length) {
+    res.json({ success: true, data: { currencies: [] } });
+    return;
+  }
+
+  const wallets = await prisma.wallet.findMany({ where: { churchId: { in: churchIds } }, select: { id: true, currency: true, balance: true } });
+  const walletIds = wallets.map(item => item.id);
+  const [ledgerGroups, reservationGroups, payoutGroups, reconciledPayoutGroups] = await Promise.all([
+    prisma.ledgerEntry.groupBy({
+      by: ['currency', 'direction'],
+      where: { walletId: { in: walletIds } },
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    prisma.payoutReservation.groupBy({
+      by: ['currency'],
+      where: { walletId: { in: walletIds }, status: 'active' },
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    prisma.payout.groupBy({
+      by: ['currency'],
+      where: { walletId: { in: walletIds }, status: 'completed' },
+      _sum: { payoutAmount: true },
+      _count: { _all: true },
+    }),
+    prisma.payout.groupBy({
+      by: ['currency'],
+      where: { walletId: { in: walletIds }, status: 'completed', reconciliationStatus: 'matched' },
+      _sum: { payoutAmount: true },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const currencies = [...new Set(wallets.map(item => item.currency))];
+  res.json({
+    success: true,
+    data: {
+      currencies: currencies.map(currency => {
+        const credits = ledgerGroups.find(item => item.currency === currency && item.direction === 'credit');
+        const debits = ledgerGroups.find(item => item.currency === currency && item.direction === 'debit');
+        const reservations = reservationGroups.find(item => item.currency === currency);
+        const payouts = payoutGroups.find(item => item.currency === currency);
+        const reconciledPayouts = reconciledPayoutGroups.find(item => item.currency === currency);
+        const totalCredits = Number(credits?._sum.amount || 0);
+        const totalDebits = Number(debits?._sum.amount || 0);
+        const reserved = Number(reservations?._sum.amount || 0);
+        const postedBalance = Math.round((totalCredits - totalDebits) * 100) / 100;
+        const providerConfirmed = Number(payouts?._sum.payoutAmount || 0);
+        const reconciled = Number(reconciledPayouts?._sum.payoutAmount || 0);
+        const unreconciled = Math.round((providerConfirmed - reconciled) * 100) / 100;
+        const availableBalance = Math.round((postedBalance - reserved) * 100) / 100;
+        return {
+          currency,
+          totalCredits,
+          totalDebits,
+          postedBalance,
+          reservedBalance: reserved,
+          availableBalance,
+          providerConfirmedPayoutAmount: providerConfirmed,
+          reconciledPayoutAmount: reconciled,
+          unreconciledPayoutAmount: unreconciled,
+          effectiveAvailableBalance: Math.round((availableBalance - unreconciled) * 100) / 100,
+          legacyCachedBalance: Math.round(wallets.filter(item => item.currency === currency).reduce((sum, item) => sum + item.balance, 0) * 100) / 100,
+          ledgerEntryCount: (credits?._count._all || 0) + (debits?._count._all || 0),
+          activeReservationCount: reservations?._count._all || 0,
+        };
+      }),
+    },
+  });
+}
+
 export async function requestWithdrawal(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const churchId = req.user?.churchId;

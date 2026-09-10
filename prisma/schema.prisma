@@ -1277,10 +1277,13 @@ model Wallet {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  church       Church              @relation(fields: [churchId], references: [id])
-  transactions WalletTransaction[]
-  withdrawals  Withdrawal[]
-  payouts      Payout[]
+  church             Church                 @relation(fields: [churchId], references: [id])
+  transactions       WalletTransaction[]
+  withdrawals        Withdrawal[]
+  payouts            Payout[]
+  ledgerEntries      LedgerEntry[]
+  payoutReservations PayoutReservation[]
+  balanceSnapshot    WalletBalanceSnapshot?
 
   @@map("wallets")
 }
@@ -1302,6 +1305,66 @@ model WalletTransaction {
   @@index([walletId])
   @@index([createdAt])
   @@map("wallet_transactions")
+}
+
+// Immutable accounting source of truth. Existing wallet_transactions are mirrored
+// here during the staged cutover and can be retired after balance verification.
+model LedgerEntry {
+  id                        String   @id @default(cuid())
+  walletId                  String
+  direction                 String // credit | debit
+  category                  String // giving | ticket | payout | fee | refund | adjustment
+  amount                    Decimal  @db.Decimal(18, 2)
+  currency                  String
+  sourceType                String
+  sourceId                  String?
+  description               String?
+  legacyWalletTransactionId String?  @unique
+  effectiveAt               DateTime @default(now())
+  createdAt                 DateTime @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, effectiveAt])
+  @@index([sourceType, sourceId])
+  @@map("ledger_entries")
+}
+
+model PayoutReservation {
+  id          String    @id @default(cuid())
+  payoutId    String
+  walletId    String
+  amount      Decimal   @db.Decimal(18, 2)
+  currency    String
+  status      String    @default("active") // active | converted | released
+  releasedAt  DateTime?
+  convertedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  payout Payout @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@unique([payoutId, walletId])
+  @@index([walletId, status])
+  @@map("payout_reservations")
+}
+
+// Performance cache only; ledger_entries remains authoritative and this row can
+// always be rebuilt.
+model WalletBalanceSnapshot {
+  id               String   @id @default(cuid())
+  walletId         String   @unique
+  postedBalance    Decimal  @default(0) @db.Decimal(18, 2)
+  reservedBalance  Decimal  @default(0) @db.Decimal(18, 2)
+  availableBalance Decimal  @default(0) @db.Decimal(18, 2)
+  version          Int      @default(0)
+  rebuiltAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@map("wallet_balance_snapshots")
 }
 
 // Generic outgoing-money record. Legacy withdrawal tables remain linked during migration.
@@ -1350,10 +1413,11 @@ model Payout {
   createdAt                  DateTime  @default(now())
   updatedAt                  DateTime  @updatedAt
 
-  wallet      Wallet?            @relation(fields: [walletId], references: [id])
-  church      Church?            @relation(fields: [churchId], references: [id])
-  allocations PayoutAllocation[]
-  events      GatewayEvent[]
+  wallet       Wallet?             @relation(fields: [walletId], references: [id])
+  church       Church?             @relation(fields: [churchId], references: [id])
+  allocations  PayoutAllocation[]
+  events       GatewayEvent[]
+  reservations PayoutReservation[]
 
   @@unique([gateway, providerAccountId, externalPayoutId])
   @@index([churchId, status])
