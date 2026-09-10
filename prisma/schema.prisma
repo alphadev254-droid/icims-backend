@@ -230,6 +230,7 @@ model Church {
   transactions           Transaction[]
   subaccount             Subaccount?
   wallet                 Wallet?
+  payouts                Payout[]
   kpis                   KPI[]
   teams                  Team[]
   reminders              ReminderCache[]
@@ -294,18 +295,20 @@ model ChildGuardian {
 }
 
 model Subaccount {
-  id               String   @id @default(cuid())
-  churchId         String   @unique
-  ministryAdminId  String
-  subaccountCode   String   @unique
-  businessName     String
-  settlementBank   String
-  accountNumber    String
-  percentageCharge Float    @default(0)
-  description      String?  @db.Text
-  active           Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  churchId             String   @unique
+  ministryAdminId      String
+  subaccountCode       String   @unique
+  providerSubaccountId String?
+  businessName         String
+  settlementBank       String
+  accountNumber        String
+  percentageCharge     Float    @default(0)
+  description          String?  @db.Text
+  providerPayload      Json?
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   church        Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
   ministryAdmin User   @relation("SubaccountCreator", fields: [ministryAdminId], references: [id])
@@ -357,17 +360,17 @@ model Event {
 }
 
 model ScheduleRecurrenceRule {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   frequency   String
-  interval    Int      @default(1)
-  daysOfWeek  String?  @db.Text
+  interval    Int       @default(1)
+  daysOfWeek  String?   @db.Text
   dayOfMonth  Int?
   monthOfYear Int?
   startsAt    DateTime
   endsAt      DateTime?
   count       Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([frequency])
   @@index([startsAt])
@@ -376,31 +379,31 @@ model ScheduleRecurrenceRule {
 }
 
 model ScheduledEvent {
-  id               String    @id @default(cuid())
+  id               String                          @id @default(cuid())
   ministryId       String
   churchId         String?
   title            String
-  description      String?   @db.Text
+  description      String?                         @db.Text
   type             String
   sourceModule     String
   sourceId         String?
   startAt          DateTime
   endAt            DateTime
-  timezone         String    @default("UTC")
+  timezone         String                          @default("UTC")
   locationText     String?
-  status           String    @default("scheduled")
-  approvalStatus   String    @default("not_required")
+  status           String                          @default("scheduled")
+  approvalStatus   String                          @default("not_required")
   organizerUserId  String?
   createdById      String?
   recurrenceRuleId String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime                        @default(now())
+  updatedAt        DateTime                        @updatedAt
   occurrences      ScheduledEventOccurrence[]
   notificationLogs ScheduledEventNotificationLog[]
 
+  @@unique([sourceModule, sourceId], map: "scheduled_events_source_key")
   @@index([ministryId, startAt])
   @@index([churchId, startAt])
-  @@unique([sourceModule, sourceId], map: "scheduled_events_source_key")
   @@index([type, status])
   @@index([approvalStatus])
   @@index([organizerUserId])
@@ -409,17 +412,17 @@ model ScheduledEvent {
 }
 
 model ScheduledEventOccurrence {
-  id                    String   @id @default(cuid())
+  id                    String                          @id @default(cuid())
   scheduledEventId      String
   occurrenceStartAt     DateTime
   occurrenceEndAt       DateTime
-  status                String   @default("pending")
+  status                String                          @default("pending")
   generatedSourceModule String?
   generatedSourceId     String?
-  errorMessage          String?  @db.Text
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  scheduledEvent        ScheduledEvent @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  errorMessage          String?                         @db.Text
+  createdAt             DateTime                        @default(now())
+  updatedAt             DateTime                        @updatedAt
+  scheduledEvent        ScheduledEvent                  @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   notificationLogs      ScheduledEventNotificationLog[]
 
   @@unique([scheduledEventId, occurrenceStartAt], map: "scheduled_event_occurrence_key")
@@ -429,19 +432,19 @@ model ScheduledEventOccurrence {
 }
 
 model ScheduledEventNotificationLog {
-  id                       String   @id @default(cuid())
-  scheduledEventId         String
+  id                         String                    @id @default(cuid())
+  scheduledEventId           String
   scheduledEventOccurrenceId String?
-  reminderType             String
-  channel                  String
-  sourceModule             String
-  sourceId                 String?
-  recipientCount           Int      @default(0)
-  scheduledFor             DateTime
-  sentAt                   DateTime @default(now())
-  errorMessage             String?  @db.Text
-  scheduledEvent           ScheduledEvent @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "sched_notif_event_fkey")
-  scheduledEventOccurrence ScheduledEventOccurrence? @relation(fields: [scheduledEventOccurrenceId], references: [id], onDelete: SetNull, onUpdate: Cascade, map: "sched_notif_occ_fkey")
+  reminderType               String
+  channel                    String
+  sourceModule               String
+  sourceId                   String?
+  recipientCount             Int                       @default(0)
+  scheduledFor               DateTime
+  sentAt                     DateTime                  @default(now())
+  errorMessage               String?                   @db.Text
+  scheduledEvent             ScheduledEvent            @relation(fields: [scheduledEventId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "sched_notif_event_fkey")
+  scheduledEventOccurrence   ScheduledEventOccurrence? @relation(fields: [scheduledEventOccurrenceId], references: [id], onDelete: SetNull, onUpdate: Cascade, map: "sched_notif_occ_fkey")
 
   @@unique([scheduledEventId, scheduledFor, reminderType, channel], map: "scheduled_event_notification_once")
   @@index([scheduledEventId, sentAt])
@@ -546,9 +549,10 @@ model Transaction {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  user    User?         @relation(fields: [userId], references: [id])
-  church  Church?       @relation(fields: [churchId], references: [id])
-  tickets EventTicket[]
+  user              User?              @relation(fields: [userId], references: [id])
+  church            Church?            @relation(fields: [churchId], references: [id])
+  tickets           EventTicket[]
+  payoutAllocations PayoutAllocation[]
 
   @@index([userId])
   @@index([churchId])
@@ -971,8 +975,8 @@ model PricingMarket {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  countries     Country[]
-  packagePrices PackageMarketPrice[]
+  countries        Country[]
+  packagePrices    PackageMarketPrice[]
   featureOverrides PackageMarketFeatureOverride[]
 
   @@index([isActive, sortOrder])
@@ -1130,8 +1134,8 @@ model PackageMarketFeatureOverride {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  package       Package       @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  pricingMarket PricingMarket @relation(fields: [pricingMarketId], references: [id], onDelete: Cascade)
+  package       Package        @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  pricingMarket PricingMarket  @relation(fields: [pricingMarketId], references: [id], onDelete: Cascade)
   feature       PackageFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
 
   @@unique([packageId, pricingMarketId, featureId], map: "pkg_market_feat_override_key")
@@ -1276,6 +1280,7 @@ model Wallet {
   church       Church              @relation(fields: [churchId], references: [id])
   transactions WalletTransaction[]
   withdrawals  Withdrawal[]
+  payouts      Payout[]
 
   @@map("wallets")
 }
@@ -1297,6 +1302,101 @@ model WalletTransaction {
   @@index([walletId])
   @@index([createdAt])
   @@map("wallet_transactions")
+}
+
+// Generic outgoing-money record. Legacy withdrawal tables remain linked during migration.
+model Payout {
+  id                         String    @id @default(cuid())
+  walletId                   String?
+  churchId                   String?
+  ministryAdminId            String?
+  initiatedBy                String?
+  scope                      String    @default("ministry") // ministry | platform
+  type                       String // manual_withdrawal | automatic_settlement
+  gateway                    String
+  status                     String    @default("pending") // pending | processing | completed | failed | reversed
+  method                     String?
+  externalPayoutId           String?
+  externalReference          String?
+  providerAccountId          String?
+  currency                   String
+  grossAmount                Decimal   @default(0) @db.Decimal(18, 2)
+  feeAmount                  Decimal   @default(0) @db.Decimal(18, 2)
+  deductionAmount            Decimal   @default(0) @db.Decimal(18, 2)
+  netAmount                  Decimal   @default(0) @db.Decimal(18, 2)
+  destinationType            String?
+  destinationBank            String?
+  destinationAccount         String?
+  destinationAccountName     String?
+  reconciliationStatus       String    @default("pending")
+  reconciliationDifference   Decimal?  @db.Decimal(18, 2)
+  failureReason              String?   @db.Text
+  providerPayload            Json?
+  providerResponse           Json?
+  settlementDate             DateTime?
+  initiatedAt                DateTime?
+  processedAt                DateTime?
+  ledgerPostedAt             DateTime?
+  legacyWithdrawalId         String?   @unique
+  legacyPlatformWithdrawalId String?   @unique
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  wallet      Wallet?            @relation(fields: [walletId], references: [id])
+  church      Church?            @relation(fields: [churchId], references: [id])
+  allocations PayoutAllocation[]
+  events      GatewayEvent[]
+
+  @@unique([gateway, providerAccountId, externalPayoutId])
+  @@index([churchId, status])
+  @@index([walletId, createdAt])
+  @@index([gateway, status])
+  @@map("payouts")
+}
+
+model PayoutAllocation {
+  id                    String   @id @default(cuid())
+  payoutId              String
+  transactionId         String
+  providerTransactionId String?
+  providerGrossAmount   Decimal  @default(0) @db.Decimal(18, 2)
+  expectedAmount        Decimal  @default(0) @db.Decimal(18, 2)
+  settledAmount         Decimal? @db.Decimal(18, 2)
+  reconciliationStatus  String   @default("pending")
+  providerPayload       Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  payout      Payout      @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+
+  @@unique([payoutId, transactionId])
+  @@index([transactionId])
+  @@index([providerTransactionId])
+  @@map("payout_allocations")
+}
+
+model GatewayEvent {
+  id                String    @id @default(cuid())
+  payoutId          String?
+  gateway           String
+  resourceType      String
+  eventType         String
+  externalId        String?
+  externalReference String?
+  eventKey          String    @unique
+  payloadHash       String
+  payload           Json
+  receivedAt        DateTime  @default(now())
+  processedAt       DateTime?
+  processingError   String?   @db.Text
+
+  payout Payout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([gateway, externalId])
+  @@index([externalReference])
+  @@index([payoutId, receivedAt])
+  @@map("gateway_events")
 }
 
 model Withdrawal {
@@ -1681,15 +1781,15 @@ model CellMember {
 }
 
 model CellMeeting {
-  id        String   @id @default(cuid())
-  cellId    String
-  date      DateTime
-  time      String?
-  topic     String?
-  notes     String?  @db.Text
+  id               String   @id @default(cuid())
+  cellId           String
+  date             DateTime
+  time             String?
+  topic            String?
+  notes            String?  @db.Text
   recurrenceRuleId String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   cell       Cell             @relation(fields: [cellId], references: [id], onDelete: Cascade)
   attendance CellAttendance[]

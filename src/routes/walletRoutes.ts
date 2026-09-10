@@ -18,7 +18,9 @@ router.get('/transactions', authenticate, requireFeature('giving_wallets'), getW
 router.get('/withdraw/fees', authenticate, requireFeature('giving_withdrawals'), getWithdrawalFeePreview);
 router.post('/withdraw/otp', authenticate, requireFeature('giving_withdrawals'), sendWithdrawalOtp);
 router.post('/withdraw', authenticate, requireFeature('giving_withdrawals'), requestWithdrawal);
-router.get('/withdrawals', authenticate, requireFeature('giving_withdrawals'), getWithdrawals);
+// Payout history is cross-gateway; the controller still enforces withdrawals:read.
+router.get('/withdrawals', authenticate, getWithdrawals);
+router.get('/payouts', authenticate, getWithdrawals);
 router.get('/supported-banks', authenticate, requireFeature('giving_withdrawals'), getSupportedBanks);
 
 export default router;

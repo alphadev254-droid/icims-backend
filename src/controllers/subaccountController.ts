@@ -97,7 +97,8 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
       }
     );
 
-    const { subaccount_code } = response.data.data;
+    const providerSubaccount = response.data.data;
+    const { subaccount_code } = providerSubaccount;
 
     // Save to database
     const subaccount = await prisma.subaccount.create({
@@ -105,11 +106,13 @@ export async function createSubaccount(req: Request, res: Response): Promise<voi
         churchId,
         ministryAdminId,
         subaccountCode: subaccount_code,
+        providerSubaccountId: providerSubaccount.id ? String(providerSubaccount.id) : null,
         businessName,
         settlementBank,
         accountNumber,
         percentageCharge: finalPercentageCharge,
         description,
+        providerPayload: providerSubaccount,
       },
     });
 
@@ -169,7 +172,7 @@ export async function updateSubaccount(req: Request, res: Response): Promise<voi
     if (parsed.data.percentageCharge !== undefined) paystackData.percentage_charge = parsed.data.percentageCharge;
     if (parsed.data.active !== undefined) paystackData.active = parsed.data.active;
 
-    await axios.put(
+    const response = await axios.put(
       `${PAYSTACK_BASE_URL}/subaccount/${subaccount.subaccountCode}`,
       paystackData,
       {
@@ -183,7 +186,11 @@ export async function updateSubaccount(req: Request, res: Response): Promise<voi
     // Update in database
     const updated = await prisma.subaccount.update({
       where: { id: subaccountId },
-      data: parsed.data,
+      data: {
+        ...parsed.data,
+        providerSubaccountId: response.data?.data?.id ? String(response.data.data.id) : subaccount.providerSubaccountId,
+        providerPayload: response.data?.data || subaccount.providerPayload,
+      },
     });
 
     res.json({ success: true, data: updated });

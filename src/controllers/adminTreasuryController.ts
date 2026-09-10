@@ -7,6 +7,7 @@ import prisma from '../lib/prisma';
 import { queueEmail } from '../lib/emailQueue';
 import { withdrawalOtpTemplate } from '../lib/emailTemplates';
 import { refundWithdrawal } from '../utils/walletOperations';
+import { syncLegacyPlatformWithdrawal } from '../services/legacyPayoutService';
 import { optionalDigitsOnlySchema, optionalPhoneSchema } from '../lib/inputValidation';
 import {
   buildUserCountryWhereForMarket,
@@ -710,15 +711,18 @@ export async function requestAdminTreasuryWithdrawal(req: Request, res: Response
       status: 'pending',
     },
   });
+  await syncLegacyPlatformWithdrawal(withdrawal.id).catch(error => console.error('Failed to sync platform payout:', error));
   try {
     await processPlatformPayout(withdrawal);
     const updated = await (prisma as any).platformWithdrawal.findUnique({ where: { id: withdrawal.id } });
+    await syncLegacyPlatformWithdrawal(withdrawal.id).catch(error => console.error('Failed to sync platform payout:', error));
     res.json({ success: true, data: updated });
   } catch (error: any) {
     await (prisma as any).platformWithdrawal.update({
       where: { id: withdrawal.id },
       data: { status: 'failed', failureReason: String(error.response?.data?.message || error.message || 'Payout failed').substring(0, 500), gatewayResponse: JSON.stringify({ error: error.response?.data || error.message }) },
     });
+    await syncLegacyPlatformWithdrawal(withdrawal.id).catch(syncError => console.error('Failed to sync platform payout:', syncError));
     res.status(500).json({ success: false, message: error.response?.data?.message || error.message || 'Platform withdrawal failed' });
   }
 }

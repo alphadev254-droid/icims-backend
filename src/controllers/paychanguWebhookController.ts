@@ -8,6 +8,7 @@ import { packageSubscriptionTemplate, ticketPurchaseTemplate, withdrawalFinalSta
 import { generateTicketPDF } from '../lib/ticketPDF';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { refundWithdrawal } from '../utils/walletOperations';
+import { syncLegacyMinistryWithdrawal, syncLegacyPlatformWithdrawal } from '../services/legacyPayoutService';
 import { queuePaymentProcessing } from '../lib/paymentQueue';
 import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
@@ -141,6 +142,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
               }),
             },
           });
+          await syncLegacyPlatformWithdrawal(platformWithdrawalId);
           recordWithdrawalEvent(platformWithdrawal.method, 'completed', 'platform');
         } else if (status !== 'success' && platformWithdrawal.status !== 'failed') {
           await (prisma as any).platformWithdrawal.update({
@@ -154,6 +156,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
               }),
             },
           });
+          await syncLegacyPlatformWithdrawal(platformWithdrawalId);
           recordWithdrawalEvent(platformWithdrawal.method, 'failed', 'platform');
         }
         return;
@@ -181,6 +184,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
             }),
           },
         });
+        await syncLegacyMinistryWithdrawal(withdrawalId);
         recordWithdrawalEvent(withdrawal.method, 'completed', 'ministry');
 
         if (withdrawal.initiatedBy) {
@@ -218,6 +222,7 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
             }),
           },
         });
+        await syncLegacyMinistryWithdrawal(withdrawalId);
         recordWithdrawalEvent(withdrawal.method, 'failed', 'ministry');
       }
       return;

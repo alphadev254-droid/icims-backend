@@ -6,6 +6,7 @@ import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { calculateWithdrawalFee } from '../utils/feeCalculations';
 import { debitWalletsForWithdrawal, refundWithdrawal } from '../utils/walletOperations';
+import { syncLegacyMinistryWithdrawal } from '../services/legacyPayoutService';
 import axios from 'axios';
 import { queueEmail } from '../lib/emailQueue';
 import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate, withdrawalOtpTemplate } from '../lib/emailTemplates';
@@ -191,8 +192,9 @@ export async function getWalletTransactions(req: Request, res: Response): Promis
 
   const walletIds = await prisma.wallet.findMany({
     where: { churchId: { in: churchIds } },
-    select: { id: true }
+    select: { id: true, currency: true }
   });
+  const walletCurrencyById = new Map(walletIds.map(wallet => [wallet.id, wallet.currency]));
 
   const skip = (Number(page) - 1) * Number(limit);
 
@@ -709,6 +711,9 @@ export async function requestWithdrawal(req: Request, res: Response): Promise<vo
   }
 
   console.log('Wallet debited successfully:', walletDebits);
+  await syncLegacyMinistryWithdrawal(withdrawal.id).catch(syncError => {
+    console.error('Failed to sync pending legacy withdrawal to payout:', syncError);
+  });
 
   recordWithdrawalEvent(method, 'requested', 'ministry', {
     requestId: req.requestId,
@@ -798,6 +803,9 @@ if (user?.email) {
     const updatedWithdrawal = await prisma.withdrawal.findUnique({
       where: { id: withdrawal.id }
     });
+    await syncLegacyMinistryWithdrawal(withdrawal.id).catch(syncError => {
+      console.error('Failed to sync processed legacy withdrawal to payout:', syncError);
+    });
 
     res.json({
       success: true,
@@ -816,6 +824,9 @@ if (user?.email) {
       }
     });
   } catch (error: any) {
+    await syncLegacyMinistryWithdrawal(withdrawal.id).catch(syncError => {
+      console.error('Failed to sync legacy withdrawal to payout:', syncError);
+    });
     res.status(400).json({
       success: false,
       message: error.message || 'Withdrawal processing failed'
@@ -874,8 +885,9 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
 
   const walletIds = await prisma.wallet.findMany({
     where: { churchId: { in: churchIds } },
-    select: { id: true }
+    select: { id: true, currency: true }
   });
+  const walletCurrencyById = new Map(walletIds.map(wallet => [wallet.id, wallet.currency]));
 
   const skip = (Number(page) - 1) * Number(limit);
 
@@ -890,25 +902,73 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
     dateFilter.lte = endDateTime;
   }
 
-  const [withdrawals, total] = await Promise.all([
+  const payoutWhere: any = {
+    churchId: { in: churchIds },
+    legacyWithdrawalId: null,
+    scope: 'ministry',
+    ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+  };
+  const fetchLimit = skip + Number(limit);
+  const [withdrawals, legacyTotal, payouts, payoutTotal] = await Promise.all([
     prisma.withdrawal.findMany({
       where: {
         walletId: { in: walletIds.map(w => w.id) },
         ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
       },
       orderBy: { createdAt: 'desc' },
-      skip,
-      take: Number(limit)
+      take: fetchLimit
     }),
     prisma.withdrawal.count({
       where: {
         walletId: { in: walletIds.map(w => w.id) },
         ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
       }
-    })
+    }),
+    prisma.payout.findMany({
+      where: payoutWhere,
+      include: { allocations: { select: { transactionId: true, expectedAmount: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: fetchLimit,
+    }),
+    prisma.payout.count({ where: payoutWhere }),
   ]);
 
-  res.json({ success: true, data: withdrawals, total });
+  const normalizedPayouts = payouts.map(payout => ({
+    id: payout.id,
+    walletId: payout.walletId,
+    ministryAdminId: payout.ministryAdminId,
+    initiatedBy: payout.initiatedBy,
+    amount: Number(payout.grossAmount),
+    fee: Number(payout.feeAmount),
+    netAmount: Number(payout.netAmount),
+    payoutAmount: Number(payout.netAmount),
+    method: payout.method || 'gateway_settlement',
+    status: payout.status,
+    bankCode: payout.destinationBank,
+    accountName: payout.destinationAccountName,
+    accountNumber: payout.destinationAccount,
+    chargeId: payout.externalReference,
+    processedAt: payout.processedAt,
+    createdAt: payout.createdAt,
+    updatedAt: payout.updatedAt,
+    currency: payout.currency,
+    gateway: payout.gateway,
+    payoutType: payout.type,
+    reconciliationStatus: payout.reconciliationStatus,
+    allocations: payout.allocations.map(item => ({ ...item, expectedAmount: Number(item.expectedAmount) })),
+    recordSource: 'payout',
+  }));
+  const normalizedLegacy = withdrawals.map(withdrawal => ({
+    ...withdrawal,
+    currency: walletCurrencyById.get(withdrawal.walletId),
+    gateway: 'paychangu',
+    payoutType: 'manual_withdrawal',
+    recordSource: 'legacy_withdrawal',
+  }));
+  const combined = [...normalizedLegacy, ...normalizedPayouts]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(skip, skip + Number(limit));
+  res.json({ success: true, data: combined, total: legacyTotal + payoutTotal });
 }
 
 export async function getSupportedBanks(req: Request, res: Response): Promise<void> {

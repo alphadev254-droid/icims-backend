@@ -10,6 +10,7 @@ import { startSubscriptionCron, startKPICron, startWithdrawalReviewCron } from '
 import { startEventStatusWorker } from './workers/eventStatusWorker';
 import { startScheduledEventWorker } from './workers/scheduledEventWorker';
 import { startPaymentReconciliationWorker } from './workers/paymentReconciliationWorker';
+import { startSettlementReconciliationWorker } from './workers/settlementReconciliationWorker';
 
 const PORT = process.env.PORT || 5000;
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
@@ -43,6 +44,7 @@ async function main() {
   startEventStatusWorker();
   startScheduledEventWorker();
   startPaymentReconciliationWorker();
+  startSettlementReconciliationWorker();
   startWithdrawalReviewCron();
   console.log('⏰ Cron jobs initialized');
 
