@@ -11,7 +11,20 @@ function roundMoney(value: number): number {
 }
 
 async function ensurePaystackProviderAccount(subaccount: any) {
-  if (subaccount.providerSubaccountId) return subaccount;
+  if (subaccount.providerSubaccountId) {
+    logger.info('paystack_subaccount_provider_id_available', {
+      subaccountId: subaccount.id,
+      ministryAdminId: subaccount.ministryAdminId,
+      churchId: subaccount.churchId,
+      providerSubaccountId: subaccount.providerSubaccountId,
+    });
+    return subaccount;
+  }
+  logger.info('paystack_subaccount_provider_id_lookup_started', {
+    subaccountId: subaccount.id,
+    ministryAdminId: subaccount.ministryAdminId,
+    churchId: subaccount.churchId,
+  });
   const provider = await paystackPayoutProvider.fetchAccount(subaccount.subaccountCode);
   if (!provider?.id) throw new Error(`Paystack subaccount ${subaccount.subaccountCode} has no provider ID`);
   return prisma.subaccount.update({
@@ -69,6 +82,14 @@ async function postCompletedPayoutToWallet(payoutId: string, walletId: string, a
 }
 
 async function reconcilePaystackSettlement(subaccount: any, settlement: ProviderPayout) {
+  logger.info('paystack_settlement_reconciliation_started', {
+    subaccountId: subaccount.id,
+    ministryAdminId: subaccount.ministryAdminId,
+    churchId: subaccount.churchId,
+    externalPayoutId: settlement.externalId,
+    providerStatus: settlement.status,
+    currency: settlement.currency,
+  });
   const providerTransactions = await paystackPayoutProvider.listPayoutTransactions(settlement.externalId);
   const references = providerTransactions.map(item => item.reference).filter(Boolean);
   const localTransactions = references.length ? await prisma.transaction.findMany({
@@ -91,6 +112,20 @@ async function reconcilePaystackSettlement(subaccount: any, settlement: Provider
     && localTransactions.every(item => item.currency.toUpperCase() === settlement.currency);
   const totalsMatch = Math.abs(difference) <= RECONCILIATION_TOLERANCE;
   const reconciliationStatus = allMatched && currencyMatches && totalsMatch ? 'matched' : 'needs_review';
+  logger.info('paystack_settlement_matching_calculated', {
+    subaccountId: subaccount.id,
+    ministryAdminId: subaccount.ministryAdminId,
+    externalPayoutId: settlement.externalId,
+    providerTransactionCount: providerTransactions.length,
+    matchedTransactionCount: matched.length,
+    expectedAmount,
+    providerNetAmount: settlement.netAmount,
+    difference,
+    allMatched,
+    currencyMatches,
+    totalsMatch,
+    reconciliationStatus,
+  });
 
   const payout = await prisma.payout.upsert({
     where: {
@@ -213,9 +248,25 @@ async function reconcilePaystackSettlement(subaccount: any, settlement: Provider
     });
     const walletAmount = roundMoney(Number(credited._sum.amount || 0));
     if (walletAmount > 0) {
-      await postCompletedPayoutToWallet(payout.id, subaccount.church.wallet.id, walletAmount);
+      const ledgerResult = await postCompletedPayoutToWallet(payout.id, subaccount.church.wallet.id, walletAmount);
+      logger.info('paystack_settlement_wallet_posting_finished', {
+        payoutId: payout.id,
+        externalPayoutId: settlement.externalId,
+        walletId: subaccount.church.wallet.id,
+        walletAmount,
+        ...ledgerResult,
+      });
     }
   }
+
+  logger.info('paystack_settlement_reconciliation_finished', {
+    payoutId: payout.id,
+    subaccountId: subaccount.id,
+    ministryAdminId: subaccount.ministryAdminId,
+    externalPayoutId: settlement.externalId,
+    payoutStatus: payout.status,
+    reconciliationStatus,
+  });
 
   return payout;
 }
@@ -230,8 +281,16 @@ export async function reconcilePaystackSettlements(options: { from?: Date; to?: 
     },
     include: { church: { include: { wallet: true } } },
   });
+  logger.info('paystack_settlement_batch_started', {
+    ministryAdminId: options.ministryAdminId,
+    from,
+    to,
+    subaccountsFound: subaccounts.length,
+    subaccountIds: subaccounts.map(item => item.id),
+  });
   let processed = 0;
   let failed = 0;
+  let subaccountsSucceeded = 0;
 
   for (const original of subaccounts) {
     try {
@@ -240,10 +299,20 @@ export async function reconcilePaystackSettlements(options: { from?: Date; to?: 
       const settlements = await paystackPayoutProvider.listPayouts({
         providerAccountId: hydrated.providerSubaccountId!, from, to,
       });
+      logger.info('paystack_subaccount_settlements_fetched', {
+        ministryAdminId: original.ministryAdminId,
+        subaccountId: original.id,
+        churchId: original.churchId,
+        providerSubaccountId: hydrated.providerSubaccountId,
+        settlementCount: settlements.length,
+        from,
+        to,
+      });
       for (const settlement of settlements) {
         await reconcilePaystackSettlement(hydrated, settlement);
         processed += 1;
       }
+      subaccountsSucceeded += 1;
     } catch (error: any) {
       failed += 1;
       logger.error('paystack_settlement_reconciliation_failed', {
@@ -253,5 +322,10 @@ export async function reconcilePaystackSettlements(options: { from?: Date; to?: 
       });
     }
   }
-  return { processed, failed, from, to };
+  const result = { processed, failed, subaccountsFound: subaccounts.length, subaccountsSucceeded, from, to };
+  logger.info('paystack_settlement_batch_finished', {
+    ministryAdminId: options.ministryAdminId,
+    ...result,
+  });
+  return result;
 }
