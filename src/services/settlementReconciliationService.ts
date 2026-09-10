@@ -277,16 +277,22 @@ export async function reconcilePaystackSettlements(options: { from?: Date; to?: 
   const subaccounts = await prisma.subaccount.findMany({
     where: {
       active: true,
-      ...(options.ministryAdminId ? { ministryAdminId: options.ministryAdminId } : {}),
+      ...(options.ministryAdminId ? {
+        church: { ministryAdminId: options.ministryAdminId },
+      } : {}),
     },
     include: { church: { include: { wallet: true } } },
   });
   logger.info('paystack_settlement_batch_started', {
     ministryAdminId: options.ministryAdminId,
-    from,
-    to,
+    from: from.toISOString(),
+    to: to.toISOString(),
     subaccountsFound: subaccounts.length,
-    subaccountIds: subaccounts.map(item => item.id),
+    churchSubaccounts: subaccounts.map(item => ({
+      churchId: item.churchId,
+      subaccountId: item.id,
+      churchMinistryAdminId: item.church.ministryAdminId,
+    })),
   });
   let processed = 0;
   let failed = 0;
@@ -305,8 +311,8 @@ export async function reconcilePaystackSettlements(options: { from?: Date; to?: 
         churchId: original.churchId,
         providerSubaccountId: hydrated.providerSubaccountId,
         settlementCount: settlements.length,
-        from,
-        to,
+        from: from.toISOString(),
+        to: to.toISOString(),
       });
       for (const settlement of settlements) {
         await reconcilePaystackSettlement(hydrated, settlement);
@@ -322,7 +328,14 @@ export async function reconcilePaystackSettlements(options: { from?: Date; to?: 
       });
     }
   }
-  const result = { processed, failed, subaccountsFound: subaccounts.length, subaccountsSucceeded, from, to };
+  const result = {
+    processed,
+    failed,
+    subaccountsFound: subaccounts.length,
+    subaccountsSucceeded,
+    from: from.toISOString(),
+    to: to.toISOString(),
+  };
   logger.info('paystack_settlement_batch_finished', {
     ministryAdminId: options.ministryAdminId,
     ...result,
