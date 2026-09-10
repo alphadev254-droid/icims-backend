@@ -1,10 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
-import {
-  findPackageMarketPriceWithFallback,
-  resolvePricingMarket,
-} from '../utils/pricingMarkets';
+import { resolvePackageBillingPrice } from '../utils/pricingMarkets';
 import {
   buildUserCountryWhereForMarket,
   getPricingMarketContext,
@@ -30,27 +27,6 @@ import {
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
 const currencySchema = z.enum(['USD', 'KES', 'MWK']);
-
-async function defaultPackagePricing(pkg: any, billingCycle: string, country?: string | null) {
-  if (pkg.isPrivate) {
-    return {
-      amount: Number(billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly),
-      currency: pkg.currencyCode || 'KES',
-    };
-  }
-
-  const market = await resolvePricingMarket(country);
-  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
-  const marketPrice = findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
-  if (marketPrice) {
-    return {
-      amount: Number(billingCycle === 'yearly' ? marketPrice.priceYearly : marketPrice.priceMonthly),
-      currency: marketPrice.currencyCode || market.currencyCode,
-    };
-  }
-
-  throw new Error('Package pricing is not configured for this country or the General market.');
-}
 
 function parseDate(value: string, field: string) {
   const date = new Date(value);
@@ -283,7 +259,7 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
   const dueDate = parseDate(parsed.data.dueDate, 'dueDate');
   let defaultPricing: { amount: number; currency: string };
   try {
-    defaultPricing = await defaultPackagePricing(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry);
+    defaultPricing = await resolvePackageBillingPrice(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry);
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message || 'Package pricing is not configured' });
     return;

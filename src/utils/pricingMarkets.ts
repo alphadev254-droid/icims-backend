@@ -247,6 +247,45 @@ export function packagePaymentAmountForDuration(
   return monthlyAmount * durationMonths;
 }
 
+export async function resolvePackageBillingPrice(
+  pkg: {
+    isPrivate?: boolean | null;
+    priceMonthly?: number | null;
+    priceYearly?: number | null;
+    currencyCode?: string | null;
+    marketPrices?: any[] | null;
+  },
+  billingCycle: 'monthly' | 'yearly',
+  accountCountry?: string | null
+) {
+  const market = await resolvePricingMarket(accountCountry);
+
+  if (pkg.isPrivate) {
+    const amount = Number(billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly);
+    return {
+      amount,
+      currency: pkg.currencyCode || market.currencyCode,
+      pricingMarket: market,
+      marketPrice: null,
+      source: 'private_package' as const,
+    };
+  }
+
+  const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
+  const marketPrice = findPackageMarketPriceWithFallback(pkg, market.id, generalMarket.id);
+  if (!marketPrice) {
+    throw new Error('Package pricing is not configured for this country or the General market.');
+  }
+
+  return {
+    amount: Number(billingCycle === 'yearly' ? marketPrice.priceYearly : marketPrice.priceMonthly),
+    currency: marketPrice.currencyCode || market.currencyCode,
+    pricingMarket: market,
+    marketPrice,
+    source: 'market_price' as const,
+  };
+}
+
 export async function getUserPackageAccountCountry(userId?: string | null, role?: string | null): Promise<string | null> {
   if (!userId) return null;
 

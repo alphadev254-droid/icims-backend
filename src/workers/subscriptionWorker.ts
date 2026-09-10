@@ -4,7 +4,7 @@ import { packageInvoiceTemplate } from '../lib/emailTemplates';
 import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
 import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
 import { addBillingCycle, ensureInvoicePublicToken, generateInvoiceNumber, generateInvoicePublicToken } from '../services/packageInvoiceService';
-import { convertUSDToLocal } from '../utils/currencyConversion';
+import { resolvePackageBillingPrice } from '../utils/pricingMarkets';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
 const INVOICE_REMINDER_DAYS = (process.env.INVOICE_REMINDER_DAYS || '7,3,1')
@@ -63,7 +63,7 @@ export async function checkExpiringSubscriptions() {
         ]
       },
       include: {
-        package: true,
+        package: { include: { marketPrices: true } },
       },
     });
 
@@ -143,10 +143,12 @@ async function ensureRenewalInvoice(subscription: any, reminderDay: number, phas
     return;
   }
 
-  const currency = user.accountCountry === 'Malawi' ? 'MWK' : 'KES';
-  const discount = parseFloat(process.env[user.accountCountry === 'Malawi' ? 'MALAWI_PACKAGE_DISCOUNT' : 'KENYA_PACKAGE_DISCOUNT'] || (user.accountCountry === 'Malawi' ? '0.5' : '1'));
-  const usdAmount = billingCycle === 'yearly' ? pkg.priceYearly : pkg.priceMonthly;
-  const amount = Math.round(convertUSDToLocal(usdAmount, currency as 'MWK' | 'KES') * discount);
+  const pricing = await resolvePackageBillingPrice(pkg, billingCycle, user.accountCountry);
+  const amount = Math.round(pricing.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(`Package pricing is not configured for subscription ${subscription.id}`);
+  }
+  const currency = pricing.currency;
 
   const invoice = await prisma.packageInvoice.create({
     data: {
