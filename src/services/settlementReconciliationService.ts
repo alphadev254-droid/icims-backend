@@ -115,6 +115,12 @@ async function reconcilePaystackSettlement(subaccount: any, settlement: Provider
       currency: settlement.currency,
       grossAmount: settlement.grossAmount,
       feeAmount: settlement.feeAmount,
+      requestedAmount: settlement.grossAmount,
+      gatewayFeeAmount: settlement.feeAmount,
+      fixedFeeAmount: 0,
+      systemFeeAmount: 0,
+      totalDebitAmount: settlement.grossAmount,
+      payoutAmount: settlement.netAmount,
       deductionAmount: settlement.deductionAmount,
       netAmount: settlement.netAmount,
       destinationType: 'bank',
@@ -131,6 +137,12 @@ async function reconcilePaystackSettlement(subaccount: any, settlement: Provider
       status: settlement.status,
       grossAmount: settlement.grossAmount,
       feeAmount: settlement.feeAmount,
+      requestedAmount: settlement.grossAmount,
+      gatewayFeeAmount: settlement.feeAmount,
+      fixedFeeAmount: 0,
+      systemFeeAmount: 0,
+      totalDebitAmount: settlement.grossAmount,
+      payoutAmount: settlement.netAmount,
       deductionAmount: settlement.deductionAmount,
       netAmount: settlement.netAmount,
       reconciliationStatus,
@@ -208,11 +220,14 @@ async function reconcilePaystackSettlement(subaccount: any, settlement: Provider
   return payout;
 }
 
-export async function reconcilePaystackSettlements(options: { from?: Date; to?: Date } = {}) {
+export async function reconcilePaystackSettlements(options: { from?: Date; to?: Date; ministryAdminId?: string } = {}) {
   const to = options.to || new Date();
   const from = options.from || new Date(to.getTime() - 14 * 24 * 60 * 60 * 1000);
   const subaccounts = await prisma.subaccount.findMany({
-    where: { active: true },
+    where: {
+      active: true,
+      ...(options.ministryAdminId ? { ministryAdminId: options.ministryAdminId } : {}),
+    },
     include: { church: { include: { wallet: true } } },
   });
   let processed = 0;

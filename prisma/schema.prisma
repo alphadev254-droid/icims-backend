@@ -1322,6 +1322,14 @@ model Payout {
   currency                   String
   grossAmount                Decimal   @default(0) @db.Decimal(18, 2)
   feeAmount                  Decimal   @default(0) @db.Decimal(18, 2)
+  requestedAmount            Decimal   @default(0) @db.Decimal(18, 2)
+  gatewayFeeAmount           Decimal   @default(0) @db.Decimal(18, 2)
+  gatewayFeeRate             Decimal?  @db.Decimal(10, 6)
+  fixedFeeAmount             Decimal   @default(0) @db.Decimal(18, 2)
+  systemFeeAmount            Decimal   @default(0) @db.Decimal(18, 2)
+  systemFeeRate              Decimal?  @db.Decimal(10, 6)
+  totalDebitAmount           Decimal   @default(0) @db.Decimal(18, 2)
+  payoutAmount               Decimal   @default(0) @db.Decimal(18, 2)
   deductionAmount            Decimal   @default(0) @db.Decimal(18, 2)
   netAmount                  Decimal   @default(0) @db.Decimal(18, 2)
   destinationType            String?
