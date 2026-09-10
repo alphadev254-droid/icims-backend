@@ -8,6 +8,11 @@ import { queueEmail } from '../lib/emailQueue';
 import { withdrawalOtpTemplate } from '../lib/emailTemplates';
 import { refundWithdrawal } from '../utils/walletOperations';
 import { optionalDigitsOnlySchema, optionalPhoneSchema } from '../lib/inputValidation';
+import {
+  buildUserCountryWhereForMarket,
+  getPricingMarketContext,
+  serializePricingMarket,
+} from '../utils/adminPricingMarketContext';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 const OTP_EXPIRY_MINUTES = Number(process.env.WITHDRAWAL_OTP_EXPIRY_MINUTES || 5);
@@ -378,6 +383,13 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
     const ministryId = typeof req.query.ministry === 'string' && req.query.ministry !== 'all'
       ? req.query.ministry
       : undefined;
+    const country = typeof req.query.country === 'string' && req.query.country !== 'all'
+      ? req.query.country
+      : undefined;
+    const market = typeof req.query.market === 'string' && req.query.market !== 'all'
+      ? req.query.market
+      : undefined;
+    const marketContext = await getPricingMarketContext();
     const ministryAdminRole = await prisma.role.findUnique({
       where: { name: 'ministry_admin' },
       select: { id: true },
@@ -388,42 +400,46 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
       return;
     }
 
-    const [ministries, wallets] = await Promise.all([
-      prisma.user.findMany({
-        where: {
-          roleId: ministryAdminRole.id,
-          ...(ministryId ? { id: ministryId } : {}),
-        },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-          ministryName: true,
-          accountCountry: true,
-          ownedChurches: { select: { name: true }, take: 1 },
-        },
-        orderBy: [{ ministryName: 'asc' }, { firstName: 'asc' }],
-      }),
-      prisma.wallet.findMany({
-        where: ministryId ? { ministryAdminId: ministryId } : {},
-        select: {
-          id: true,
-          balance: true,
-          currency: true,
-          ministryAdminId: true,
-          updatedAt: true,
-          church: {
-            select: {
-              id: true,
-              name: true,
-              status: true,
-            },
+    const ministryWhere: any = { roleId: ministryAdminRole.id };
+    const ministryAnd: any[] = [];
+    if (ministryId) ministryAnd.push({ id: ministryId });
+    if (country) ministryAnd.push({ accountCountry: country });
+    if (market) ministryAnd.push(buildUserCountryWhereForMarket(market, marketContext));
+    if (ministryAnd.length > 0) ministryWhere.AND = ministryAnd;
+
+    const ministries = await prisma.user.findMany({
+      where: ministryWhere,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        ministryName: true,
+        accountCountry: true,
+        ownedChurches: { select: { name: true }, take: 1 },
+      },
+      orderBy: [{ ministryName: 'asc' }, { firstName: 'asc' }],
+    });
+    const ministryIds = ministries.map(ministry => ministry.id);
+
+    const wallets = ministryIds.length === 0 ? [] : await prisma.wallet.findMany({
+      where: { ministryAdminId: { in: ministryIds } },
+      select: {
+        id: true,
+        balance: true,
+        currency: true,
+        ministryAdminId: true,
+        updatedAt: true,
+        church: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
           },
         },
-        orderBy: { updatedAt: 'desc' },
-      }),
-    ]);
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
 
     const walletsByMinistry = new Map<string, typeof wallets>();
     wallets.forEach((wallet) => {
@@ -437,12 +453,14 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
       const totalBalance = ministryWallets.reduce((sum, wallet) => sum + wallet.balance, 0);
       const currencies = [...new Set(ministryWallets.map((wallet) => wallet.currency || 'MWK'))];
       const currency = currencies.length === 1 ? currencies[0] : 'mixed';
+      const pricingMarket = marketContext.resolveMarket(ministry.accountCountry ?? null);
       return {
         ministryId: ministry.id,
         ministryName: ministry.ministryName ?? ministry.ownedChurches[0]?.name ?? `${ministry.firstName} ${ministry.lastName}`,
         ministryAdminName: `${ministry.firstName} ${ministry.lastName}`.trim(),
         ministryAdminEmail: ministry.email,
         country: ministry.accountCountry ?? null,
+        pricingMarket: serializePricingMarket(pricingMarket),
         currency,
         totalBalance,
         walletCount: ministryWallets.length,
@@ -457,13 +475,72 @@ export async function getAdminTreasuryMinistryWallets(req: Request, res: Respons
       };
     }).sort((a, b) => b.totalBalance - a.totalBalance);
 
+    const byCurrency = Array.from(
+      data.reduce((map, row) => {
+        row.wallets.forEach(wallet => {
+          const currency = wallet.currency || 'unknown';
+          const current = map.get(currency) ?? { currency, totalBalance: 0, walletCount: 0, ministryIds: new Set<string>() };
+          current.totalBalance += wallet.balance;
+          current.walletCount += 1;
+          current.ministryIds.add(row.ministryId);
+          map.set(currency, current);
+        });
+        return map;
+      }, new Map<string, { currency: string; totalBalance: number; walletCount: number; ministryIds: Set<string> }>())
+    ).map(([, row]) => ({
+      currency: row.currency,
+      totalBalance: row.totalBalance,
+      walletCount: row.walletCount,
+      ministryCount: row.ministryIds.size,
+    }));
+
+    const byMarket = Array.from(
+      data.reduce((map, row) => {
+        const market = row.pricingMarket;
+        const marketKey = market?.id ?? market?.code ?? 'unknown';
+        const current = map.get(marketKey) ?? {
+          market: market ?? null,
+          totalBalance: 0,
+          walletCount: 0,
+          ministryCount: 0,
+          byCurrency: new Map<string, { currency: string; totalBalance: number; walletCount: number }>(),
+        };
+        current.totalBalance += row.totalBalance;
+        current.walletCount += row.walletCount;
+        current.ministryCount += 1;
+        row.wallets.forEach(wallet => {
+          const currency = wallet.currency || 'unknown';
+          const currencyRow = current.byCurrency.get(currency) ?? { currency, totalBalance: 0, walletCount: 0 };
+          currencyRow.totalBalance += wallet.balance;
+          currencyRow.walletCount += 1;
+          current.byCurrency.set(currency, currencyRow);
+        });
+        map.set(marketKey, current);
+        return map;
+      }, new Map<string, {
+        market: ReturnType<typeof serializePricingMarket> | null;
+        totalBalance: number;
+        walletCount: number;
+        ministryCount: number;
+        byCurrency: Map<string, { currency: string; totalBalance: number; walletCount: number }>;
+      }>())
+    ).map(([, row]) => ({
+      market: row.market,
+      totalBalance: row.totalBalance,
+      walletCount: row.walletCount,
+      ministryCount: row.ministryCount,
+      byCurrency: Array.from(row.byCurrency.values()),
+    }));
+
     res.json({
       success: true,
       data,
       summary: {
-        totalBalance: data.reduce((sum, row) => sum + row.totalBalance, 0),
+        totalBalance: byCurrency.length === 1 ? byCurrency[0].totalBalance : null,
         walletCount: data.reduce((sum, row) => sum + row.walletCount, 0),
         ministryCount: data.length,
+        byCurrency,
+        byMarket,
       },
     });
   } catch (error: any) {

@@ -153,8 +153,9 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
     where.ministryAdminId = { in: matchingIds };
   }
 
+  const summaryWhere = { AND: [where, { status: { not: 'cancelled' } }] };
   const skip = (params.page - 1) * params.limit;
-  const [invoices, total, statusCounts, currencyAggs] = await Promise.all([
+  const [invoices, total, summaryTotal, statusCounts, currencyAggs] = await Promise.all([
     prisma.packageInvoice.findMany({
       where,
       include: packageInvoiceListInclude,
@@ -163,10 +164,11 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
       take: params.limit,
     }),
     prisma.packageInvoice.count({ where }),
-    prisma.packageInvoice.groupBy({ by: ['status'], where, _count: { _all: true } }),
+    prisma.packageInvoice.count({ where: summaryWhere }),
+    prisma.packageInvoice.groupBy({ by: ['status'], where: summaryWhere, _count: { _all: true } }),
     prisma.packageInvoice.groupBy({
       by: ['currency'],
-      where,
+      where: summaryWhere,
       _count: { _all: true },
       _sum: { amount: true, amountPaid: true, balanceDue: true },
     }),
@@ -186,7 +188,7 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
     data: invoicesWithLinks.map(invoice => serializeInvoice(invoice, marketContext)),
     pagination: { page: params.page, limit: params.limit, total, totalPages: Math.ceil(total / params.limit) },
     summary: {
-      total,
+      total: summaryTotal,
       totalAmount: byCurrency.reduce((sum, row) => sum + row.totalAmount, 0),
       amountPaid: byCurrency.reduce((sum, row) => sum + row.amountPaid, 0),
       balanceDue: byCurrency.reduce((sum, row) => sum + row.balanceDue, 0),

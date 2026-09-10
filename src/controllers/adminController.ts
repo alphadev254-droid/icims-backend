@@ -67,6 +67,8 @@ function incrementCount(map: Record<string, number>, key?: string | null) {
   map[normalizedKey] = (map[normalizedKey] ?? 0) + 1;
 }
 
+const PACKAGE_PAYMENT_TYPES = ['package_subscription', 'package_invoice', 'subscription', 'renewal', 'upgrade', 'downgrade'];
+
 function summarizePaymentRows(rows: any[]) {
   const byStatus: Record<string, number> = {};
   const byType: Record<string, number> = {};
@@ -1092,7 +1094,13 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
   const dateTo = req.query.dateTo as string | undefined;
   const marketContext = await getPricingMarketContext();
 
-  const where: any = {};
+  const where: any = {
+    OR: [
+      { packageId: { not: null } },
+      { invoiceId: { not: null } },
+      { type: { in: PACKAGE_PAYMENT_TYPES } },
+    ],
+  };
   const adminIdFilters: string[][] = [];
 
   if (search) {
