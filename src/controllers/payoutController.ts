@@ -5,6 +5,172 @@ import { reconcileAdminWithdrawal } from './adminTreasuryController';
 import { syncLegacyMinistryWithdrawal } from '../services/legacyPayoutService';
 import { logger } from '../utils/logger';
 
+function decimal(value: unknown): number {
+  return Number(value || 0);
+}
+
+export async function getAdminPayouts(req: Request, res: Response): Promise<void> {
+  const page = Math.max(1, parseInt(String(req.query.page || '1')) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '70')) || 70));
+  const search = String(req.query.search || '').trim();
+  const status = String(req.query.status || '').trim();
+  const method = String(req.query.method || '').trim();
+  const currency = String(req.query.currency || '').trim().toUpperCase();
+  const ministryAdminId = String(req.query.ministry || '').trim();
+  const gateway = String(req.query.gateway || '').trim().toLowerCase();
+  const dateFrom = String(req.query.dateFrom || '').trim();
+  const dateTo = String(req.query.dateTo || '').trim();
+
+  const where: any = { scope: 'ministry' };
+  if (status) where.status = status;
+  if (method) where.method = method;
+  if (currency) where.currency = currency;
+  if (ministryAdminId) where.ministryAdminId = ministryAdminId;
+  if (gateway) where.gateway = gateway;
+  if (dateFrom || dateTo) {
+    where.createdAt = {};
+    if (dateFrom) where.createdAt.gte = new Date(dateFrom);
+    if (dateTo) where.createdAt.lte = new Date(`${dateTo}T23:59:59.999Z`);
+  }
+  if (search) {
+    const users = await prisma.user.findMany({
+      where: { OR: [
+        { firstName: { contains: search } },
+        { lastName: { contains: search } },
+        { email: { contains: search } },
+        { ministryName: { contains: search } },
+      ] },
+      select: { id: true },
+    });
+    const userIds = users.map(item => item.id);
+    where.OR = [
+      { id: { contains: search } },
+      { externalPayoutId: { contains: search } },
+      { externalReference: { contains: search } },
+      { destinationAccountName: { contains: search } },
+      { destinationAccount: { contains: search } },
+      { church: { name: { contains: search } } },
+      { initiatedBy: { in: userIds } },
+      { ministryAdminId: { in: userIds } },
+    ];
+  }
+
+  const [payouts, total, statusGroups, reconciliationGroups, methodGroups, currencyGroups, completedCurrencyGroups, walletBalances] = await Promise.all([
+    prisma.payout.findMany({
+      where,
+      include: {
+        church: {
+          select: {
+            id: true,
+            name: true,
+            ministryAdminId: true,
+            ministryAdmin: { select: { id: true, firstName: true, lastName: true, email: true, ministryName: true, accountCountry: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.payout.count({ where }),
+    prisma.payout.groupBy({ by: ['status'], where, _count: { _all: true } }),
+    prisma.payout.groupBy({ by: ['reconciliationStatus'], where, _count: { _all: true } }),
+    prisma.payout.groupBy({ by: ['method'], where, _count: { _all: true } }),
+    prisma.payout.groupBy({
+      by: ['currency'], where,
+      _count: { _all: true },
+      _sum: {
+        requestedAmount: true, feeAmount: true, gatewayFeeAmount: true,
+        fixedFeeAmount: true, systemFeeAmount: true, totalDebitAmount: true, payoutAmount: true,
+      },
+    }),
+    prisma.payout.groupBy({
+      by: ['currency'],
+      where: { ...where, status: 'completed' },
+      _count: { _all: true },
+      _sum: { systemFeeAmount: true },
+    }),
+    prisma.wallet.groupBy({
+      by: ['currency'],
+      where: {
+        ...(ministryAdminId ? { church: { ministryAdminId } } : {}),
+        ...(currency ? { currency } : {}),
+      },
+      _sum: { balance: true },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const userIds = [...new Set(payouts.flatMap(item => [item.initiatedBy, item.ministryAdminId]).filter(Boolean))] as string[];
+  const users = userIds.length ? await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, firstName: true, lastName: true, email: true, phone: true, ministryName: true, accountCountry: true },
+  }) : [];
+  const userMap = new Map(users.map(item => [item.id, item]));
+  const completedCurrencyMap = new Map(completedCurrencyGroups.map(item => [item.currency, item]));
+
+  res.json({
+    success: true,
+    data: payouts.map(payout => ({
+      id: payout.id,
+      walletId: payout.walletId,
+      ministryAdminId: payout.ministryAdminId,
+      initiatedBy: payout.initiatedBy,
+      amount: decimal(payout.requestedAmount) || decimal(payout.grossAmount),
+      requestedAmount: decimal(payout.requestedAmount) || decimal(payout.grossAmount),
+      fee: decimal(payout.feeAmount),
+      gatewayFeeAmount: decimal(payout.gatewayFeeAmount),
+      gatewayFeeRate: payout.gatewayFeeRate == null ? null : decimal(payout.gatewayFeeRate),
+      bankFixedFeeAmount: decimal(payout.fixedFeeAmount),
+      systemFeeAmount: decimal(payout.systemFeeAmount),
+      systemFeeRate: payout.systemFeeRate == null ? null : decimal(payout.systemFeeRate),
+      netAmount: decimal(payout.totalDebitAmount) || decimal(payout.grossAmount),
+      totalDebitAmount: decimal(payout.totalDebitAmount) || decimal(payout.grossAmount),
+      payoutAmount: decimal(payout.payoutAmount) || decimal(payout.netAmount),
+      method: payout.method || 'gateway_settlement',
+      status: payout.status,
+      gateway: payout.gateway,
+      payoutType: payout.type,
+      legacyWithdrawalId: payout.legacyWithdrawalId,
+      reconciliationStatus: payout.reconciliationStatus,
+      reconciliationDifference: payout.reconciliationDifference == null ? null : decimal(payout.reconciliationDifference),
+      chargeId: payout.externalReference || payout.externalPayoutId,
+      gatewayPayload: payout.providerPayload ? JSON.stringify(payout.providerPayload) : null,
+      gatewayResponse: payout.providerResponse ? JSON.stringify(payout.providerResponse) : null,
+      failureReason: payout.failureReason,
+      processedAt: payout.processedAt,
+      createdAt: payout.createdAt,
+      updatedAt: payout.updatedAt,
+      currency: payout.currency,
+      church: payout.church ? { id: payout.church.id, name: payout.church.name, ministryAdminId: payout.church.ministryAdminId } : null,
+      ministryAdmin: payout.ministryAdminId ? userMap.get(payout.ministryAdminId) || payout.church?.ministryAdmin || null : payout.church?.ministryAdmin || null,
+      initiatedByUser: payout.initiatedBy ? userMap.get(payout.initiatedBy) || null : null,
+    })),
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    summary: {
+      total,
+      byStatus: Object.fromEntries(statusGroups.map(item => [item.status, item._count._all])),
+      byReconciliation: Object.fromEntries(reconciliationGroups.map(item => [item.reconciliationStatus, item._count._all])),
+      byMethod: Object.fromEntries(methodGroups.map(item => [item.method || 'unknown', item._count._all])),
+      byCurrencyCount: Object.fromEntries(currencyGroups.map(item => [item.currency, item._count._all])),
+      walletBalances: walletBalances.map(item => ({ currency: item.currency, balance: item._sum.balance || 0, walletCount: item._count._all })),
+      byCurrency: currencyGroups.map(item => ({
+        currency: item.currency,
+        count: item._count._all,
+        totalRequested: decimal(item._sum.requestedAmount),
+        totalFee: decimal(item._sum.feeAmount),
+        gatewayFee: decimal(item._sum.gatewayFeeAmount),
+        bankFixedFee: decimal(item._sum.fixedFeeAmount),
+        systemFee: decimal(item._sum.systemFeeAmount),
+        netAmount: decimal(item._sum.totalDebitAmount),
+        payoutAmount: decimal(item._sum.payoutAmount),
+        completedSystemRevenue: decimal(completedCurrencyMap.get(item.currency)?._sum.systemFeeAmount),
+        completedCount: completedCurrencyMap.get(item.currency)?._count._all || 0,
+      })),
+    },
+  });
+}
+
 export async function reconcilePaystackPayouts(req: Request, res: Response): Promise<void> {
   const parsedFrom = req.body?.from ? new Date(String(req.body.from)) : undefined;
   const parsedTo = req.body?.to ? new Date(String(req.body.to)) : undefined;

@@ -56,7 +56,7 @@ import {
   sendAdminPackageInvoice,
   updateAdminPackageInvoice,
 } from '../controllers/packageInvoiceController';
-import { reconcileMinistryPayouts, reconcilePaystackPayouts } from '../controllers/payoutController';
+import { getAdminPayouts, reconcileMinistryPayouts, reconcilePaystackPayouts } from '../controllers/payoutController';
 
 const router = Router();
 router.use(authenticate, authorizeSystemAdmin);
@@ -78,7 +78,8 @@ router.put('/users/:id/subscription/:subId', updateAdminSubscription);
 router.get('/transactions', getAdminTransactions);
 router.get('/system-transactions', getAdminSystemTransactions);
 router.get('/system-transactions/:id', getAdminSystemTransaction);
-router.get('/withdrawals', getAdminWithdrawals);
+router.get('/withdrawals', getAdminPayouts);
+router.get('/payouts', getAdminPayouts);
 router.post('/payouts/reconcile/paystack', reconcilePaystackPayouts);
 router.post('/payouts/reconcile', reconcileMinistryPayouts);
 router.get('/treasury/summary', getAdminTreasurySummary);
