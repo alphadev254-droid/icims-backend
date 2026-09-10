@@ -239,7 +239,7 @@ const invoiceSchema = z.object({
   ministryAdminId: z.string().min(1),
   packageId: z.string().min(1),
   billingCycle: z.enum(['monthly', 'yearly', 'custom']).default('monthly'),
-  months: z.coerce.number().int().positive().optional(),
+  months: z.coerce.number().int().positive().max(120).optional(),
   amount: z.number().positive().optional(),
   currency: currencySchema.optional(),
   invoiceDate: z.string().optional(),
@@ -284,6 +284,10 @@ export async function createAdminPackageInvoice(req: Request, res: Response): Pr
     defaultPricing = await defaultPackagePricing(pkg, parsed.data.billingCycle === 'yearly' ? 'yearly' : 'monthly', admin.accountCountry);
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message || 'Package pricing is not configured' });
+    return;
+  }
+  if (!Number.isFinite(defaultPricing.amount) || defaultPricing.amount <= 0) {
+    res.status(400).json({ success: false, message: 'Package price must be configured before creating an invoice' });
     return;
   }
   const currency = parsed.data.currency || defaultPricing.currency;
