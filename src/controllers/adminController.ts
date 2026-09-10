@@ -57,6 +57,81 @@ function tryParse(val: string) {
   try { return JSON.parse(val); } catch { return val; }
 }
 
+type PricingMarketLite = {
+  id: string;
+  code: string;
+  name: string;
+  currencyCode: string;
+  isDefault: boolean;
+};
+
+async function getPricingMarketContext() {
+  const [markets, countries] = await Promise.all([
+    prisma.pricingMarket.findMany({
+      where: { isActive: true },
+      select: { id: true, code: true, name: true, currencyCode: true, isDefault: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    }),
+    prisma.country.findMany({
+      where: { isActive: true },
+      select: { name: true, pricingMarketId: true },
+    }),
+  ]);
+
+  const defaultMarket = markets.find((market: PricingMarketLite) => market.isDefault)
+    ?? markets.find((market: PricingMarketLite) => market.code === 'general')
+    ?? markets[0]
+    ?? null;
+  const marketById = new Map(markets.map((market: PricingMarketLite) => [market.id, market]));
+  const marketByCountry = new Map<string, PricingMarketLite>();
+  const countryNamesByMarket = new Map<string, string[]>();
+  const countriesAssignedToNonDefaultMarkets = new Set<string>();
+
+  for (const country of countries) {
+    const normalizedName = country.name.trim();
+    if (!normalizedName) continue;
+
+    const market = country.pricingMarketId ? marketById.get(country.pricingMarketId) ?? defaultMarket : defaultMarket;
+    if (!market) continue;
+
+    marketByCountry.set(normalizedName.toLowerCase(), market);
+    countryNamesByMarket.set(market.id, [...(countryNamesByMarket.get(market.id) ?? []), normalizedName]);
+
+    if (!market.isDefault) {
+      countriesAssignedToNonDefaultMarkets.add(normalizedName);
+    }
+  }
+
+  const resolveMarket = (country?: string | null) => {
+    if (!country) return defaultMarket;
+    return marketByCountry.get(country.trim().toLowerCase()) ?? defaultMarket;
+  };
+
+  return {
+    defaultMarket,
+    marketById,
+    countryNamesByMarket,
+    countriesAssignedToNonDefaultMarkets,
+    resolveMarket,
+  };
+}
+
+function buildMarketCountryFilter(marketId: string, context: Awaited<ReturnType<typeof getPricingMarketContext>>) {
+  const market = context.marketById.get(marketId);
+  if (!market) return { accountCountry: '__no_market_match__' };
+
+  if (market.isDefault) {
+    return {
+      OR: [
+        { accountCountry: null },
+        { accountCountry: { notIn: [...context.countriesAssignedToNonDefaultMarkets] } },
+      ],
+    };
+  }
+
+  return { accountCountry: { in: context.countryNamesByMarket.get(market.id) ?? ['__no_market_country_match__'] } };
+}
+
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────────
 
 export async function getAdminStats(_req: Request, res: Response): Promise<void> {
@@ -1079,10 +1154,12 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   const statusFilter   = req.query.status as string | undefined;
   const gatewayFilter  = req.query.gateway as string | undefined;
   const countryFilter  = req.query.country as string | undefined;
+  const marketFilter   = req.query.market as string | undefined;
   const churchIdFilter = req.query.churchId as string | undefined;
   const ministryFilter = req.query.ministry as string | undefined;
   const dateFrom       = req.query.dateFrom as string | undefined;
   const dateTo         = req.query.dateTo as string | undefined;
+  const marketContext  = await getPricingMarketContext();
 
   // Build AND conditions so filters never overwrite each other
   const andConditions: any[] = [];
@@ -1113,8 +1190,18 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   if (statusFilter)  andConditions.push({ status: statusFilter });
   if (gatewayFilter) andConditions.push({ gateway: gatewayFilter });
 
-  // Country — gatewayCountry is already stored on the transaction row
-  if (countryFilter) andConditions.push({ gatewayCountry: countryFilter });
+  const ministryAdminCountryFilter = (countryWhere: any) => ({
+    church: {
+      is: {
+        ministryAdmin: {
+          is: countryWhere,
+        },
+      },
+    },
+  });
+
+  if (countryFilter) andConditions.push(ministryAdminCountryFilter({ accountCountry: countryFilter }));
+  if (marketFilter) andConditions.push(ministryAdminCountryFilter(buildMarketCountryFilter(marketFilter, marketContext)));
 
   // Ministry filter — resolve all churchIds belonging to this ministry admin
   if (ministryFilter) {
@@ -1143,7 +1230,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
 
   const where: any = andConditions.length > 0 ? { AND: andConditions } : {};
 
-  const [transactions, total, mwkAgg, kesAgg, statusCounts, typeCounts] = await Promise.all([
+  const [transactions, total, currencyAggs, statusCounts, typeCounts] = await Promise.all([
     prisma.transaction.findMany({
       where,
       select: {
@@ -1168,20 +1255,22 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
         paidAt: true,
         createdAt: true,
         user: { select: { firstName: true, lastName: true, email: true } },
-        church: { select: { id: true, name: true } },
+        church: {
+          select: {
+            id: true,
+            name: true,
+            ministryAdmin: { select: { accountCountry: true } },
+          },
+        },
       } as any,
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
     }),
     prisma.transaction.count({ where }),
-    prisma.transaction.aggregate({
-      where: { ...where, currency: 'MWK' },
-      _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, ceilRoundingAmount: true, totalAmount: true } as any,
-      _count: { _all: true },
-    }),
-    prisma.transaction.aggregate({
-      where: { ...where, currency: 'KES' },
+    prisma.transaction.groupBy({
+      by: ['currency'],
+      where,
       _sum: { baseAmount: true, systemFeeAmount: true, convenienceFee: true, ceilRoundingAmount: true, totalAmount: true } as any,
       _count: { _all: true },
     }),
@@ -1210,12 +1299,29 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
     : [];
   const eventMap = new Map(eventDetails.map((e: any) => [e.transactionId, e]));
 
-  const enriched = txList.map(t => ({
-    ...enrichDonationTransaction(t, donationLinesByTx),
-    eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
-  }));
+  const enriched = txList.map(t => {
+    const ministryCountry = t.church?.ministryAdmin?.accountCountry ?? null;
+    const pricingMarket = marketContext.resolveMarket(ministryCountry);
+    const { ministryAdmin: _ministryAdmin, ...church } = t.church ?? {};
 
-  const buildCurrencySummary = (agg: any, currency: string) => {
+    return {
+      ...enrichDonationTransaction({
+        ...t,
+        church: t.church ? church : null,
+      }, donationLinesByTx),
+      ministryCountry,
+      pricingMarket: pricingMarket ? {
+        id: pricingMarket.id,
+        code: pricingMarket.code,
+        name: pricingMarket.name,
+        currencyCode: pricingMarket.currencyCode,
+      } : null,
+      eventTitle: (eventMap.get(t.id) as any)?.event?.title ?? null,
+    };
+  });
+
+  const buildCurrencySummary = (agg: any) => {
+    const currency = agg.currency || 'unknown';
     const totalBaseAmount = agg._sum?.baseAmount ?? 0;
     const totalGatewayFee = agg._sum?.convenienceFee ?? 0;
     const totalSystemFeeOnly = agg._sum?.systemFeeAmount ?? 0;
@@ -1243,10 +1349,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
       total,
       byStatus: Object.fromEntries(statusCounts.map((row: any) => [row.status, row._count._all])),
       byType: Object.fromEntries(typeCounts.map((row: any) => [row.type, row._count._all])),
-      byCurrency: [
-        ...((mwkAgg._count as any)?._all > 0 ? [buildCurrencySummary(mwkAgg, 'MWK')] : []),
-        ...((kesAgg._count as any)?._all > 0 ? [buildCurrencySummary(kesAgg, 'KES')] : []),
-      ],
+      byCurrency: currencyAggs.map(buildCurrencySummary),
     },
   });
 }
@@ -1255,12 +1358,13 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
 
 export async function getAdminSystemTransaction(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id);
+  const marketContext = await getPricingMarketContext();
 
   const tx = await prisma.transaction.findUnique({
     where: { id },
     include: {
       user:   { select: { firstName: true, lastName: true, email: true, phone: true } },
-      church: { select: { id: true, name: true } },
+      church: { select: { id: true, name: true, ministryAdmin: { select: { accountCountry: true } } } },
       tickets: { select: { ticketNumber: true, status: true } },
     },
   }) as any;
@@ -1297,10 +1401,22 @@ export async function getAdminSystemTransaction(req: Request, res: Response): Pr
     try { gatewayResponseParsed = JSON.parse(tx.gatewayResponse); } catch {}
   }
 
+  const ministryCountry = tx.church?.ministryAdmin?.accountCountry ?? null;
+  const pricingMarket = marketContext.resolveMarket(ministryCountry);
+  const { ministryAdmin: _ministryAdmin, ...church } = tx.church ?? {};
+
   res.json({
     success: true,
     data: {
       ...tx,
+      church: tx.church ? church : null,
+      ministryCountry,
+      pricingMarket: pricingMarket ? {
+        id: pricingMarket.id,
+        code: pricingMarket.code,
+        name: pricingMarket.name,
+        currencyCode: pricingMarket.currencyCode,
+      } : null,
       campaignName,
       campaignCategory,
       cellName,
