@@ -24,7 +24,7 @@ function phoneLookupKeys(value: string) {
   return Array.from(keys).filter(Boolean);
 }
 
-export async function searchActiveAdultMembers(params: {
+export async function searchActiveMembers(params: {
   churchIds: string[];
   query: string;
   page: number;
@@ -40,7 +40,6 @@ export async function searchActiveAdultMembers(params: {
   const fallbackWhere: any = {
     churchId: { in: churchIds },
     status: 'active',
-    memberType: { not: 'child' },
     OR: [
       { firstName: { contains: q } },
       { lastName: { contains: q } },
@@ -71,7 +70,7 @@ export async function searchActiveAdultMembers(params: {
     const churchPlaceholders = churchIds.map(() => '?').join(', ');
     const countRows = await prisma.$queryRawUnsafe<Array<{ total: bigint | number }>>(
       `SELECT COUNT(*) AS total FROM users u
-       WHERE u.churchId IN (${churchPlaceholders}) AND u.status = 'active' AND u.memberType <> 'child'
+       WHERE u.churchId IN (${churchPlaceholders}) AND u.status = 'active'
        AND MATCH(u.firstName, u.lastName, u.email, u.phone) AGAINST (? IN BOOLEAN MODE)`,
       ...churchIds, booleanSearch,
     );
@@ -80,7 +79,7 @@ export async function searchActiveAdultMembers(params: {
       const rows = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
         `SELECT u.id, MATCH(u.firstName, u.lastName, u.email, u.phone) AGAINST (? IN BOOLEAN MODE) AS relevance
          FROM users u
-         WHERE u.churchId IN (${churchPlaceholders}) AND u.status = 'active' AND u.memberType <> 'child'
+         WHERE u.churchId IN (${churchPlaceholders}) AND u.status = 'active'
          AND MATCH(u.firstName, u.lastName, u.email, u.phone) AGAINST (? IN BOOLEAN MODE)
          ORDER BY relevance DESC, u.firstName ASC, u.lastName ASC LIMIT ? OFFSET ?`,
         booleanSearch, ...churchIds, booleanSearch, limit, skip,
@@ -105,7 +104,7 @@ export async function searchActiveAdultMembers(params: {
       const phoneRows = await prisma.$queryRawUnsafe<Array<{ id: string; total: bigint | number }>>(
         `SELECT u.id, COUNT(*) OVER() AS total
          FROM users u
-         WHERE u.churchId IN (${churchPlaceholders}) AND u.status = 'active' AND u.memberType <> 'child'
+         WHERE u.churchId IN (${churchPlaceholders}) AND u.status = 'active'
            AND CHAR_LENGTH(${normalizedPhoneSql}) >= 6
            AND (${normalizedPhoneSql} LIKE CONCAT('%', ?) OR ? LIKE CONCAT('%', TRIM(LEADING '0' FROM ${normalizedPhoneSql})))
          ORDER BY u.firstName ASC, u.lastName ASC LIMIT ? OFFSET ?`,

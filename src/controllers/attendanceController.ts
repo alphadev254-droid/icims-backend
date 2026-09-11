@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
-import { searchActiveAdultMembers } from '../lib/memberSearch';
+import { searchActiveMembers } from '../lib/memberSearch';
 
 const visitorSchema = z.object({
   name: z.string().min(1, 'Visitor name required'),
@@ -1324,7 +1324,7 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
     return;
   }
 
-  const { members, total } = await searchActiveAdultMembers({ churchIds: linkedChurchIds, query: q, page, limit });
+  const { members, total } = await searchActiveMembers({ churchIds: linkedChurchIds, query: q, page, limit });
 
   const participantDelegate = (prisma as any).attendanceParticipant;
   const existing = members.length

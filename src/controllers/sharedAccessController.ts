@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
-import { searchActiveAdultMembers } from '../lib/memberSearch';
+import { searchActiveMembers } from '../lib/memberSearch';
 
 // ─── Protected: Generate a new shared access link ──────────────────────────
 
@@ -850,7 +850,7 @@ export async function searchMembersByScannerLink(req: Request, res: Response): P
   }
 
   const linkedChurchIds = await getAttendanceLinkedChurchIds(attendance);
-  const { members, total } = await searchActiveAdultMembers({ churchIds: linkedChurchIds, query: q, page, limit });
+  const { members, total } = await searchActiveMembers({ churchIds: linkedChurchIds, query: q, page, limit });
 
   const participantDelegate = (prisma as any).attendanceParticipant;
   const existing = members.length
