@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { hasFeature } from '../lib/packageChecker';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 
 // ─── Sort helper ──────────────────────────────────────────────────────────────
 
@@ -389,21 +390,9 @@ export async function getMinistryPledges(req: Request, res: Response): Promise<v
     userId
   );
 
-  const dateFilter: any = {};
-  if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) {
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    dateFilter.lte = end;
-  }
-
-  const dueDateFilter: any = {};
-  if (dueStartDate) dueDateFilter.gte = new Date(dueStartDate);
-  if (dueEndDate) {
-    const end = new Date(dueEndDate);
-    end.setHours(23, 59, 59, 999);
-    dueDateFilter.lte = end;
-  }
+  const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? req.user?.churchId });
+  const dateFilter = dateRangeInTimeZone(startDate, endDate, timezone);
+  const dueDateFilter = dateRangeInTimeZone(dueStartDate, dueEndDate, timezone);
 
   const where: any = {
     churchId: { in: accessibleChurchIds },

@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
@@ -1149,9 +1150,8 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
   if (gatewayFilter) where.gateway = gatewayFilter;
   if (cycleFilter) where.billingCycle = cycleFilter;
   if (dateFrom || dateTo) {
-    where.createdAt = {};
-    if (dateFrom) where.createdAt.gte = new Date(dateFrom);
-    if (dateTo) where.createdAt.lte = new Date(dateTo + 'T23:59:59Z');
+    const timezone = await resolveTimeZone({ req, ministryAdminId: ministryFilter });
+    where.createdAt = dateRangeInTimeZone(dateFrom, dateTo, timezone);
   }
 
   if (countryFilter) {
@@ -1305,9 +1305,8 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   }
 
   if (dateFrom || dateTo) {
-    const dateCondition: any = {};
-    if (dateFrom) dateCondition.gte = new Date(dateFrom);
-    if (dateTo)   dateCondition.lte = new Date(dateTo + 'T23:59:59Z');
+    const timezone = await resolveTimeZone({ req, ministryAdminId: ministryFilter });
+    const dateCondition = dateRangeInTimeZone(dateFrom, dateTo, timezone);
     andConditions.push({ createdAt: dateCondition });
   }
 
@@ -1537,9 +1536,8 @@ export async function getAdminWithdrawals(req: Request, res: Response): Promise<
     andConditions.push({ ministryAdminId: ministry });
   }
   if (dateFrom || dateTo) {
-    const createdAt: any = {};
-    if (dateFrom) createdAt.gte = new Date(dateFrom);
-    if (dateTo) createdAt.lte = new Date(`${dateTo}T23:59:59Z`);
+    const timezone = await resolveTimeZone({ req, ministryAdminId: ministry });
+    const createdAt = dateRangeInTimeZone(dateFrom, dateTo, timezone);
     andConditions.push({ createdAt });
   }
 
@@ -1662,9 +1660,8 @@ export async function getAdminPendingTransactions(req: Request, res: Response): 
   }
   if (type)   where.type   = type;
   if (dateFrom || dateTo) {
-    where.createdAt = {};
-    if (dateFrom) where.createdAt.gte = new Date(dateFrom);
-    if (dateTo)   where.createdAt.lte = new Date(dateTo + 'T23:59:59Z');
+    const timezone = await resolveTimeZone({ req, churchId, ministryAdminId: ministry });
+    where.createdAt = dateRangeInTimeZone(dateFrom, dateTo, timezone);
   }
   if (search) {
     where.OR = [

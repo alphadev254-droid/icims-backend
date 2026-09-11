@@ -13,6 +13,7 @@ import {
   saveRecurrenceRule,
   syncTeamCommunicationToSchedule,
 } from '../services/schedulerService';
+import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const prisma = new PrismaClient();
 
@@ -231,8 +232,9 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
 export const createTeamCommunication = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
-    const { title, content, teamId, deliveryMode, scheduledAt } = req.body;
+    const { title, content, teamId, deliveryMode, scheduledAt, timezone: requestedTimezone } = req.body;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
+    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ error: 'Invalid IANA timezone' });
     const mode = ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : 'now';
     const files = req.files as Express.Multer.File[];
 
@@ -298,6 +300,12 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       where: { id: userId },
       select: { id: true, firstName: true, lastName: true, avatar: true }
     });
+    const timezone = await resolveTimeZone({
+      req,
+      explicit: requestedTimezone,
+      churchId: communication.team.churchId,
+      ministryAdminId: communication.team.church.ministryAdminId,
+    });
 
     const startAt = mode === 'scheduled' ? new Date(scheduledAt) : new Date();
     const recurrenceRuleId = mode === 'scheduled'
@@ -307,6 +315,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       ...communication,
       scheduledAt: startAt,
       recurrenceRuleId,
+      timezone,
     });
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([
@@ -324,8 +333,9 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
     const { id } = req.params;
-    const { title, content, deliveryMode, scheduledAt } = req.body;
+    const { title, content, deliveryMode, scheduledAt, timezone: requestedTimezone } = req.body;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
+    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ error: 'Invalid IANA timezone' });
     const mode = deliveryMode && ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : undefined;
     const files = req.files as Express.Multer.File[];
     let existingMediaUrls = req.body.existingMediaUrls;
@@ -404,8 +414,8 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       select: { id: true, firstName: true, lastName: true, avatar: true }
     });
 
-    const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
-      SELECT recurrenceRuleId
+    const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null; timezone: string }>>`
+      SELECT recurrenceRuleId, timezone
       FROM scheduled_events
       WHERE sourceModule = 'team_communications' AND sourceId = ${String(id)}
       LIMIT 1
@@ -423,10 +433,14 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
 
       const startAt = new Date(scheduledAt);
       const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
+      const timezone = requestedTimezone
+        ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: communication.team.churchId, ministryAdminId: communication.team.church?.ministryAdminId })
+        : existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: communication.team.churchId, ministryAdminId: communication.team.church?.ministryAdminId });
       await syncTeamCommunicationToSchedule({
         ...communication,
         scheduledAt: startAt,
         recurrenceRuleId,
+        timezone,
       });
     } else if (mode === 'now') {
       if (existingSchedule.length > 0) {
@@ -439,6 +453,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
         ...communication,
         scheduledAt: new Date(),
         recurrenceRuleId: null,
+        timezone: existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: communication.team.churchId, ministryAdminId: communication.team.church?.ministryAdminId }),
       });
     }
 

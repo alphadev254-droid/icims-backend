@@ -6,9 +6,10 @@ import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueEmail } from '../lib/emailQueue';
 import { cellMemberAddedTemplate } from '../lib/cellEmailTemplates';
 import { assertScheduleAccess } from '../lib/scheduleAccess';
-import { deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncCellMeetingToSchedule } from '../services/schedulerService';
+import { buildExactScheduleOccurrenceStarts, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncCellMeetingToSchedule } from '../services/schedulerService';
 import { buildPersonSearchWhere } from '../lib/personSearch';
 import { queueCellPush } from '../lib/notificationQueue';
+import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone, todayInTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -34,20 +35,8 @@ function percentage(numerator: number, denominator: number): number {
   return denominator > 0 ? Math.round((numerator / denominator) * 100) : 0;
 }
 
-function combineScheduleDateAndTime(dateValue: string | Date, time?: string | null): Date {
-  const date = new Date(dateValue);
-  const match = time?.match(/^(\d{1,2}):(\d{2})/);
-  if (match) {
-    date.setHours(Number(match[1]), Number(match[2]), 0, 0);
-  }
-  return date;
-}
-
-function buildExactOccurrenceStarts(dates: string[] | undefined, time?: string | null): Date[] {
-  return [...new Set(dates ?? [])]
-    .map(date => combineScheduleDateAndTime(date, time))
-    .filter(date => !Number.isNaN(date.getTime()))
-    .sort((a, b) => a.getTime() - b.getTime());
+function combineScheduleDateAndTime(dateValue: string | Date, time?: string | null, timezone = 'UTC'): Date {
+  return zonedDateTimeToUtc(dateValue, time, timezone);
 }
 
 function isBeforeToday(value: Date): boolean {
@@ -387,9 +376,8 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   const scopedChurchId = filterChurchId || undefined;
 
   // Optionally scope to a single cell within accessible scope
-  const dateFilter: any = {};
-  if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); dateFilter.lte = e; }
+  const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? churchId });
+  const dateFilter = dateRangeInTimeZone(startDate, endDate, timezone);
   const hasDates = Object.keys(dateFilter).length > 0;
 
   const where: any = {
@@ -782,9 +770,9 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
     status: status || { not: 'inactive' }, // default: exclude soft-deleted
   };
   if (joinedFrom || joinedTo) {
-    where.joinedAt = {};
-    if (joinedFrom) where.joinedAt.gte = new Date(joinedFrom);
-    if (joinedTo) where.joinedAt.lte = new Date(joinedTo);
+    const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
+    const timezone = await resolveTimeZone({ req, churchId: cell?.churchId ?? req.user?.churchId });
+    where.joinedAt = dateRangeInTimeZone(joinedFrom, joinedTo, timezone);
   }
   if (roleFilter === 'leader') where.isLeader = true;
   if (roleFilter === 'assistant') where.isAssistant = true;
@@ -928,15 +916,19 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   const skip = (pageNum - 1) * limitNum;
 
   const where: any = { cellId };
-  if (dateFrom) where.date = { ...where.date, gte: new Date(dateFrom) };
-  if (dateTo) where.date = { ...where.date, lte: new Date(dateTo) };
+  if (dateFrom || dateTo) {
+    const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
+    const timezone = await resolveTimeZone({ req, churchId: cell?.churchId ?? req.user?.churchId });
+    where.date = dateRangeInTimeZone(dateFrom, dateTo, timezone);
+  }
 
   const [total, meetings] = await Promise.all([
     prisma.cellMeeting.count({ where }),
     prisma.cellMeeting.findMany({
       where,
       select: {
-        id: true, cellId: true, date: true, time: true, topic: true, notes: true, recurrenceRuleId: true, createdAt: true, updatedAt: true,
+        id: true, cellId: true, date: true, time: true, topic: true, notes: true, recurrenceRuleId: true,
+        recordType: true, sourceMeetingId: true, scheduledOccurrenceId: true, createdAt: true, updatedAt: true,
         _count: { select: { attendance: true } },
         attendance: { select: { status: true, isVisitor: true } },
       },
@@ -1005,6 +997,7 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   ]);
   const enriched = meetings.map(m => ({
     id: m.id, cellId: m.cellId, date: m.date, time: m.time, topic: m.topic, notes: m.notes, recurrenceRuleId: m.recurrenceRuleId,
+    recordType: m.recordType, sourceMeetingId: m.sourceMeetingId, scheduledOccurrenceId: m.scheduledOccurrenceId,
     recurrenceRule: m.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(m.recurrenceRuleId)) : null,
     scheduledEvent: schedulesByMeetingId.has(m.id) ? {
       id: schedulesByMeetingId.get(m.id)!.id,
@@ -1055,6 +1048,7 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
     time: z.string().optional(),
     topic: z.string().optional(),
     notes: z.string().optional(),
+    timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
     recurrenceRule: z.object({
       frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional(),
       interval: z.number().int().positive().optional(),
@@ -1095,10 +1089,16 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, ...meetingData } = parsed.data;
+  const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, timezone: requestedTimezone, ...meetingData } = parsed.data;
   const shouldSchedule = deliveryMode === 'scheduled';
+  const timezone = await resolveTimeZone({
+    req,
+    explicit: requestedTimezone,
+    churchId: cell.churchId,
+    ministryAdminId: cell.church?.ministryAdminId,
+  });
   const exactOccurrenceStarts = shouldSchedule && schedulePattern === 'custom_dates'
-    ? buildExactOccurrenceStarts(occurrenceDates, meetingData.time || cell.meetingTime)
+    ? buildExactScheduleOccurrenceStarts(occurrenceDates, meetingData.time || cell.meetingTime, timezone)
     : [];
   if (shouldSchedule && schedulePattern === 'custom_dates' && exactOccurrenceStarts.length === 0) {
     res.status(400).json({ success: false, message: 'Select at least one meeting date to schedule.' });
@@ -1113,8 +1113,8 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
   }
   const meetingDate = shouldSchedule
     ? exactOccurrenceStarts[0] ?? new Date(meetingData.date)
-    : startOfDay(new Date());
-  const scheduledStartAt = combineScheduleDateAndTime(meetingDate, meetingData.time || cell.meetingTime);
+    : todayInTimeZone(timezone);
+  const scheduledStartAt = combineScheduleDateAndTime(meetingDate, meetingData.time || cell.meetingTime, timezone);
   if (shouldSchedule && (scheduledStartAt.getTime() < Date.now() || exactOccurrenceStarts.some(date => date.getTime() < Date.now()))) {
     res.status(400).json({ success: false, message: 'Scheduled meeting dates cannot be before today.' });
     return;
@@ -1128,10 +1128,16 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
     : null;
 
   const meeting = await prisma.cellMeeting.create({
-    data: { cellId, ...meetingData, recurrenceRuleId, date: meetingDate },
+    data: {
+      cellId,
+      ...meetingData,
+      recurrenceRuleId,
+      date: meetingDate,
+      recordType: shouldSchedule ? 'scheduled_source' : 'direct',
+    },
   });
   if (shouldSchedule) {
-    syncCellMeetingToSchedule({ ...meeting, cell }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined)
+    syncCellMeetingToSchedule({ ...meeting, cell, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined)
       .catch(err => console.error('[Scheduler] Failed to sync created cell meeting:', err));
   }
   res.status(201).json({ success: true, data: meeting });
@@ -1170,6 +1176,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     time: z.string().optional(),
     topic: z.string().optional(),
     notes: z.string().optional(),
+    timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
     recurrenceRule: z.object({
       frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional(),
       interval: z.number().int().positive().optional(),
@@ -1214,9 +1221,9 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, ...meetingData } = parsed.data;
-  const existingSchedule = await prisma.$queryRaw<Array<{ id: string; recurrenceRuleId: string | null }>>`
-    SELECT id, recurrenceRuleId
+  const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, timezone: requestedTimezone, ...meetingData } = parsed.data;
+  const existingSchedule = await prisma.$queryRaw<Array<{ id: string; recurrenceRuleId: string | null; timezone: string }>>`
+    SELECT id, recurrenceRuleId, timezone
     FROM scheduled_events
     WHERE sourceModule = 'cell_meetings' AND sourceId = ${meetingId}
     LIMIT 1
@@ -1225,8 +1232,11 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   const hasDeliveryMode = Object.prototype.hasOwnProperty.call(req.body, 'deliveryMode');
   const shouldSchedule = deliveryMode === 'scheduled';
   const shouldClearSchedule = hasDeliveryMode && deliveryMode !== 'scheduled';
+  const timezone = requestedTimezone
+    ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: existingMeeting.cell.churchId, ministryAdminId: existingMeeting.cell.church?.ministryAdminId })
+    : existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: existingMeeting.cell.churchId, ministryAdminId: existingMeeting.cell.church?.ministryAdminId });
   const exactOccurrenceStarts = shouldSchedule && schedulePattern === 'custom_dates'
-    ? buildExactOccurrenceStarts(occurrenceDates, meetingData.time || existingMeeting.time || existingMeeting.cell.meetingTime)
+    ? buildExactScheduleOccurrenceStarts(occurrenceDates, meetingData.time || existingMeeting.time || existingMeeting.cell.meetingTime, timezone)
     : [];
   if (shouldSchedule && schedulePattern === 'custom_dates' && exactOccurrenceStarts.length === 0) {
     res.status(400).json({ success: false, message: 'Select at least one meeting date to schedule.' });
@@ -1280,6 +1290,10 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     data: {
       ...meetingData,
       recurrenceRuleId,
+      ...(shouldSchedule ? { recordType: 'scheduled_source', sourceMeetingId: null } : {}),
+      ...(shouldClearSchedule && !(existingMeeting as any).scheduledOccurrenceId
+        ? { recordType: 'direct', sourceMeetingId: null, scheduledOccurrenceId: null }
+        : {}),
       date: shouldSchedule && schedulePattern === 'custom_dates' ? meetingDate : meetingData.date ? new Date(meetingData.date) : undefined,
     },
     include: {
@@ -1297,7 +1311,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   });
 
   if (shouldSchedule) {
-    syncCellMeetingToSchedule(meeting, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined)
+    syncCellMeetingToSchedule({ ...meeting, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined)
       .catch(err => console.error('[Scheduler] Failed to sync updated cell meeting:', err));
   } else if (shouldClearSchedule) {
     deleteScheduledEventForSource('cell_meetings', meetingId)
@@ -1912,35 +1926,32 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   const customStartDate = typeof req.query.givingStartDate === 'string' ? req.query.givingStartDate : undefined;
   const customEndDate = typeof req.query.givingEndDate === 'string' ? req.query.givingEndDate : undefined;
 
+  const reportingTimezone = await resolveTimeZone({ req, churchId });
   const buildGivingDateRange = () => {
-    const now = new Date();
-    const start = new Date(now);
-    const end = new Date(now);
-    end.setHours(23, 59, 59, 999);
+    const today = todayInTimeZone(reportingTimezone);
+    const start = new Date(today);
+    const end = new Date(today);
 
     if (givingPeriod === 'custom') {
-      const customStart = customStartDate ? new Date(customStartDate) : undefined;
-      const customEnd = customEndDate ? new Date(customEndDate) : undefined;
-      if (customStart && !Number.isNaN(customStart.getTime())) customStart.setHours(0, 0, 0, 0);
-      if (customEnd && !Number.isNaN(customEnd.getTime())) customEnd.setHours(23, 59, 59, 999);
-      return { startDate: customStart, endDate: customEnd };
+      const range = dateRangeInTimeZone(customStartDate, customEndDate, reportingTimezone);
+      return { startDate: range.gte, endDate: range.lt };
     }
 
     if (givingPeriod === 'this_week') {
-      const day = start.getDay();
+      const day = start.getUTCDay();
       const diff = day === 0 ? 6 : day - 1;
-      start.setDate(start.getDate() - diff);
+      start.setUTCDate(start.getUTCDate() - diff);
     } else if (givingPeriod === 'last_month') {
-      start.setMonth(start.getMonth() - 1, 1);
-      end.setDate(0);
+      start.setUTCMonth(start.getUTCMonth() - 1, 1);
+      end.setUTCDate(1);
+      end.setUTCDate(0);
     } else if (givingPeriod === 'last_3_months') {
-      start.setMonth(start.getMonth() - 3);
+      start.setUTCMonth(start.getUTCMonth() - 3);
     } else {
-      start.setDate(1);
+      start.setUTCDate(1);
     }
-
-    start.setHours(0, 0, 0, 0);
-    return { startDate: start, endDate: end };
+    const range = dateRangeInTimeZone(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10), reportingTimezone);
+    return { startDate: range.gte, endDate: range.lt };
   };
 
   // ── Resolve accessible cell IDs ───────────────────────────────────────────
@@ -1960,7 +1971,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   const givingDateRange = buildGivingDateRange();
   const givingDateFilter: any = {};
   if (givingDateRange.startDate) givingDateFilter.gte = givingDateRange.startDate;
-  if (givingDateRange.endDate) givingDateFilter.lte = givingDateRange.endDate;
+  if (givingDateRange.endDate) givingDateFilter.lt = givingDateRange.endDate;
 
   if (cellIds.length === 0) {
     res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByInviters: [], topByGiving: [], topByAttendanceRate: [], cellGivingSummary: { currency: 'MWK', totalRaised: 0, startDate: givingDateRange.startDate?.toISOString() ?? null, endDate: givingDateRange.endDate?.toISOString() ?? null, topCampaigns: [] } } });
@@ -2285,13 +2296,8 @@ export async function getCellVisitors(req: Request, res: Response): Promise<void
   }
 
   // Build date filter on meeting.date
-  const dateFilter: any = {};
-  if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) {
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    dateFilter.lte = end;
-  }
+  const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? churchId });
+  const dateFilter = dateRangeInTimeZone(startDate, endDate, timezone);
 
   const where: any = {
     cellId: { in: cellIds },

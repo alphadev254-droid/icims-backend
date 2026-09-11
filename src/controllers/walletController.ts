@@ -13,6 +13,7 @@ import { withdrawalRequestUserTemplate, withdrawalRequestAdminTemplate, withdraw
 import { recordWithdrawalEvent } from '../middleware/metrics';
 import { maskPhone } from '../utils/logger';
 import { optionalDigitsOnlySchema, optionalPhoneSchema } from '../lib/inputValidation';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY!;
 
@@ -979,15 +980,16 @@ export async function getWithdrawals(req: Request, res: Response): Promise<void>
   const skip = (Number(page) - 1) * Number(limit);
 
   // Build date filter
-  const dateFilter: any = {};
-  if (startDate) {
-    dateFilter.gte = new Date(String(startDate));
-  }
-  if (endDate) {
-    const endDateTime = new Date(String(endDate));
-    endDateTime.setHours(23, 59, 59, 999);
-    dateFilter.lte = endDateTime;
-  }
+  const timezone = await resolveTimeZone({
+    req,
+    churchId,
+    ministryAdminId: roleName === 'ministry_admin' ? userId : undefined,
+  });
+  const dateFilter = dateRangeInTimeZone(
+    typeof startDate === 'string' ? startDate : undefined,
+    typeof endDate === 'string' ? endDate : undefined,
+    timezone,
+  );
 
   const payoutWhere: any = {
     churchId: { in: churchIds },

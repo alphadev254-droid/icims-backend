@@ -77,11 +77,12 @@ export async function queueChurchPush(
   churchId: string,
   title: string,
   body: string,
-  data?: Record<string, string>
+  data?: Record<string, string>,
+  jobId?: string,
 ): Promise<void> {
   const type = data?.type ?? 'unknown';
   console.log(`[PushQueue] 📥 Queuing push | type=${type} | church=${churchId} | title="${title}"`);
-  const job = await notificationQueue.add('send-push', { churchId, title, body, data });
+  const job = await notificationQueue.add('send-push', { churchId, title, body, data }, jobId ? { jobId } : undefined);
   console.log(`[PushQueue] 📬 Job ${job.id} added to queue | type=${type} | church=${churchId}`);
 }
 

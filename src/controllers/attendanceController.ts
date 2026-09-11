@@ -4,6 +4,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { searchActiveMembers } from '../lib/memberSearch';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const visitorSchema = z.object({
   name: z.string().min(1, 'Visitor name required'),
@@ -716,13 +717,13 @@ export async function getAttendance(req: Request, res: Response): Promise<void> 
   if (serviceType && typeof serviceType === 'string') {
     whereClause.serviceType = serviceType;
   }
-  if (startDate && typeof startDate === 'string') {
-    whereClause.date = { ...whereClause.date, gte: new Date(startDate) };
-  }
-  if (endDate && typeof endDate === 'string') {
-    const endDateTime = new Date(endDate);
-    endDateTime.setHours(23, 59, 59, 999); // Include the entire end date
-    whereClause.date = { ...whereClause.date, lte: endDateTime };
+  if ((startDate && typeof startDate === 'string') || (endDate && typeof endDate === 'string')) {
+    const timezone = await resolveTimeZone({ req, churchId: typeof filterChurchId === 'string' ? filterChurchId : churchId });
+    whereClause.date = dateRangeInTimeZone(
+      typeof startDate === 'string' ? startDate : undefined,
+      typeof endDate === 'string' ? endDate : undefined,
+      timezone,
+    );
   }
 
   const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
@@ -2139,9 +2140,12 @@ export async function getServiceVisitorsReport(req: Request, res: Response): Pro
   const attendanceWhere: any = { churchId: { in: scopedChurchIds } };
   if (serviceType && typeof serviceType === 'string') attendanceWhere.serviceType = serviceType;
   if (startDate || endDate) {
-    attendanceWhere.date = {};
-    if (startDate) attendanceWhere.date.gte = new Date(startDate as string);
-    if (endDate) { const end = new Date(endDate as string); end.setHours(23, 59, 59, 999); attendanceWhere.date.lte = end; }
+    const timezone = await resolveTimeZone({ req, churchId: typeof filterChurchId === 'string' ? filterChurchId : churchId });
+    attendanceWhere.date = dateRangeInTimeZone(
+      typeof startDate === 'string' ? startDate : undefined,
+      typeof endDate === 'string' ? endDate : undefined,
+      timezone,
+    );
   }
 
   const page = Math.max(1, parseInt(req.query.page as string) || 1);

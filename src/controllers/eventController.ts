@@ -13,9 +13,16 @@ import { eventCreatedTemplate } from '../lib/emailTemplates';
 import { hasFeature } from '../lib/packageChecker';
 import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import { refreshReminderCache } from '../workers/reminderCacheWorker';
-import { cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule } from '../services/schedulerService';
+import { buildExactScheduleOccurrenceStarts, cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule } from '../services/schedulerService';
+import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
+const scheduleDateSchema = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Schedule dates must use YYYY-MM-DD')
+  .refine(value => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, 'Invalid schedule date');
 
 function buildTicketNumber(event: { title: string; date: Date | string }, sequence: number): string {
   const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
@@ -105,6 +112,9 @@ const baseEventSchema = z.object({
   scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
   churchIds: z.array(z.string().min(1)).optional(),
   deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
+  schedulePattern: z.enum(['repeat', 'custom_dates']).default('repeat').optional(),
+  occurrenceDates: z.array(scheduleDateSchema).max(366).optional(),
+  timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
   recurrenceRule: recurrenceRuleSchema,
 });
 
@@ -171,12 +181,40 @@ function decorateEventAvailability<T extends EventWithChurchLinks>(event: T, sco
   return { ...event, availableChurchIds, availableChurches };
 }
 
-async function attachEventRecurrenceRules<T extends Array<{ recurrenceRuleId?: string | null }>>(events: T) {
+async function attachEventRecurrenceRules<T extends Array<{ id: string; recurrenceRuleId?: string | null }>>(events: T) {
   const rulesById = await getRecurrenceRulesById(events.map(event => event.recurrenceRuleId).filter((id): id is string => Boolean(id)));
+  const eventIds = events.map(event => event.id);
+  const schedules = eventIds.length > 0 ? await prisma.$queryRaw<Array<{
+    id: string; sourceId: string; status: string; timezone: string; recurrenceRuleId: string | null;
+  }>>`
+    SELECT id, sourceId, status, timezone, recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'events' AND sourceId IN (${Prisma.join(eventIds)})
+  ` : [];
+  const scheduleIds = schedules.map(schedule => schedule.id);
+  const occurrences = scheduleIds.length > 0 ? await prisma.$queryRaw<Array<{
+    id: string; scheduledEventId: string; occurrenceStartAt: Date; occurrenceEndAt: Date; status: string;
+  }>>`
+    SELECT id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status
+    FROM scheduled_event_occurrences
+    WHERE scheduledEventId IN (${Prisma.join(scheduleIds)})
+    ORDER BY occurrenceStartAt ASC
+  ` : [];
+  const occurrencesBySchedule = new Map<string, typeof occurrences>();
+  occurrences.forEach(occurrence => {
+    const items = occurrencesBySchedule.get(occurrence.scheduledEventId) ?? [];
+    items.push(occurrence);
+    occurrencesBySchedule.set(occurrence.scheduledEventId, items);
+  });
+  const schedulesByEvent = new Map(schedules.map(schedule => [schedule.sourceId, schedule]));
   return events.map(event => ({
     ...event,
     recurrenceRule: event.recurrenceRuleId ? parseRecurrenceRuleForApi(rulesById.get(event.recurrenceRuleId)) : null,
-  })) as Array<T[number] & { recurrenceRule: ReturnType<typeof parseRecurrenceRuleForApi> }>;
+    scheduledEvent: schedulesByEvent.has(event.id) ? {
+      ...schedulesByEvent.get(event.id)!,
+      occurrences: occurrencesBySchedule.get(schedulesByEvent.get(event.id)!.id) ?? [],
+    } : null,
+  })) as Array<T[number] & { recurrenceRule: ReturnType<typeof parseRecurrenceRuleForApi>; scheduledEvent: unknown }>;
 }
 
 function eventAccessWhere(churchIds: string[]): Prisma.EventWhereInput {
@@ -352,8 +390,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   }
 
   // Apply date filters
-  if (startDate) {
-    (whereClause.AND as Prisma.EventWhereInput[]).push({ date: { gte: new Date(startDate) } });
+  if (startDate || endDate) {
+    const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? churchId });
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ date: dateRangeInTimeZone(startDate, endDate, timezone) });
   }
 
   if (isSimple) {
@@ -380,12 +419,6 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
     res.json({ success: true, data: eventsWithRecurrence.map(event => decorateEventAvailability(event, scopedChurchIds)) });
     return;
   }
-  if (endDate) {
-    const endDateTime = new Date(endDate);
-    endDateTime.setHours(23, 59, 59, 999);
-    (whereClause.AND as Prisma.EventWhereInput[]).push({ date: { lte: endDateTime } });
-  }
-
   const [events, total] = await Promise.all([
     prisma.event.findMany({
       where: whereClause,
@@ -516,10 +549,26 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const parsed = eventSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
-  const { churchId: targetChurchId, scopeType, churchIds: requestedChurchIds, deliveryMode, recurrenceRule, ...eventData } = parsed.data;
+  const {
+    churchId: targetChurchId,
+    scopeType,
+    churchIds: requestedChurchIds,
+    deliveryMode,
+    schedulePattern = 'repeat',
+    occurrenceDates,
+    recurrenceRule,
+    timezone: requestedTimezone,
+    ...eventData
+  } = parsed.data;
   const mode = deliveryMode ?? 'now';
+  const usesExactDates = mode === 'scheduled' && schedulePattern === 'custom_dates';
 
-  if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+  if (usesExactDates && (!occurrenceDates || occurrenceDates.length === 0)) {
+    res.status(400).json({ success: false, message: 'Select at least one event date.' });
+    return;
+  }
+
+  if ((mode !== 'scheduled' || usesExactDates) && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
     return;
   }
@@ -571,6 +620,18 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   }
   const eventChurchIds = resolvedScope.churchIds;
   const primaryChurchId = eventChurchIds[0];
+  const timezone = await resolveTimeZone({ req, explicit: requestedTimezone, churchId: primaryChurchId, ministryAdminId });
+  const exactOccurrences = usesExactDates
+    ? buildExactScheduleOccurrenceStarts(occurrenceDates, eventData.time, timezone)
+    : undefined;
+  if (usesExactDates && exactOccurrences?.some(date => date.getTime() < Date.now())) {
+    res.status(400).json({ success: false, message: 'Scheduled event dates cannot be in the past.' });
+    return;
+  }
+  if (usesExactDates && [...new Set(occurrenceDates ?? [])].sort()[0] !== eventData.date) {
+    res.status(400).json({ success: false, message: 'Event start date must match the first selected schedule date.' });
+    return;
+  }
 
   // Check if event requires payment and if Kenya account has subaccount
   if (!eventData.isFree && eventData.requiresTicket) {
@@ -592,7 +653,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     }
   }
 
-  const recurrenceRuleId = mode === 'scheduled'
+  const recurrenceRuleId = mode === 'scheduled' && !usesExactDates
     ? await saveRecurrenceRule(recurrenceRule ?? null, new Date(eventData.date))
     : null;
 
@@ -618,7 +679,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     },
   });
   if (mode === 'scheduled') {
-    syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync created event:', err));
+    await syncEventToSchedule({ ...event, timezone }, exactOccurrences);
   }
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
@@ -659,8 +720,24 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
   const oldEvent = await prisma.event.findUnique({ where: { id: eventId } });
   if (!oldEvent) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
-  const { churchIds: requestedChurchIds, scopeType, churchId: targetChurchId, deliveryMode, recurrenceRule, ...eventData } = parsed.data;
+  const {
+    churchIds: requestedChurchIds,
+    scopeType,
+    churchId: targetChurchId,
+    deliveryMode,
+    schedulePattern,
+    occurrenceDates,
+    recurrenceRule,
+    timezone: requestedTimezone,
+    ...eventData
+  } = parsed.data;
   const mode = deliveryMode ?? undefined;
+  const usesExactDates = mode === 'scheduled' && schedulePattern === 'custom_dates';
+
+  if (usesExactDates && (!occurrenceDates || occurrenceDates.length === 0)) {
+    res.status(400).json({ success: false, message: 'Select at least one event date.' });
+    return;
+  }
   const userId = req.user!.userId;
   const nextRequiresTicket = eventData.requiresTicket ?? oldEvent.requiresTicket;
   const nextIsFree = eventData.isFree ?? oldEvent.isFree;
@@ -685,13 +762,13 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
+  if ((mode !== 'scheduled' || usesExactDates) && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
     return;
   }
 
-  const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
-    SELECT recurrenceRuleId
+  const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null; timezone: string }>>`
+    SELECT recurrenceRuleId, timezone
     FROM scheduled_events
     WHERE sourceModule = 'events' AND sourceId = ${eventId}
     LIMIT 1
@@ -743,6 +820,24 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     nextEventChurchIds = resolvedScope.churchIds;
     nextPrimaryChurchId = nextEventChurchIds[0];
   }
+
+  const scheduleTimezone = shouldSchedule
+    ? requestedTimezone
+      ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: nextPrimaryChurchId ?? oldEvent.churchId })
+      : existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: nextPrimaryChurchId ?? oldEvent.churchId })
+    : null;
+  const nextEventDate = eventData.date ?? oldEvent.date.toISOString().slice(0, 10);
+  const exactOccurrences = usesExactDates
+    ? buildExactScheduleOccurrenceStarts(occurrenceDates, eventData.time ?? oldEvent.time, scheduleTimezone ?? 'UTC')
+    : undefined;
+  if (usesExactDates && exactOccurrences?.some(date => date.getTime() < Date.now())) {
+    res.status(400).json({ success: false, message: 'Scheduled event dates cannot be in the past.' });
+    return;
+  }
+  if (usesExactDates && [...new Set(occurrenceDates ?? [])].sort()[0] !== nextEventDate) {
+    res.status(400).json({ success: false, message: 'Event start date must match the first selected schedule date.' });
+    return;
+  }
   
   // Delete old image if exists and new imageUrl is different
   if (oldEvent.imageUrl && eventData.imageUrl !== undefined && eventData.imageUrl !== oldEvent.imageUrl) {
@@ -753,7 +848,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   }
 
   const recurrenceRuleId = shouldSchedule
-    ? await saveRecurrenceRule(recurrenceRule ?? null, eventData.date ? new Date(eventData.date) : oldEvent.date, existingRecurrenceRuleId)
+    ? await saveRecurrenceRule(usesExactDates ? null : recurrenceRule ?? null, eventData.date ? new Date(eventData.date) : oldEvent.date, existingRecurrenceRuleId)
     : shouldClearSchedule
       ? null
       : oldEvent.recurrenceRuleId;
@@ -789,7 +884,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     },
   });
   if (shouldSchedule) {
-    syncEventToSchedule(event).catch(err => console.error('[Scheduler] Failed to sync updated event:', err));
+    await syncEventToSchedule({ ...event, timezone: scheduleTimezone ?? 'UTC' }, exactOccurrences);
   } else if (shouldClearSchedule) {
     deleteScheduledEventForSource('events', eventId).catch(err => console.error('[Scheduler] Failed to delete cleared event schedule:', err));
     if (oldEvent.recurrenceRuleId && existingSchedule.length === 0) {

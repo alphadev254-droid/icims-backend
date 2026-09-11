@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
@@ -445,13 +446,8 @@ export async function getScheduledReminderLogs(req: Request, res: Response): Pro
   const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
   const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
 
-  const scheduledFor: any = {};
-  if (startDate) scheduledFor.gte = new Date(startDate);
-  if (endDate) {
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    scheduledFor.lte = end;
-  }
+  const timezone = await resolveTimeZone({ req, churchId: typeof req.query.churchId === 'string' ? req.query.churchId : req.user?.churchId });
+  const scheduledFor = dateRangeInTimeZone(startDate, endDate, timezone);
 
   const where: any = {
     reminder: { churchId: { in: churchIds } },

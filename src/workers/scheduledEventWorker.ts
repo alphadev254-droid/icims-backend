@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import cron from 'node-cron';
 import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
@@ -7,6 +6,8 @@ import { queueEmail } from '../lib/emailQueue';
 import { sendPushToUsers } from '../lib/fcm';
 import { announcementCreatedTemplate } from '../lib/emailTemplates';
 import { teamCommunicationNotificationTemplate } from '../lib/teamEmailTemplates';
+import { normalizeTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
+import { queueCellPush, queueChurchPush } from '../lib/notificationQueue';
 
 type ScheduledEventRow = {
   id: string;
@@ -15,6 +16,7 @@ type ScheduledEventRow = {
   title: string;
   startAt: Date;
   endAt: Date;
+  timezone: string;
   recurrenceRuleId: string | null;
 };
 
@@ -52,12 +54,26 @@ type CellMeetingNotificationCandidate = {
   sourceId: string | null;
   title: string;
   startAt: Date;
+  timezone: string;
   cellId: string;
   cellName: string;
   churchId: string;
   churchName: string;
   time: string | null;
   meetingTime: string | null;
+};
+
+type ChurchEventNotificationCandidate = {
+  scheduledEventId: string;
+  scheduledEventOccurrenceId: string | null;
+  sourceId: string | null;
+  sourceModule: 'events';
+  title: string;
+  startAt: Date;
+  timezone: string;
+  churchId: string;
+  churchName: string;
+  locationText: string | null;
 };
 
 type CellMeetingTemplateRow = {
@@ -80,35 +96,49 @@ const WEEK_DAY_INDEX: Record<string, number> = {
   saturday: 6,
 };
 
-const CELL_MEETING_NOTIFICATION_LOOKAHEAD_MS = 48 * 60 * 60 * 1000;
-const ONE_HOUR_MS = 60 * 60 * 1000;
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const SCHEDULED_EVENT_REMINDER_MINUTES = [...new Set(
+  (process.env.SCHEDULED_EVENT_REMINDER_MINUTES || '2880,720,60')
+    .split(',')
+    .map(value => Number(value.trim()))
+    .filter(value => Number.isFinite(value) && value > 0),
+)].sort((a, b) => b - a);
+const SCHEDULED_EVENT_NOTIFICATION_LOOKAHEAD_MS = Math.max(...SCHEDULED_EVENT_REMINDER_MINUTES, 60) * 60 * 1000;
+const configuredReminderWindowMinutes = Number(process.env.SCHEDULED_EVENT_REMINDER_DELIVERY_WINDOW_MINUTES || 10);
+const SCHEDULED_EVENT_REMINDER_DELIVERY_WINDOW_MS = (
+  Number.isFinite(configuredReminderWindowMinutes) && configuredReminderWindowMinutes > 0
+    ? configuredReminderWindowMinutes
+    : 10
+) * 60 * 1000;
 
-const CELL_MEETING_REMINDER_LABELS: Record<string, string> = {
-  two_days_before: 'Cell Meeting in 2 Days',
-  day_of: 'Cell Meeting Today',
-  one_hour_before: 'Cell Meeting in 1 Hour',
-};
-
-function formatTimeForMeeting(date: Date) {
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+function formatTimeForMeeting(date: Date, timezone = 'UTC') {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(date);
 }
 
-function isSameCalendarDay(left: Date, right: Date) {
-  return left.getFullYear() === right.getFullYear()
-    && left.getMonth() === right.getMonth()
-    && left.getDate() === right.getDate();
+function reminderType(minutes: number) {
+  return `minutes_before_${minutes}`;
 }
 
-function getDueCellMeetingReminderTypes(startAt: Date, now = new Date()) {
+function reminderLabel(minutes: number) {
+  if (minutes % 1440 === 0) return `Cell Meeting in ${minutes / 1440} Day${minutes === 1440 ? '' : 's'}`;
+  if (minutes % 60 === 0) return `Cell Meeting in ${minutes / 60} Hour${minutes === 60 ? '' : 's'}`;
+  return `Cell Meeting in ${minutes} Minutes`;
+}
+
+function getDueScheduledReminderTypes(startAt: Date, now = new Date()) {
   const msUntil = startAt.getTime() - now.getTime();
-  if (msUntil <= 0 || msUntil > CELL_MEETING_NOTIFICATION_LOOKAHEAD_MS) return [];
+  if (msUntil <= 0 || msUntil > SCHEDULED_EVENT_NOTIFICATION_LOOKAHEAD_MS) return [];
 
-  const types: string[] = [];
-  if (msUntil > ONE_DAY_MS) types.push('two_days_before');
-  if (isSameCalendarDay(startAt, now)) types.push('day_of');
-  if (msUntil <= ONE_HOUR_MS) types.push('one_hour_before');
-  return types;
+  return SCHEDULED_EVENT_REMINDER_MINUTES
+    .filter(minutes => {
+      const threshold = minutes * 60 * 1000;
+      return msUntil <= threshold && msUntil > threshold - SCHEDULED_EVENT_REMINDER_DELIVERY_WINDOW_MS;
+    })
+    .map(reminderType);
 }
 
 function truncateErrorMessage(error: unknown) {
@@ -116,22 +146,26 @@ function truncateErrorMessage(error: unknown) {
   return message.slice(0, 1000);
 }
 
-function addDays(value: Date, days: number) {
-  const date = new Date(value);
-  date.setDate(date.getDate() + days);
-  return date;
+function zonedParts(value: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(value);
+  const result: Record<string, number> = {};
+  for (const part of parts) if (part.type !== 'literal') result[part.type] = Number(part.value);
+  return result;
 }
 
-function addMonths(value: Date, months: number) {
-  const date = new Date(value);
-  date.setMonth(date.getMonth() + months);
-  return date;
-}
-
-function addYears(value: Date, years: number) {
-  const date = new Date(value);
-  date.setFullYear(date.getFullYear() + years);
-  return date;
+function shiftInTimeZone(value: Date, timezone: string, unit: 'day' | 'month' | 'year', amount: number) {
+  const parts = zonedParts(value, timezone);
+  const local = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second));
+  if (unit === 'day') local.setUTCDate(local.getUTCDate() + amount);
+  if (unit === 'month') local.setUTCMonth(local.getUTCMonth() + amount);
+  if (unit === 'year') local.setUTCFullYear(local.getUTCFullYear() + amount);
+  const date = local.toISOString().slice(0, 10);
+  const time = local.toISOString().slice(11, 19);
+  return zonedDateTimeToUtc(date, time, timezone);
 }
 
 function parseDaysOfWeek(value?: string | null): number[] {
@@ -150,95 +184,94 @@ function parseDaysOfWeek(value?: string | null): number[] {
   }
 }
 
-function daysBetween(start: Date, end: Date) {
-  const startDay = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
-  const endDay = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+function daysBetween(start: Date, end: Date, timezone: string) {
+  const startParts = zonedParts(start, timezone);
+  const endParts = zonedParts(end, timezone);
+  const startDay = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
+  const endDay = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
   return Math.floor((endDay - startDay) / 86_400_000);
 }
 
-function isWeeklyMatch(rule: RecurrenceRuleRow, candidate: Date) {
+function isWeeklyMatch(rule: RecurrenceRuleRow, candidate: Date, timezone: string) {
   const selectedDays = parseDaysOfWeek(rule.daysOfWeek);
-  if (selectedDays.length > 0 && !selectedDays.includes(candidate.getDay())) return false;
-  const weekOffset = Math.floor(Math.max(0, daysBetween(rule.startsAt, candidate)) / 7);
+  const weekday = Number(new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' }).format(candidate)
+    .replace(/^Sun$/, '0').replace(/^Mon$/, '1').replace(/^Tue$/, '2').replace(/^Wed$/, '3')
+    .replace(/^Thu$/, '4').replace(/^Fri$/, '5').replace(/^Sat$/, '6'));
+  if (selectedDays.length > 0 && !selectedDays.includes(weekday)) return false;
+  const weekOffset = Math.floor(Math.max(0, daysBetween(rule.startsAt, candidate, timezone)) / 7);
   return weekOffset % Math.max(1, rule.interval || 1) === 0;
 }
 
-function isMonthlyMatch(rule: RecurrenceRuleRow, candidate: Date) {
-  const targetDay = rule.dayOfMonth || rule.startsAt.getDate();
-  if (candidate.getDate() !== targetDay) return false;
-  const monthOffset = (candidate.getFullYear() - rule.startsAt.getFullYear()) * 12 + candidate.getMonth() - rule.startsAt.getMonth();
+function isMonthlyMatch(rule: RecurrenceRuleRow, candidate: Date, timezone: string) {
+  const candidateParts = zonedParts(candidate, timezone);
+  const startParts = zonedParts(rule.startsAt, timezone);
+  const targetDay = rule.dayOfMonth || startParts.day;
+  if (candidateParts.day !== targetDay) return false;
+  const monthOffset = (candidateParts.year - startParts.year) * 12 + candidateParts.month - startParts.month;
   return monthOffset >= 0 && monthOffset % Math.max(1, rule.interval || 1) === 0;
 }
 
-function isYearlyMatch(rule: RecurrenceRuleRow, candidate: Date) {
-  const targetMonth = (rule.monthOfYear || rule.startsAt.getMonth() + 1) - 1;
-  const targetDay = rule.dayOfMonth || rule.startsAt.getDate();
-  if (candidate.getMonth() !== targetMonth || candidate.getDate() !== targetDay) return false;
-  const yearOffset = candidate.getFullYear() - rule.startsAt.getFullYear();
+function isYearlyMatch(rule: RecurrenceRuleRow, candidate: Date, timezone: string) {
+  const candidateParts = zonedParts(candidate, timezone);
+  const startParts = zonedParts(rule.startsAt, timezone);
+  const targetMonth = rule.monthOfYear || startParts.month;
+  const targetDay = rule.dayOfMonth || startParts.day;
+  if (candidateParts.month !== targetMonth || candidateParts.day !== targetDay) return false;
+  const yearOffset = candidateParts.year - startParts.year;
   return yearOffset >= 0 && yearOffset % Math.max(1, rule.interval || 1) === 0;
 }
 
-function matchesRule(rule: RecurrenceRuleRow, candidate: Date) {
+function matchesRule(rule: RecurrenceRuleRow, candidate: Date, timezone: string) {
   if (candidate < rule.startsAt) return false;
   if (rule.endsAt && candidate > rule.endsAt) return false;
 
   if (rule.frequency === 'daily') {
-    return daysBetween(rule.startsAt, candidate) % Math.max(1, rule.interval || 1) === 0;
+    return daysBetween(rule.startsAt, candidate, timezone) % Math.max(1, rule.interval || 1) === 0;
   }
-  if (rule.frequency === 'weekly') return isWeeklyMatch(rule, candidate);
-  if (rule.frequency === 'monthly') return isMonthlyMatch(rule, candidate);
-  if (rule.frequency === 'yearly') return isYearlyMatch(rule, candidate);
+  if (rule.frequency === 'weekly') return isWeeklyMatch(rule, candidate, timezone);
+  if (rule.frequency === 'monthly') return isMonthlyMatch(rule, candidate, timezone);
+  if (rule.frequency === 'yearly') return isYearlyMatch(rule, candidate, timezone);
   return false;
 }
 
-function copyTime(source: Date, target: Date) {
-  const next = new Date(target);
-  next.setHours(source.getHours(), source.getMinutes(), source.getSeconds(), source.getMilliseconds());
-  return next;
-}
-
-function getNextOccurrence(rule: RecurrenceRuleRow, after: Date) {
+function getNextOccurrence(rule: RecurrenceRuleRow, after: Date, timezone: string) {
   const interval = Math.max(1, rule.interval || 1);
   let candidate = new Date(after);
 
   if (rule.frequency === 'daily') {
-    candidate = addDays(candidate, interval);
+    candidate = shiftInTimeZone(candidate, timezone, 'day', interval);
     return rule.endsAt && candidate > rule.endsAt ? null : candidate;
   }
 
   if (rule.frequency === 'monthly') {
-    candidate = addMonths(candidate, interval);
-    candidate.setDate(rule.dayOfMonth || rule.startsAt.getDate());
+    candidate = shiftInTimeZone(candidate, timezone, 'month', interval);
     return rule.endsAt && candidate > rule.endsAt ? null : candidate;
   }
 
   if (rule.frequency === 'yearly') {
-    candidate = addYears(candidate, interval);
-    candidate.setMonth((rule.monthOfYear || rule.startsAt.getMonth() + 1) - 1);
-    candidate.setDate(rule.dayOfMonth || rule.startsAt.getDate());
+    candidate = shiftInTimeZone(candidate, timezone, 'year', interval);
     return rule.endsAt && candidate > rule.endsAt ? null : candidate;
   }
 
   if (rule.frequency === 'weekly') {
-    candidate = addDays(candidate, 1);
+    candidate = shiftInTimeZone(candidate, timezone, 'day', 1);
     for (let i = 0; i < 3660; i += 1) {
-      const possible = copyTime(after, candidate);
-      if (matchesRule(rule, possible)) return possible;
-      candidate = addDays(candidate, 1);
+      if (matchesRule(rule, candidate, timezone)) return candidate;
+      candidate = shiftInTimeZone(candidate, timezone, 'day', 1);
     }
   }
 
   return null;
 }
 
-function occurrenceNumberThrough(rule: RecurrenceRuleRow, through: Date) {
+function occurrenceNumberThrough(rule: RecurrenceRuleRow, through: Date, timezone: string) {
   let count = 0;
   let cursor = new Date(rule.startsAt);
 
   for (let i = 0; i < 2000; i += 1) {
     if (cursor > through) break;
-    if (matchesRule(rule, cursor)) count += 1;
-    const next = getNextOccurrence(rule, cursor);
+    if (matchesRule(rule, cursor, timezone)) count += 1;
+    const next = getNextOccurrence(rule, cursor, timezone);
     if (!next || next <= cursor) break;
     cursor = next;
   }
@@ -478,11 +511,13 @@ async function sendCellMeetingReminder(candidate: CellMeetingNotificationCandida
   const createdLog = await createNotificationLogIfNew(candidate, reminderType, memberIds.length);
   if (!createdLog) return false;
 
-  const time = candidate.time || candidate.meetingTime || formatTimeForMeeting(candidate.startAt);
+  const time = candidate.time || candidate.meetingTime || formatTimeForMeeting(candidate.startAt, candidate.timezone);
+  const minutes = Number(reminderType.replace('minutes_before_', ''));
   try {
-    await sendPushToUsers(
-      memberIds,
-      `${candidate.churchName} · ${CELL_MEETING_REMINDER_LABELS[reminderType]}`,
+    await queueCellPush(
+      candidate.cellId,
+      candidate.churchId,
+      `${candidate.churchName} · ${reminderLabel(minutes)}`,
       `${candidate.title || candidate.cellName} at ${time}`,
       {
         type: 'cell_meeting_reminder',
@@ -490,7 +525,8 @@ async function sendCellMeetingReminder(candidate: CellMeetingNotificationCandida
         scheduledEventId: candidate.scheduledEventId,
         occurrenceId: candidate.scheduledEventOccurrenceId ?? '',
         reminderType,
-      }
+      },
+      `scheduled-reminder-${candidate.scheduledEventId}-${candidate.scheduledEventOccurrenceId ?? 'base'}-${reminderType}-push`,
     );
     return true;
   } catch (error) {
@@ -501,13 +537,14 @@ async function sendCellMeetingReminder(candidate: CellMeetingNotificationCandida
 
 async function getUpcomingCellMeetingNotificationCandidates() {
   const now = new Date();
-  const until = new Date(now.getTime() + CELL_MEETING_NOTIFICATION_LOOKAHEAD_MS);
+  const until = new Date(now.getTime() + SCHEDULED_EVENT_NOTIFICATION_LOOKAHEAD_MS);
   const customOccurrences = await prisma.$queryRaw<CellMeetingNotificationCandidate[]>`
     SELECT
       se.id AS scheduledEventId,
       seo.id AS scheduledEventOccurrenceId,
       se.sourceId,
       se.title,
+      se.timezone,
       seo.occurrenceStartAt AS startAt,
       cm.cellId,
       c.name AS cellName,
@@ -535,6 +572,7 @@ async function getUpcomingCellMeetingNotificationCandidates() {
       NULL AS scheduledEventOccurrenceId,
       se.sourceId,
       se.title,
+      se.timezone,
       se.startAt,
       cm.cellId,
       c.name AS cellName,
@@ -563,6 +601,105 @@ async function getUpcomingCellMeetingNotificationCandidates() {
   return [...customOccurrences, ...scheduledEvents];
 }
 
+async function getUpcomingChurchEventNotificationCandidates() {
+  const now = new Date();
+  const until = new Date(now.getTime() + SCHEDULED_EVENT_NOTIFICATION_LOOKAHEAD_MS);
+  const exactOccurrences = await prisma.$queryRaw<ChurchEventNotificationCandidate[]>`
+    SELECT
+      se.id AS scheduledEventId,
+      seo.id AS scheduledEventOccurrenceId,
+      se.sourceId,
+      se.sourceModule,
+      se.title,
+      seo.occurrenceStartAt AS startAt,
+      se.timezone,
+      se.churchId,
+      ch.name AS churchName,
+      se.locationText
+    FROM scheduled_event_occurrences seo
+    JOIN scheduled_events se ON se.id = seo.scheduledEventId
+    JOIN churches ch ON ch.id = se.churchId
+    WHERE se.status = 'scheduled'
+      AND se.sourceModule = 'events'
+      AND se.recurrenceRuleId IS NULL
+      AND seo.status IN ('pending', 'generated')
+      AND seo.occurrenceStartAt > ${now}
+      AND seo.occurrenceStartAt <= ${until}
+    ORDER BY seo.occurrenceStartAt ASC
+  `;
+  const scheduledEvents = await prisma.$queryRaw<ChurchEventNotificationCandidate[]>`
+    SELECT
+      se.id AS scheduledEventId,
+      NULL AS scheduledEventOccurrenceId,
+      se.sourceId,
+      se.sourceModule,
+      se.title,
+      se.startAt,
+      se.timezone,
+      se.churchId,
+      ch.name AS churchName,
+      se.locationText
+    FROM scheduled_events se
+    JOIN churches ch ON ch.id = se.churchId
+    WHERE se.status = 'scheduled'
+      AND se.sourceModule = 'events'
+      AND se.startAt > ${now}
+      AND se.startAt <= ${until}
+      AND NOT EXISTS (
+        SELECT 1 FROM scheduled_event_occurrences seo
+        WHERE seo.scheduledEventId = se.id
+      )
+    ORDER BY se.startAt ASC
+  `;
+  return [...exactOccurrences, ...scheduledEvents];
+}
+
+async function queueChurchEventReminder(candidate: ChurchEventNotificationCandidate, type: string) {
+  const id = randomUUID();
+  const inserted = await prisma.$executeRaw`
+    INSERT IGNORE INTO scheduled_event_notification_logs (
+      id, scheduledEventId, scheduledEventOccurrenceId, reminderType, channel,
+      sourceModule, sourceId, recipientCount, scheduledFor, sentAt, errorMessage
+    ) VALUES (
+      ${id}, ${candidate.scheduledEventId}, ${candidate.scheduledEventOccurrenceId}, ${type}, 'push',
+      'events', ${candidate.sourceId}, 0, ${candidate.startAt}, NOW(3), NULL
+    )
+  `;
+  if (inserted === 0) return false;
+
+  const eventChurches = candidate.sourceId
+    ? await prisma.eventChurch.findMany({ where: { eventId: candidate.sourceId }, select: { churchId: true } })
+    : [];
+  const churchIds = [...new Set([candidate.churchId, ...eventChurches.map(item => item.churchId)].filter(Boolean))];
+  const minutes = Number(type.replace('minutes_before_', ''));
+  const time = formatTimeForMeeting(candidate.startAt, candidate.timezone);
+
+  try {
+    await Promise.all(churchIds.map(churchId => queueChurchPush(
+      churchId,
+      `${candidate.churchName} · ${reminderLabel(minutes)}`,
+      `${candidate.title} at ${time}${candidate.locationText ? ` · ${candidate.locationText}` : ''}`,
+      {
+        type: 'event_reminder',
+        eventId: candidate.sourceId ?? '',
+        scheduledEventId: candidate.scheduledEventId,
+        reminderType: type,
+      },
+      `scheduled-reminder-${candidate.scheduledEventId}-${candidate.scheduledEventOccurrenceId ?? 'base'}-${type}-push-${churchId}`,
+    )));
+    return true;
+  } catch (error) {
+    await prisma.$executeRaw`
+      DELETE FROM scheduled_event_notification_logs
+      WHERE scheduledEventId = ${candidate.scheduledEventId}
+        AND scheduledFor = ${candidate.startAt}
+        AND reminderType = ${type}
+        AND channel = 'push'
+    `;
+    throw error;
+  }
+}
+
 async function createCellMeetingOccurrence(
   event: ScheduledEventRow,
   selectedOccurrence?: ScheduledEventOccurrenceRow,
@@ -584,12 +721,23 @@ async function createCellMeetingOccurrence(
     if (generatedCount > 0) {
       await tx.$executeRaw`
         INSERT INTO cell_meetings (
-          id, cellId, date, time, topic, notes, recurrenceRuleId, createdAt, updatedAt
+          id, cellId, date, time, topic, notes, recurrenceRuleId,
+          recordType, sourceMeetingId, scheduledOccurrenceId, createdAt, updatedAt
         ) VALUES (
           ${generatedMeetingId}, ${template.cellId}, ${occurrenceStartAt},
           ${template.time || template.meetingTime || formatTimeForMeeting(occurrenceStartAt)},
-          ${template.topic}, NULL, NULL, NOW(3), NOW(3)
+          ${template.topic}, NULL, NULL,
+          'scheduled_occurrence', ${event.sourceId}, ${occurrence.id}, NOW(3), NOW(3)
         )
+      `;
+    } else {
+      await tx.$executeRaw`
+        UPDATE cell_meetings
+        SET recordType = 'scheduled_source',
+            sourceMeetingId = NULL,
+            scheduledOccurrenceId = ${occurrence.id},
+            updatedAt = NOW(3)
+        WHERE id = ${event.sourceId}
       `;
     }
 
@@ -663,8 +811,8 @@ async function advanceOrCompleteSchedule(event: ScheduledEventRow) {
     return;
   }
 
-  const sentCount = occurrenceNumberThrough(rule, event.startAt);
-  const nextStartAt = rule.count && sentCount >= rule.count ? null : getNextOccurrence(rule, event.startAt);
+  const sentCount = occurrenceNumberThrough(rule, event.startAt, event.timezone || 'UTC');
+  const nextStartAt = rule.count && sentCount >= rule.count ? null : getNextOccurrence(rule, event.startAt, event.timezone || 'UTC');
   if (!nextStartAt) {
     await prisma.$executeRaw`
       UPDATE scheduled_events
@@ -686,7 +834,7 @@ async function advanceOrCompleteSchedule(event: ScheduledEventRow) {
 export async function processDueScheduledCommunicationEvents() {
   const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
   const events = await prisma.$queryRaw<ScheduledEventRow[]>`
-    SELECT id, sourceModule, sourceId, title, startAt, endAt, recurrenceRuleId
+    SELECT id, sourceModule, sourceId, title, startAt, endAt, timezone, recurrenceRuleId
     FROM scheduled_events
     WHERE status = 'scheduled'
       AND startAt <= NOW(3)
@@ -728,7 +876,7 @@ export async function processDueScheduledCellMeetingEvents() {
   const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
   const customOccurrences = await prisma.$queryRaw<DueCellMeetingOccurrenceRow[]>`
     SELECT
-      se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.recurrenceRuleId,
+      se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.timezone, se.recurrenceRuleId,
       seo.id AS occurrenceId, seo.occurrenceStartAt, seo.occurrenceEndAt,
       seo.status AS occurrenceStatus, seo.generatedSourceId AS occurrenceGeneratedSourceId
     FROM scheduled_event_occurrences seo
@@ -772,7 +920,7 @@ export async function processDueScheduledCellMeetingEvents() {
   }
 
   const events = await prisma.$queryRaw<ScheduledEventRow[]>`
-    SELECT se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.recurrenceRuleId
+    SELECT se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.timezone, se.recurrenceRuleId
     FROM scheduled_events se
     WHERE se.status = 'scheduled'
       AND se.startAt <= NOW(3)
@@ -818,40 +966,32 @@ export async function processDueScheduledCellMeetingEvents() {
   }
 }
 
-export async function processScheduledCellMeetingNotifications() {
-  const candidates = await getUpcomingCellMeetingNotificationCandidates();
-  let sentCount = 0;
+export async function processScheduledEventNotifications() {
+  const [cellCandidates, eventCandidates] = await Promise.all([
+    getUpcomingCellMeetingNotificationCandidates(),
+    getUpcomingChurchEventNotificationCandidates(),
+  ]);
+  let queuedCount = 0;
 
-  for (const candidate of candidates) {
-    const reminderTypes = getDueCellMeetingReminderTypes(candidate.startAt);
-    for (const reminderType of reminderTypes) {
+  for (const candidate of cellCandidates) {
+    for (const type of getDueScheduledReminderTypes(candidate.startAt)) {
       try {
-        const sent = await sendCellMeetingReminder(candidate, reminderType);
-        if (sent) sentCount += 1;
+        if (await sendCellMeetingReminder(candidate, type)) queuedCount += 1;
       } catch (error) {
-        console.error(
-          `[ScheduledEvents] Failed to send ${reminderType} cell meeting reminder for ${candidate.scheduledEventId}`,
-          error,
-        );
+        console.error(`[ScheduledEvents] Failed to queue ${type} reminder for ${candidate.scheduledEventId}`, error);
       }
     }
   }
 
-  if (sentCount > 0) {
-    console.log(`[ScheduledEvents] Sent ${sentCount} cell meeting reminder notification(s)`);
+  for (const candidate of eventCandidates) {
+    for (const type of getDueScheduledReminderTypes(candidate.startAt)) {
+      try {
+        if (await queueChurchEventReminder(candidate, type)) queuedCount += 1;
+      } catch (error) {
+        console.error(`[ScheduledEvents] Failed to queue ${type} reminder for ${candidate.scheduledEventId}`, error);
+      }
+    }
   }
-}
 
-export function startScheduledEventWorker() {
-  const expression = process.env.SCHEDULED_EVENTS_CRON || '* * * * *';
-  cron.schedule(expression, () => {
-    Promise.all([
-      processDueScheduledCommunicationEvents(),
-      processDueScheduledCellMeetingEvents(),
-      processScheduledCellMeetingNotifications(),
-    ]).catch(error => {
-      console.error('[ScheduledEvents] Worker failed:', error);
-    });
-  });
-  console.log(`[ScheduledEvents] Scheduler initialized (${expression})`);
+  if (queuedCount > 0) console.log(`[ScheduledEvents] Queued ${queuedCount} scheduled event reminder(s)`);
 }

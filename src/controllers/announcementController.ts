@@ -13,6 +13,7 @@ import {
   saveRecurrenceRule,
   syncAnnouncementToSchedule,
 } from '../services/schedulerService';
+import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const recurrenceRuleSchema = z.object({
   frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional().nullable(),
@@ -34,6 +35,7 @@ const schema = z.object({
   attachments: z.string().optional(),
   deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
   scheduledAt: z.string().datetime().optional().nullable(),
+  timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
   recurrenceRule: recurrenceRuleSchema,
 });
 
@@ -148,7 +150,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, ...announcementData } = parsed.data;
+  const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, timezone: requestedTimezone, ...announcementData } = parsed.data;
   const mode = deliveryMode ?? 'now';
 
   if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
@@ -182,6 +184,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     res.status(403).json({ success: false, message: 'Access denied to this church' });
     return;
   }
+  const timezone = await resolveTimeZone({ req, explicit: requestedTimezone, churchId: targetChurchId });
 
   const item = await prisma.announcement.create({
     data: {
@@ -200,6 +203,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     ...item,
     scheduledAt: startAt,
     recurrenceRuleId,
+    timezone,
   });
 
   const [itemWithSchedule] = await attachAnnouncementSchedules([item]);
@@ -242,13 +246,20 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { deliveryMode, scheduledAt, recurrenceRule, ...announcementData } = parsed.data;
+  const { deliveryMode, scheduledAt, recurrenceRule, timezone: requestedTimezone, ...announcementData } = parsed.data;
   const mode = deliveryMode ?? undefined;
 
   if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
     return;
   }
+  const existingTimezoneRows = await prisma.$queryRaw<Array<{ timezone: string }>>`
+    SELECT timezone FROM scheduled_events
+    WHERE sourceModule = 'announcements' AND sourceId = ${id} LIMIT 1
+  `;
+  const timezone = requestedTimezone
+    ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: item.churchId })
+    : existingTimezoneRows[0]?.timezone ?? await resolveTimeZone({ req, churchId: item.churchId });
 
   const updated = await prisma.announcement.update({
     where: { id },
@@ -281,6 +292,7 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       ...updated,
       scheduledAt: startAt,
       recurrenceRuleId,
+      timezone,
     });
   } else if (mode === 'now') {
     if (existingSchedule.length > 0) {
@@ -294,6 +306,7 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       ...updated,
       scheduledAt: new Date(),
       recurrenceRuleId: null,
+      timezone,
     });
   }
 

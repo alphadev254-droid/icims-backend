@@ -101,6 +101,7 @@ model User {
   churchId                 String?
   ministryAdminId          String?
   accountCountry           String?   @map("account_country")
+  timezone                 String?
   regions                  String?   @db.Text
   districts                String?   @db.Text
   traditionalAuthorities   String?   @db.Text
@@ -192,6 +193,7 @@ model Church {
   name                 String
   location             String
   country              String   @default("Malawi")
+  timezone             String?
   region               String?
   district             String?
   traditionalAuthority String?
@@ -408,6 +410,7 @@ model ScheduledEvent {
   @@index([approvalStatus])
   @@index([organizerUserId])
   @@index([recurrenceRuleId])
+  @@index([sourceModule, status, startAt], map: "scheduled_events_source_status_start_idx")
   @@map("scheduled_events")
 }
 
@@ -427,6 +430,7 @@ model ScheduledEventOccurrence {
 
   @@unique([scheduledEventId, occurrenceStartAt], map: "scheduled_event_occurrence_key")
   @@index([scheduledEventId, status])
+  @@index([status, occurrenceStartAt], map: "scheduled_event_occ_status_start_idx")
   @@index([generatedSourceModule, generatedSourceId], map: "scheduled_event_occ_generated_idx")
   @@map("scheduled_event_occurrences")
 }
@@ -1860,6 +1864,9 @@ model CellMeeting {
   topic            String?
   notes            String?  @db.Text
   recurrenceRuleId String?
+  recordType       String   @default("direct")
+  sourceMeetingId  String?
+  scheduledOccurrenceId String? @unique
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -1869,6 +1876,8 @@ model CellMeeting {
   @@index([cellId])
   @@index([date])
   @@index([recurrenceRuleId])
+  @@index([recordType])
+  @@index([sourceMeetingId])
   @@map("cell_meetings")
 }
 

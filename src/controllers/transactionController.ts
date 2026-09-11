@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { buildPersonSearchWhere } from '../lib/personSearch';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 
 function groupDonationDetails(rows: any[]) {
   const grouped = new Map<string, any[]>();
@@ -76,9 +77,8 @@ export async function getTransactions(req: Request, res: Response): Promise<void
       whereClause.user = buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']);
     }
     if (startDate || endDate) {
-      whereClause.createdAt = {};
-      if (startDate) whereClause.createdAt.gte = new Date(startDate);
-      if (endDate) whereClause.createdAt.lte = new Date(endDate);
+      const timezone = await resolveTimeZone({ req, churchId: req.user?.churchId });
+      whereClause.createdAt = dateRangeInTimeZone(startDate, endDate, timezone);
     }
 
     const [transactions, total] = await Promise.all([
@@ -179,9 +179,8 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     whereClause.user = buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']);
   }
   if (startDate || endDate) {
-    whereClause.createdAt = {};
-    if (startDate) whereClause.createdAt.gte = new Date(startDate);
-    if (endDate) whereClause.createdAt.lte = new Date(endDate);
+    const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? req.user?.churchId });
+    whereClause.createdAt = dateRangeInTimeZone(startDate, endDate, timezone);
   }
 
   const [transactions, total] = await Promise.all([
@@ -338,9 +337,8 @@ export async function exportTransactions(req: Request, res: Response): Promise<v
     where.id = transactionIds.length ? { in: transactionIds } : { in: ['__no_matching_campaign_transactions__'] };
   }
   if (startDate || endDate) {
-    where.createdAt = {};
-    if (startDate) where.createdAt.gte = new Date(startDate);
-    if (endDate) where.createdAt.lte = new Date(endDate);
+    const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? req.user?.churchId });
+    where.createdAt = dateRangeInTimeZone(startDate, endDate, timezone);
   }
 
   const [transactions, total] = await Promise.all([
@@ -427,13 +425,8 @@ export async function getGivingByMember(req: Request, res: Response): Promise<vo
     scopedChurchIds = [filterChurchId];
   }
 
-  const dateFilter: any = {};
-  if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) {
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    dateFilter.lte = end;
-  }
+  const timezone = await resolveTimeZone({ req, churchId: filterChurchId ?? req.user?.churchId });
+  const dateFilter = dateRangeInTimeZone(startDate, endDate, timezone);
 
   const donationWhere: any = {
     churchId: { in: scopedChurchIds },

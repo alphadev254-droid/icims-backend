@@ -8,7 +8,8 @@ import './workers/reminderCacheWorker';
 import { startScheduledReminderWorker } from './workers/scheduledReminderWorker';
 import { startSubscriptionCron, startKPICron, startWithdrawalReviewCron } from './workers/subscriptionCron';
 import { startEventStatusWorker } from './workers/eventStatusWorker';
-import { startScheduledEventWorker } from './workers/scheduledEventWorker';
+import { startScheduledEventExecutionScanner } from './workers/scheduledEventExecutionScanner';
+import { startScheduledEventReminderScanner } from './workers/scheduledEventReminderScanner';
 import { startPaymentReconciliationWorker } from './workers/paymentReconciliationWorker';
 import { startSettlementReconciliationWorker } from './workers/settlementReconciliationWorker';
 
@@ -42,7 +43,8 @@ async function main() {
   startSubscriptionCron();
   startKPICron();
   startEventStatusWorker();
-  startScheduledEventWorker();
+  startScheduledEventExecutionScanner();
+  startScheduledEventReminderScanner();
   startPaymentReconciliationWorker();
   startSettlementReconciliationWorker();
   startWithdrawalReviewCron();

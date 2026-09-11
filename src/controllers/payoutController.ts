@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { reconcilePaystackSettlements } from '../services/settlementReconciliationService';
 import prisma from '../lib/prisma';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 import { reconcileAdminWithdrawal } from './adminTreasuryController';
 import { syncLegacyMinistryWithdrawal } from '../services/legacyPayoutService';
 import { logger } from '../utils/logger';
@@ -29,9 +30,8 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
   if (ministryAdminId) where.ministryAdminId = ministryAdminId;
   if (gateway) where.gateway = gateway;
   if (dateFrom || dateTo) {
-    where.createdAt = {};
-    if (dateFrom) where.createdAt.gte = new Date(dateFrom);
-    if (dateTo) where.createdAt.lte = new Date(`${dateTo}T23:59:59.999Z`);
+    const timezone = await resolveTimeZone({ req, ministryAdminId: ministryAdminId || undefined });
+    where.createdAt = dateRangeInTimeZone(dateFrom, dateTo, timezone);
   }
   if (search) {
     const users = await prisma.user.findMany({

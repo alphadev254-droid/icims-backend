@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
+import { zonedDateTimeToUtc } from '../lib/timezone';
 
 type SourceModule = 'events' | 'cell_meetings' | 'announcements' | 'team_communications';
 
@@ -28,6 +29,17 @@ export type ScheduleRecurrenceRuleRow = {
 };
 
 export type ExactScheduleOccurrenceInput = Date | string;
+
+export function buildExactScheduleOccurrenceStarts(
+  dates: string[] | undefined,
+  time?: string | null,
+  timezone = 'UTC',
+): Date[] {
+  return [...new Set(dates ?? [])]
+    .map(date => zonedDateTimeToUtc(date, time, timezone))
+    .filter(date => !Number.isNaN(date.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime());
+}
 
 type UpsertScheduledEventInput = {
   ministryId: string;
@@ -61,6 +73,7 @@ type EventScheduleSource = {
   churchId: string;
   createdById?: string | null;
   recurrenceRuleId?: string | null;
+  timezone?: string | null;
   church?: { ministryAdminId?: string | null } | null;
 };
 
@@ -71,6 +84,7 @@ type CellMeetingScheduleSource = {
   topic?: string | null;
   notes?: string | null;
   recurrenceRuleId?: string | null;
+  timezone?: string | null;
   cellId: string;
   cell: {
     id: string;
@@ -92,6 +106,7 @@ type AnnouncementScheduleSource = {
   createdById?: string | null;
   recurrenceRuleId?: string | null;
   scheduledAt: Date;
+  timezone?: string | null;
   church?: { ministryAdminId?: string | null } | null;
 };
 
@@ -103,6 +118,7 @@ type TeamCommunicationScheduleSource = {
   authorId?: string | null;
   recurrenceRuleId?: string | null;
   scheduledAt: Date;
+  timezone?: string | null;
   team: {
     id: string;
     name: string;
@@ -111,13 +127,8 @@ type TeamCommunicationScheduleSource = {
   };
 };
 
-function combineDateAndTime(date: Date, time?: string | null): Date {
-  const combined = new Date(date);
-  const match = time?.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return combined;
-
-  combined.setHours(Number(match[1]), Number(match[2]), 0, 0);
-  return combined;
+function combineDateAndTime(date: Date, time?: string | null, timezone = 'UTC'): Date {
+  return zonedDateTimeToUtc(date, time, timezone);
 }
 
 function withMinimumEnd(startAt: Date, endAt: Date, fallbackMinutes: number): Date {
@@ -340,12 +351,16 @@ export async function deleteScheduledEventForSource(sourceModule: SourceModule, 
   }
 }
 
-export async function syncEventToSchedule(event: EventScheduleSource): Promise<void> {
+export async function syncEventToSchedule(
+  event: EventScheduleSource,
+  exactOccurrences?: ExactScheduleOccurrenceInput[],
+): Promise<void> {
   const ministryId = event.church?.ministryAdminId ?? event.createdById ?? event.churchId;
-  const startAt = combineDateAndTime(event.date, event.time);
-  const endAt = withMinimumEnd(startAt, combineDateAndTime(event.endDate, event.time), 60);
+  const timezone = event.timezone || 'UTC';
+  const startAt = combineDateAndTime(event.date, event.time, timezone);
+  const endAt = withMinimumEnd(startAt, combineDateAndTime(event.endDate, event.time, timezone), 60);
 
-  await upsertScheduledEvent({
+  const scheduledEventId = await upsertScheduledEvent({
     ministryId,
     churchId: event.churchId,
     title: event.title,
@@ -355,6 +370,7 @@ export async function syncEventToSchedule(event: EventScheduleSource): Promise<v
     sourceId: event.id,
     startAt,
     endAt,
+    timezone,
     locationText: event.location,
     status: event.status === 'upcoming' ? 'scheduled' : event.status,
     approvalStatus: 'not_required',
@@ -362,6 +378,13 @@ export async function syncEventToSchedule(event: EventScheduleSource): Promise<v
     createdById: event.createdById,
     recurrenceRuleId: event.recurrenceRuleId,
   });
+
+  const durationMs = Math.max(60 * 60 * 1000, endAt.getTime() - startAt.getTime());
+  if (exactOccurrences) {
+    await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, durationMs);
+  } else {
+    await clearPendingScheduledEventOccurrences(scheduledEventId);
+  }
 }
 
 export async function syncCellMeetingToSchedule(
@@ -371,7 +394,8 @@ export async function syncCellMeetingToSchedule(
 ): Promise<void> {
   const ministryId = meeting.cell.church?.ministryAdminId ?? createdById ?? meeting.cell.churchId;
   const title = meeting.topic ? `${meeting.cell.name}: ${meeting.topic}` : `${meeting.cell.name} Meeting`;
-  const startAt = combineDateAndTime(meeting.date, meeting.time || meeting.cell.meetingTime);
+  const timezone = meeting.timezone || 'UTC';
+  const startAt = combineDateAndTime(meeting.date, meeting.time || meeting.cell.meetingTime, timezone);
   const endAt = new Date(startAt.getTime() + 120 * 60 * 1000);
   const durationMs = endAt.getTime() - startAt.getTime();
 
@@ -385,6 +409,7 @@ export async function syncCellMeetingToSchedule(
     sourceId: meeting.id,
     startAt,
     endAt,
+    timezone,
     locationText: meeting.cell.zone,
     status: 'scheduled',
     approvalStatus: 'not_required',
@@ -414,6 +439,7 @@ export async function syncAnnouncementToSchedule(announcement: AnnouncementSched
     sourceId: announcement.id,
     startAt: announcement.scheduledAt,
     endAt,
+    timezone: announcement.timezone,
     status: 'scheduled',
     approvalStatus: 'not_required',
     organizerUserId: announcement.createdById,
@@ -436,6 +462,7 @@ export async function syncTeamCommunicationToSchedule(communication: TeamCommuni
     sourceId: communication.id,
     startAt: communication.scheduledAt,
     endAt,
+    timezone: communication.timezone,
     status: 'scheduled',
     approvalStatus: 'not_required',
     organizerUserId: communication.authorId,

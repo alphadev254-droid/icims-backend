@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 import axios from 'axios';
 import prisma from '../lib/prisma';
 import { groupByDateRanges } from '../lib/dateGrouping';
@@ -560,13 +561,8 @@ export async function getGivingSummary(req: Request, res: Response): Promise<voi
     scopedChurchIds = [filterChurchId];
   }
 
-  const dateFilter: any = {};
-  if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) {
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    dateFilter.lte = end;
-  }
+  const reportTimezone = await resolveTimeZone({ req, churchId: filterChurchId ?? req.user?.churchId });
+  const dateFilter = dateRangeInTimeZone(startDate, endDate, reportTimezone);
 
   const where: any = {
     churchId: { in: scopedChurchIds },
@@ -970,13 +966,15 @@ export async function getDonations(req: Request, res: Response): Promise<void> {
   const skip  = (page - 1) * limit;
 
   // Build date filter
-  const dateFilter: any = {};
-  if (startDate && typeof startDate === 'string') dateFilter.gte = new Date(startDate);
-  if (endDate && typeof endDate === 'string') {
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
-    dateFilter.lte = end;
-  }
+  const reportTimezone = await resolveTimeZone({
+    req,
+    churchId: typeof filterChurchId === 'string' ? filterChurchId : req.user?.churchId,
+  });
+  const dateFilter = dateRangeInTimeZone(
+    typeof startDate === 'string' ? startDate : undefined,
+    typeof endDate === 'string' ? endDate : undefined,
+    reportTimezone,
+  );
 
   // Members see only their own donations
   if (roleName === 'member') {

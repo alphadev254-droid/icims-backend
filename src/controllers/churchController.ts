@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
 import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
@@ -117,6 +118,7 @@ const churchSchema = z.object({
   yearFounded: z.coerce.number().int().positive().optional(),
   latitude: z.coerce.number().optional(),
   longitude: z.coerce.number().optional(),
+  timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
 });
 
 export async function createChurch(req: Request, res: Response): Promise<void> {
@@ -174,6 +176,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
   }
 
   const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, pastorName, yearFounded, latitude, longitude } = parsed.data;
+  const timezone = await resolveTimeZone({ req, explicit: parsed.data.timezone, ministryAdminId: adminUserId });
 
   // Build location string
   const locParts = [traditionalAuthority, district, region].filter(Boolean);
@@ -198,6 +201,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
           ministryAdminId: adminUserId,
           latitude: latitude ?? null,
           longitude: longitude ?? null,
+          timezone,
         },
         include: { _count: { select: { users: true } } },
       });
@@ -256,6 +260,7 @@ const updateChurchSchema = z.object({
   yearFounded: z.coerce.number().int().positive().optional(),
   latitude: z.coerce.number().optional().nullable(),
   longitude: z.coerce.number().optional().nullable(),
+  timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
 });
 
 export async function updateChurch(req: Request, res: Response): Promise<void> {
