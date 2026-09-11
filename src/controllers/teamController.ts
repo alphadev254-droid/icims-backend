@@ -232,9 +232,9 @@ export const getTeamMembers = async (req: Request, res: Response) => {
 
     if (search) {
       whereClause.OR = [
-        { firstName: { contains: search as string, mode: 'insensitive' } },
-        { lastName: { contains: search as string, mode: 'insensitive' } },
-        { email: { contains: search as string, mode: 'insensitive' } },
+        { firstName: { contains: search as string } },
+        { lastName: { contains: search as string } },
+        { email: { contains: search as string } },
       ];
     }
     

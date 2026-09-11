@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { searchActiveAdultMembers } from '../lib/memberSearch';
 
 const visitorSchema = z.object({
   name: z.string().min(1, 'Visitor name required'),
@@ -1311,7 +1312,6 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
   const q = String(req.query.q || '').trim();
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 70, 1), 100);
-  const skip = (page - 1) * limit;
 
   if (q.length < 3) {
     res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
@@ -1319,53 +1319,12 @@ export async function searchAttendanceMembers(req: Request, res: Response): Prom
   }
 
   const linkedChurchIds = await getAttendanceLinkedChurchIds(access.record);
-  const terms = q.split(/\s+/).filter(Boolean);
-  const phoneVariants = phoneLookupKeys(q);
-  const where: any = {
-    churchId: { in: linkedChurchIds },
-    status: 'active',
-    memberType: { not: 'child' },
-    OR: [
-      { firstName: { contains: q, mode: 'insensitive' } },
-      { lastName: { contains: q, mode: 'insensitive' } },
-      { email: { contains: q, mode: 'insensitive' } },
-      { phone: { contains: q } },
-      ...(phoneVariants.length > 1 ? phoneVariants.map(v => ({ phone: { contains: v } })) : []),
-      ...(terms.length > 1
-        ? [{
-            AND: terms.map(term => ({
-              OR: [
-                { firstName: { contains: term, mode: 'insensitive' } },
-                { lastName: { contains: term, mode: 'insensitive' } },
-                { email: { contains: term, mode: 'insensitive' } },
-                { phone: { contains: term } },
-              ],
-            })),
-          }]
-        : []),
-    ],
-  };
+  if (!linkedChurchIds.length) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
 
-  const [members, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        memberType: true,
-        gender: true,
-        dateOfBirth: true,
-        church: { select: { id: true, name: true } },
-      },
-      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-      skip,
-      take: limit,
-    }),
-    prisma.user.count({ where }),
-  ]);
+  const { members, total } = await searchActiveAdultMembers({ churchIds: linkedChurchIds, query: q, page, limit });
 
   const participantDelegate = (prisma as any).attendanceParticipant;
   const existing = members.length

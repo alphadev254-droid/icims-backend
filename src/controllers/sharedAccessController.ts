@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { searchActiveAdultMembers } from '../lib/memberSearch';
 
 // ─── Protected: Generate a new shared access link ──────────────────────────
 
@@ -767,24 +768,6 @@ function extractQrToken(value: string) {
   return decodeURIComponent(match?.[1] || trimmed);
 }
 
-function phoneLookupKeys(value?: string | null) {
-  const raw = String(value || '').trim();
-  const digits = raw.replace(/\D/g, '');
-  const keys = new Set<string>();
-  if (raw) keys.add(raw.toLowerCase());
-  if (digits) keys.add(digits);
-  if (digits.startsWith('265') && digits.length === 12) {
-    const local = digits.slice(3);
-    keys.add(local); keys.add(`0${local}`); keys.add(`265${local}`); keys.add(`+265${local}`);
-  } else if (digits.startsWith('0') && digits.length === 10) {
-    const local = digits.slice(1);
-    keys.add(local); keys.add(`0${local}`); keys.add(`265${local}`); keys.add(`+265${local}`);
-  } else if (digits.length === 9) {
-    keys.add(digits); keys.add(`0${digits}`); keys.add(`265${digits}`); keys.add(`+265${digits}`);
-  }
-  return Array.from(keys).filter(Boolean);
-}
-
 function eventChurchIds(event: any): string[] {
   const ids = new Set<string>();
   if (event?.churchId) ids.add(event.churchId);
@@ -855,7 +838,6 @@ export async function searchMembersByScannerLink(req: Request, res: Response): P
   const q = String(req.query.q || '').trim();
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 20, 1), 50);
-  const skip = (page - 1) * limit;
   const accessCode = typeof req.query.accessCode === 'string' ? req.query.accessCode : undefined;
 
   const context = await getScannerAttendanceContext(token, accessCode);
@@ -868,43 +850,7 @@ export async function searchMembersByScannerLink(req: Request, res: Response): P
   }
 
   const linkedChurchIds = await getAttendanceLinkedChurchIds(attendance);
-  const terms = q.split(/\s+/).filter(Boolean);
-  const phoneVariants = phoneLookupKeys(q);
-  const where: any = {
-    churchId: { in: linkedChurchIds },
-    status: 'active',
-    memberType: { not: 'child' },
-    OR: [
-      { firstName: { contains: q, mode: 'insensitive' } },
-      { lastName: { contains: q, mode: 'insensitive' } },
-      { email: { contains: q, mode: 'insensitive' } },
-      { phone: { contains: q } },
-      ...(phoneVariants.length > 1 ? phoneVariants.map(v => ({ phone: { contains: v } })) : []),
-      ...(terms.length > 1
-        ? [{
-            AND: terms.map(term => ({
-              OR: [
-                { firstName: { contains: term, mode: 'insensitive' } },
-                { lastName: { contains: term, mode: 'insensitive' } },
-                { email: { contains: term, mode: 'insensitive' } },
-                { phone: { contains: term } },
-              ],
-            })),
-          }]
-        : []),
-    ],
-  };
-
-  const [members, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      select: { id: true, churchId: true, firstName: true, lastName: true, email: true, phone: true, memberType: true, gender: true, dateOfBirth: true },
-      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-      skip,
-      take: limit,
-    }),
-    prisma.user.count({ where }),
-  ]);
+  const { members, total } = await searchActiveAdultMembers({ churchIds: linkedChurchIds, query: q, page, limit });
 
   const participantDelegate = (prisma as any).attendanceParticipant;
   const existing = members.length
