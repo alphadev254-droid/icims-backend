@@ -10,6 +10,7 @@ const redisConnection = {
 
 export interface PushJobData {
   churchId: string;
+  cellId?: string;
   title: string;
   body: string;
   data?: Record<string, string>;
@@ -28,13 +29,18 @@ export const notificationQueue = new Queue<PushJobData>('push-notifications', {
 export const notificationWorker = new Worker<PushJobData>(
   'push-notifications',
   async (job: Job<PushJobData>) => {
-    const { churchId, title, body, data } = job.data;
+    const { churchId, cellId, title, body, data } = job.data;
     const type = data?.type ?? 'unknown';
 
     console.log(`[PushQueue] ▶ Processing job ${job.id} | type=${type} | church=${churchId} | title="${title}"`);
 
     const members = await prisma.user.findMany({
-      where: { churchId, status: 'active', loginEnabled: true },
+      where: {
+        churchId,
+        status: 'active',
+        loginEnabled: true,
+        ...(cellId ? { cellMemberships: { some: { cellId, status: 'active' } } } : {}),
+      },
       select: { id: true },
     });
 
@@ -77,4 +83,22 @@ export async function queueChurchPush(
   console.log(`[PushQueue] 📥 Queuing push | type=${type} | church=${churchId} | title="${title}"`);
   const job = await notificationQueue.add('send-push', { churchId, title, body, data });
   console.log(`[PushQueue] 📬 Job ${job.id} added to queue | type=${type} | church=${churchId}`);
+}
+
+export async function queueCellPush(
+  cellId: string,
+  churchId: string,
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+  jobId?: string,
+): Promise<void> {
+  const type = data?.type ?? 'unknown';
+  console.log(`[PushQueue] 📥 Queuing cell push | type=${type} | cell=${cellId} | title="${title}"`);
+  const job = await notificationQueue.add(
+    'send-push',
+    { churchId, cellId, title, body, data },
+    { delay: 0, ...(jobId ? { jobId } : {}) },
+  );
+  console.log(`[PushQueue] 📬 Job ${job.id} added to queue | type=${type} | cell=${cellId}`);
 }

@@ -8,6 +8,7 @@ import { cellMemberAddedTemplate } from '../lib/cellEmailTemplates';
 import { assertScheduleAccess } from '../lib/scheduleAccess';
 import { deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncCellMeetingToSchedule } from '../services/schedulerService';
 import { buildPersonSearchWhere } from '../lib/personSearch';
+import { queueCellPush } from '../lib/notificationQueue';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -47,6 +48,20 @@ function buildExactOccurrenceStarts(dates: string[] | undefined, time?: string |
     .map(date => combineScheduleDateAndTime(date, time))
     .filter(date => !Number.isNaN(date.getTime()))
     .sort((a, b) => a.getTime() - b.getTime());
+}
+
+function isBeforeToday(value: Date): boolean {
+  return startOfDay(value).getTime() < startOfDay(new Date()).getTime();
+}
+
+function isSameCalendarDay(left: Date, right: Date): boolean {
+  return startOfDay(left).getTime() === startOfDay(right).getTime();
+}
+
+function recurrenceEndsBeforeStart(recurrenceRule: { endsAt?: string | null } | null | undefined, start: Date): boolean {
+  if (!recurrenceRule?.endsAt) return false;
+  const endsAt = new Date(recurrenceRule.endsAt);
+  return Number.isNaN(endsAt.getTime()) || startOfDay(endsAt).getTime() < startOfDay(start).getTime();
 }
 
 type CellAttendanceRateEntry = {
@@ -936,12 +951,24 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
     ? await prisma.$queryRaw<Array<{
       id: string;
       sourceId: string;
+      title: string;
+      description: string | null;
+      type: string;
       startAt: Date;
       endAt: Date;
+      timezone: string;
+      locationText: string | null;
       status: string;
+      approvalStatus: string;
+      organizerUserId: string | null;
+      createdById: string | null;
       recurrenceRuleId: string | null;
+      createdAt: Date;
+      updatedAt: Date;
     }>>`
-      SELECT id, sourceId, startAt, endAt, status, recurrenceRuleId
+      SELECT id, sourceId, title, description, type, startAt, endAt, timezone,
+             locationText, status, approvalStatus, organizerUserId, createdById,
+             recurrenceRuleId, createdAt, updatedAt
       FROM scheduled_events
       WHERE sourceModule = 'cell_meetings' AND sourceId IN (${Prisma.join(meetingIds)})
     `
@@ -950,15 +977,19 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   const scheduleIds = scheduleRows.map(row => row.id);
   const occurrenceRows = scheduleIds.length > 0
     ? await prisma.$queryRaw<Array<{
+      id: string;
       scheduledEventId: string;
       occurrenceStartAt: Date;
       occurrenceEndAt: Date;
       status: string;
+      generatedSourceModule: string | null;
+      generatedSourceId: string | null;
+      errorMessage: string | null;
     }>>`
-      SELECT scheduledEventId, occurrenceStartAt, occurrenceEndAt, status
+      SELECT id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+             generatedSourceModule, generatedSourceId, errorMessage
       FROM scheduled_event_occurrences
       WHERE scheduledEventId IN (${Prisma.join(scheduleIds)})
-        AND status <> 'generated'
       ORDER BY occurrenceStartAt ASC
     `
     : [];
@@ -976,14 +1007,25 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
     id: m.id, cellId: m.cellId, date: m.date, time: m.time, topic: m.topic, notes: m.notes, recurrenceRuleId: m.recurrenceRuleId,
     recurrenceRule: m.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(m.recurrenceRuleId)) : null,
     scheduledEvent: schedulesByMeetingId.has(m.id) ? {
+      id: schedulesByMeetingId.get(m.id)!.id,
+      title: schedulesByMeetingId.get(m.id)!.title,
+      description: schedulesByMeetingId.get(m.id)!.description,
+      type: schedulesByMeetingId.get(m.id)!.type,
       startAt: schedulesByMeetingId.get(m.id)!.startAt,
       endAt: schedulesByMeetingId.get(m.id)!.endAt,
+      timezone: schedulesByMeetingId.get(m.id)!.timezone,
+      locationText: schedulesByMeetingId.get(m.id)!.locationText,
       status: schedulesByMeetingId.get(m.id)!.status,
+      approvalStatus: schedulesByMeetingId.get(m.id)!.approvalStatus,
+      organizerUserId: schedulesByMeetingId.get(m.id)!.organizerUserId,
+      createdById: schedulesByMeetingId.get(m.id)!.createdById,
       recurrenceRuleId: schedulesByMeetingId.get(m.id)!.recurrenceRuleId,
       recurrenceRule: schedulesByMeetingId.get(m.id)!.recurrenceRuleId
         ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedulesByMeetingId.get(m.id)!.recurrenceRuleId!))
         : null,
       occurrences: occurrencesByScheduleId.get(schedulesByMeetingId.get(m.id)!.id) ?? [],
+      createdAt: schedulesByMeetingId.get(m.id)!.createdAt,
+      updatedAt: schedulesByMeetingId.get(m.id)!.updatedAt,
     } : null,
     createdAt: m.createdAt, updatedAt: m.updatedAt,
     presentCount: m.attendance.filter(a => a.status === 'present').length,
@@ -1035,7 +1077,7 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
       zone: true,
       meetingTime: true,
       churchId: true,
-      church: { select: { ministryAdminId: true } },
+      church: { select: { ministryAdminId: true, name: true } },
     },
   });
 
@@ -1069,7 +1111,18 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
       return;
     }
   }
-  const meetingDate = exactOccurrenceStarts[0] ?? new Date(meetingData.date);
+  const meetingDate = shouldSchedule
+    ? exactOccurrenceStarts[0] ?? new Date(meetingData.date)
+    : startOfDay(new Date());
+  const scheduledStartAt = combineScheduleDateAndTime(meetingDate, meetingData.time || cell.meetingTime);
+  if (shouldSchedule && (scheduledStartAt.getTime() < Date.now() || exactOccurrenceStarts.some(date => date.getTime() < Date.now()))) {
+    res.status(400).json({ success: false, message: 'Scheduled meeting dates cannot be before today.' });
+    return;
+  }
+  if (shouldSchedule && recurrenceEndsBeforeStart(recurrenceRule, meetingDate)) {
+    res.status(400).json({ success: false, message: 'Schedule end date cannot be before the start date.' });
+    return;
+  }
   const recurrenceRuleId = shouldSchedule
     ? await saveRecurrenceRule(schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, meetingDate)
     : null;
@@ -1082,6 +1135,24 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
       .catch(err => console.error('[Scheduler] Failed to sync created cell meeting:', err));
   }
   res.status(201).json({ success: true, data: meeting });
+
+  if (!shouldSchedule) {
+    const meetingTime = meeting.time || cell.meetingTime || 'the configured time';
+    queueCellPush(
+      cell.id,
+      cell.churchId,
+      `${cell.church?.name || 'Your Church'} · Cell Meeting`,
+      `${cell.name}${meeting.topic ? `: ${meeting.topic}` : ''} today at ${meetingTime}`,
+      {
+        type: 'cell_meeting_created',
+        delivery: 'immediate',
+        cellId: cell.id,
+        meetingId: meeting.id,
+        churchId: cell.churchId,
+      },
+      `cell-meeting-created-${meeting.id}`,
+    ).catch(err => console.error('[Cells] Failed to queue immediate meeting notification:', err));
+  }
 }
 
 // ─── PUT /api/cells/meetings/:meetingId ──────────────────────────────────────
@@ -1144,8 +1215,8 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   }
 
   const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, ...meetingData } = parsed.data;
-  const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
-    SELECT recurrenceRuleId
+  const existingSchedule = await prisma.$queryRaw<Array<{ id: string; recurrenceRuleId: string | null }>>`
+    SELECT id, recurrenceRuleId
     FROM scheduled_events
     WHERE sourceModule = 'cell_meetings' AND sourceId = ${meetingId}
     LIMIT 1
@@ -1176,6 +1247,28 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     }
   }
   const meetingDate = exactOccurrenceStarts[0] ?? (meetingData.date ? new Date(meetingData.date) : existingMeeting.date);
+  if (shouldSchedule) {
+    const existingOccurrenceRows = existingSchedule[0]?.id
+      ? await prisma.$queryRaw<Array<{ occurrenceStartAt: Date }>>`
+          SELECT occurrenceStartAt
+          FROM scheduled_event_occurrences
+          WHERE scheduledEventId = ${existingSchedule[0].id}
+        `
+      : [];
+    const existingPastDates = new Set(existingOccurrenceRows.map(row => startOfDay(row.occurrenceStartAt).getTime()));
+    const introducesPastStart = isBeforeToday(meetingDate) && !isSameCalendarDay(meetingDate, existingMeeting.date);
+    const introducesPastOccurrence = exactOccurrenceStarts.some(date =>
+      isBeforeToday(date) && !existingPastDates.has(startOfDay(date).getTime())
+    );
+    if (introducesPastStart || introducesPastOccurrence) {
+      res.status(400).json({ success: false, message: 'Scheduled meeting dates cannot be before today.' });
+      return;
+    }
+    if (recurrenceEndsBeforeStart(recurrenceRule, meetingDate)) {
+      res.status(400).json({ success: false, message: 'Schedule end date cannot be before the start date.' });
+      return;
+    }
+  }
   const recurrenceRuleId = shouldSchedule
     ? await saveRecurrenceRule(schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, meetingDate, existingRecurrenceRuleId)
     : shouldClearSchedule
