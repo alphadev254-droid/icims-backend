@@ -327,6 +327,7 @@ model Event {
   date                 DateTime
   endDate              DateTime
   time                 String
+  endTime              String?
   location             String
   contactEmail         String?
   contactPhone         String?

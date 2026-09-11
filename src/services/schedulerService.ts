@@ -29,6 +29,7 @@ export type ScheduleRecurrenceRuleRow = {
 };
 
 export type ExactScheduleOccurrenceInput = Date | string;
+export type ExactScheduleOccurrenceRangeInput = { startAt: Date | string; endAt: Date | string };
 
 export function buildExactScheduleOccurrenceStarts(
   dates: string[] | undefined,
@@ -39,6 +40,19 @@ export function buildExactScheduleOccurrenceStarts(
     .map(date => zonedDateTimeToUtc(date, time, timezone))
     .filter(date => !Number.isNaN(date.getTime()))
     .sort((left, right) => left.getTime() - right.getTime());
+}
+
+export function buildExactScheduleOccurrenceRanges(
+  ranges: Array<{ startDate: string; endDate: string; startTime: string; endTime: string }> | undefined,
+  timezone = 'UTC',
+): ExactScheduleOccurrenceRangeInput[] {
+  return (ranges ?? [])
+    .map(range => ({
+      startAt: zonedDateTimeToUtc(range.startDate, range.startTime, timezone),
+      endAt: zonedDateTimeToUtc(range.endDate, range.endTime, timezone),
+    }))
+    .filter(range => !Number.isNaN(range.startAt.getTime()) && !Number.isNaN(range.endAt.getTime()))
+    .sort((left, right) => new Date(left.startAt).getTime() - new Date(right.startAt).getTime());
 }
 
 type UpsertScheduledEventInput = {
@@ -68,6 +82,7 @@ type EventScheduleSource = {
   date: Date;
   endDate: Date;
   time?: string | null;
+  endTime?: string | null;
   location?: string | null;
   status?: string | null;
   churchId: string;
@@ -322,6 +337,42 @@ export async function clearPendingScheduledEventOccurrences(scheduledEventId: st
   `;
 }
 
+export async function replaceScheduledEventOccurrenceRanges(
+  scheduledEventId: string,
+  occurrenceRanges: ExactScheduleOccurrenceRangeInput[],
+): Promise<void> {
+  const uniqueRanges = [...new Map<string, { startAt: Date; endAt: Date }>(occurrenceRanges.map(range => {
+    const startAt = new Date(range.startAt);
+    const endAt = new Date(range.endAt);
+    return [`${startAt.toISOString()}|${endAt.toISOString()}`, { startAt, endAt }] as const;
+  })).values()].sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
+
+  await prisma.$transaction(async tx => {
+    await tx.$executeRaw`
+      DELETE FROM scheduled_event_occurrences
+      WHERE scheduledEventId = ${scheduledEventId}
+        AND status <> 'generated'
+    `;
+
+    for (const range of uniqueRanges) {
+      await tx.$executeRaw`
+        INSERT INTO scheduled_event_occurrences (
+          id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+          generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+        ) VALUES (
+          ${randomUUID()}, ${scheduledEventId}, ${range.startAt}, ${range.endAt}, 'pending',
+          NULL, NULL, NULL, NOW(3), NOW(3)
+        )
+        ON DUPLICATE KEY UPDATE
+          occurrenceEndAt = VALUES(occurrenceEndAt),
+          status = IF(status = 'generated', status, VALUES(status)),
+          errorMessage = NULL,
+          updatedAt = NOW(3)
+      `;
+    }
+  });
+}
+
 export async function cancelScheduledEventForSource(sourceModule: SourceModule, sourceId: string): Promise<void> {
   await prisma.$executeRaw`
     UPDATE scheduled_events
@@ -353,12 +404,12 @@ export async function deleteScheduledEventForSource(sourceModule: SourceModule, 
 
 export async function syncEventToSchedule(
   event: EventScheduleSource,
-  exactOccurrences?: ExactScheduleOccurrenceInput[],
+  exactOccurrenceRanges?: ExactScheduleOccurrenceRangeInput[],
 ): Promise<void> {
   const ministryId = event.church?.ministryAdminId ?? event.createdById ?? event.churchId;
   const timezone = event.timezone || 'UTC';
   const startAt = combineDateAndTime(event.date, event.time, timezone);
-  const endAt = withMinimumEnd(startAt, combineDateAndTime(event.endDate, event.time, timezone), 60);
+  const endAt = withMinimumEnd(startAt, combineDateAndTime(event.endDate, event.endTime || event.time, timezone), 60);
 
   const scheduledEventId = await upsertScheduledEvent({
     ministryId,
@@ -380,8 +431,8 @@ export async function syncEventToSchedule(
   });
 
   const durationMs = Math.max(60 * 60 * 1000, endAt.getTime() - startAt.getTime());
-  if (exactOccurrences) {
-    await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, durationMs);
+  if (exactOccurrenceRanges) {
+    await replaceScheduledEventOccurrenceRanges(scheduledEventId, exactOccurrenceRanges);
   } else {
     await clearPendingScheduledEventOccurrences(scheduledEventId);
   }

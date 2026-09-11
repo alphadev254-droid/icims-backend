@@ -13,7 +13,7 @@ import { eventCreatedTemplate } from '../lib/emailTemplates';
 import { hasFeature } from '../lib/packageChecker';
 import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import { refreshReminderCache } from '../workers/reminderCacheWorker';
-import { buildExactScheduleOccurrenceStarts, cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule } from '../services/schedulerService';
+import { buildExactScheduleOccurrenceRanges, cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule, type ExactScheduleOccurrenceRangeInput } from '../services/schedulerService';
 import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
@@ -23,6 +23,16 @@ const scheduleDateSchema = z.string()
     const parsed = new Date(`${value}T00:00:00.000Z`);
     return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
   }, 'Invalid schedule date');
+const scheduleTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Schedule times must use HH:mm');
+const occurrenceRangeSchema = z.object({
+  startDate: scheduleDateSchema,
+  endDate: scheduleDateSchema,
+  startTime: scheduleTimeSchema,
+  endTime: scheduleTimeSchema,
+}).refine(range => `${range.endDate}T${range.endTime}` > `${range.startDate}T${range.startTime}`, {
+  message: 'Occurrence end must be after its start',
+  path: ['endDate'],
+});
 
 function buildTicketNumber(event: { title: string; date: Date | string }, sequence: number): string {
   const eventDate = new Date(event.date).toISOString().slice(0, 10).replace(/-/g, '');
@@ -94,6 +104,7 @@ const baseEventSchema = z.object({
   date: z.string().min(1, 'Date required'),
   endDate: z.string().min(1, 'End date required'),
   time: z.string().min(1, 'Time required'),
+  endTime: z.string().optional(),
   location: z.string().min(1, 'Location required'),
   contactEmail: z.string().email().optional().or(z.literal('')),
   contactPhone: z.string().optional(),
@@ -114,6 +125,7 @@ const baseEventSchema = z.object({
   deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
   schedulePattern: z.enum(['repeat', 'custom_dates']).default('repeat').optional(),
   occurrenceDates: z.array(scheduleDateSchema).max(366).optional(),
+  occurrenceRanges: z.array(occurrenceRangeSchema).max(366).optional(),
   timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
   recurrenceRule: recurrenceRuleSchema,
 });
@@ -136,6 +148,39 @@ const bookTicketSchema = z.object({
   useExistingTransaction: z.boolean().optional(),
   existingTransactionId: z.string().optional(),
 });
+
+function recurrenceOverlapMessage(
+  startDate: string,
+  endDate: string,
+  recurrenceRule: z.infer<typeof recurrenceRuleSchema>,
+): string | null {
+  const frequency = recurrenceRule?.frequency ?? 'none';
+  if (frequency === 'none') return null;
+  const start = new Date(`${startDate}T00:00:00.000Z`);
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  const inclusiveDurationDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const interval = Math.max(1, recurrenceRule?.interval ?? 1);
+  const cadenceDays = frequency === 'daily' ? interval
+    : frequency === 'weekly' ? interval * 7
+      : frequency === 'monthly' ? interval * 28
+        : interval * 365;
+  return inclusiveDurationDays > cadenceDays
+    ? `This ${inclusiveDurationDays}-day event overlaps when repeated ${frequency} every ${interval}. Choose a longer interval.`
+    : null;
+}
+
+function validateOccurrenceRanges(ranges: ExactScheduleOccurrenceRangeInput[], now = new Date()): string | null {
+  for (let index = 0; index < ranges.length; index += 1) {
+    const startAt = new Date(ranges[index].startAt);
+    const endAt = new Date(ranges[index].endAt);
+    if (endAt <= startAt) return `Selected occurrence ${index + 1} must end after it starts.`;
+    if (startAt < now) return `Selected occurrence ${index + 1} cannot start in the past.`;
+    if (index > 0 && startAt < new Date(ranges[index - 1].endAt)) {
+      return `Selected occurrence ${index + 1} overlaps the previous occurrence.`;
+    }
+  }
+  return null;
+}
 
 const manualTicketSchema = bookTicketSchema.extend({
   attendeeType: z.enum(['member', 'guest']).optional().default('member'),
@@ -429,6 +474,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         date: true,
         endDate: true,
         time: true,
+        endTime: true,
         location: true,
         type: true,
         status: true,
@@ -556,6 +602,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     deliveryMode,
     schedulePattern = 'repeat',
     occurrenceDates,
+    occurrenceRanges,
     recurrenceRule,
     timezone: requestedTimezone,
     ...eventData
@@ -563,13 +610,20 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const mode = deliveryMode ?? 'now';
   const usesExactDates = mode === 'scheduled' && schedulePattern === 'custom_dates';
 
-  if (usesExactDates && (!occurrenceDates || occurrenceDates.length === 0)) {
-    res.status(400).json({ success: false, message: 'Select at least one event date.' });
+  if (usesExactDates && (!occurrenceRanges?.length && !occurrenceDates?.length)) {
+    res.status(400).json({ success: false, message: 'Add at least one event occurrence.' });
     return;
   }
 
   if ((mode !== 'scheduled' || usesExactDates) && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
+    return;
+  }
+  const overlapMessage = mode === 'scheduled' && !usesExactDates
+    ? recurrenceOverlapMessage(eventData.date, eventData.endDate, recurrenceRule)
+    : null;
+  if (overlapMessage) {
+    res.status(400).json({ success: false, message: overlapMessage });
     return;
   }
 
@@ -621,14 +675,21 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const eventChurchIds = resolvedScope.churchIds;
   const primaryChurchId = eventChurchIds[0];
   const timezone = await resolveTimeZone({ req, explicit: requestedTimezone, churchId: primaryChurchId, ministryAdminId });
-  const exactOccurrences = usesExactDates
-    ? buildExactScheduleOccurrenceStarts(occurrenceDates, eventData.time, timezone)
+  const normalizedRanges = occurrenceRanges?.length ? occurrenceRanges : occurrenceDates?.map(date => ({
+    startDate: date,
+    endDate: date,
+    startTime: eventData.time,
+    endTime: eventData.endTime || eventData.time,
+  }));
+  const exactOccurrenceRanges = usesExactDates
+    ? buildExactScheduleOccurrenceRanges(normalizedRanges, timezone)
     : undefined;
-  if (usesExactDates && exactOccurrences?.some(date => date.getTime() < Date.now())) {
-    res.status(400).json({ success: false, message: 'Scheduled event dates cannot be in the past.' });
+  const rangeError = usesExactDates ? validateOccurrenceRanges(exactOccurrenceRanges ?? []) : null;
+  if (rangeError) {
+    res.status(400).json({ success: false, message: rangeError });
     return;
   }
-  if (usesExactDates && [...new Set(occurrenceDates ?? [])].sort()[0] !== eventData.date) {
+  if (usesExactDates && normalizedRanges?.slice().sort((a, b) => a.startDate.localeCompare(b.startDate))[0]?.startDate !== eventData.date) {
     res.status(400).json({ success: false, message: 'Event start date must match the first selected schedule date.' });
     return;
   }
@@ -679,7 +740,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     },
   });
   if (mode === 'scheduled') {
-    await syncEventToSchedule({ ...event, timezone }, exactOccurrences);
+    await syncEventToSchedule({ ...event, timezone }, exactOccurrenceRanges);
   }
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
@@ -727,6 +788,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     deliveryMode,
     schedulePattern,
     occurrenceDates,
+    occurrenceRanges,
     recurrenceRule,
     timezone: requestedTimezone,
     ...eventData
@@ -734,8 +796,8 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const mode = deliveryMode ?? undefined;
   const usesExactDates = mode === 'scheduled' && schedulePattern === 'custom_dates';
 
-  if (usesExactDates && (!occurrenceDates || occurrenceDates.length === 0)) {
-    res.status(400).json({ success: false, message: 'Select at least one event date.' });
+  if (usesExactDates && (!occurrenceRanges?.length && !occurrenceDates?.length)) {
+    res.status(400).json({ success: false, message: 'Add at least one event occurrence.' });
     return;
   }
   const userId = req.user!.userId;
@@ -764,6 +826,15 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
 
   if ((mode !== 'scheduled' || usesExactDates) && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
+    return;
+  }
+  const nextStartDateForRecurrence = eventData.date ?? oldEvent.date.toISOString().slice(0, 10);
+  const nextEndDateForRecurrence = eventData.endDate ?? oldEvent.endDate.toISOString().slice(0, 10);
+  const overlapMessage = mode === 'scheduled' && !usesExactDates
+    ? recurrenceOverlapMessage(nextStartDateForRecurrence, nextEndDateForRecurrence, recurrenceRule)
+    : null;
+  if (overlapMessage) {
+    res.status(400).json({ success: false, message: overlapMessage });
     return;
   }
 
@@ -827,14 +898,21 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
       : existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: nextPrimaryChurchId ?? oldEvent.churchId })
     : null;
   const nextEventDate = eventData.date ?? oldEvent.date.toISOString().slice(0, 10);
-  const exactOccurrences = usesExactDates
-    ? buildExactScheduleOccurrenceStarts(occurrenceDates, eventData.time ?? oldEvent.time, scheduleTimezone ?? 'UTC')
+  const normalizedRanges = occurrenceRanges?.length ? occurrenceRanges : occurrenceDates?.map(date => ({
+    startDate: date,
+    endDate: date,
+    startTime: eventData.time ?? oldEvent.time,
+    endTime: eventData.endTime ?? oldEvent.endTime ?? eventData.time ?? oldEvent.time,
+  }));
+  const exactOccurrenceRanges = usesExactDates
+    ? buildExactScheduleOccurrenceRanges(normalizedRanges, scheduleTimezone ?? 'UTC')
     : undefined;
-  if (usesExactDates && exactOccurrences?.some(date => date.getTime() < Date.now())) {
-    res.status(400).json({ success: false, message: 'Scheduled event dates cannot be in the past.' });
+  const rangeError = usesExactDates ? validateOccurrenceRanges(exactOccurrenceRanges ?? []) : null;
+  if (rangeError) {
+    res.status(400).json({ success: false, message: rangeError });
     return;
   }
-  if (usesExactDates && [...new Set(occurrenceDates ?? [])].sort()[0] !== nextEventDate) {
+  if (usesExactDates && normalizedRanges?.slice().sort((a, b) => a.startDate.localeCompare(b.startDate))[0]?.startDate !== nextEventDate) {
     res.status(400).json({ success: false, message: 'Event start date must match the first selected schedule date.' });
     return;
   }
@@ -884,7 +962,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     },
   });
   if (shouldSchedule) {
-    await syncEventToSchedule({ ...event, timezone: scheduleTimezone ?? 'UTC' }, exactOccurrences);
+    await syncEventToSchedule({ ...event, timezone: scheduleTimezone ?? 'UTC' }, exactOccurrenceRanges);
   } else if (shouldClearSchedule) {
     deleteScheduledEventForSource('events', eventId).catch(err => console.error('[Scheduler] Failed to delete cleared event schedule:', err));
     if (oldEvent.recurrenceRuleId && existingSchedule.length === 0) {
