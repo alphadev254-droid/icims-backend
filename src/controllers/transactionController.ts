@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
 function groupDonationDetails(rows: any[]) {
@@ -72,11 +73,7 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     if (status) whereClause.status = status;
     if (paymentMethod) whereClause.paymentMethod = paymentMethod;
     if (search) {
-      whereClause.OR = [
-        { user: { firstName: { contains: search } } },
-        { user: { lastName: { contains: search } } },
-        { user: { email: { contains: search } } },
-      ];
+      whereClause.user = buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']);
     }
     if (startDate || endDate) {
       whereClause.createdAt = {};
@@ -179,11 +176,7 @@ export async function getTransactions(req: Request, res: Response): Promise<void
     whereClause.id = transactionIds.length ? { in: transactionIds } : { in: ['__no_matching_campaign_transactions__'] };
   }
   if (search) {
-    whereClause.OR = [
-      { user: { firstName: { contains: search } } },
-      { user: { lastName: { contains: search } } },
-      { user: { email: { contains: search } } },
-    ];
+    whereClause.user = buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']);
   }
   if (startDate || endDate) {
     whereClause.createdAt = {};

@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { reconcileAdminWithdrawal } from './adminTreasuryController';
 import { syncLegacyMinistryWithdrawal } from '../services/legacyPayoutService';
 import { logger } from '../utils/logger';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 
 function decimal(value: unknown): number {
   return Number(value || 0);
@@ -35,9 +36,7 @@ export async function getAdminPayouts(req: Request, res: Response): Promise<void
   if (search) {
     const users = await prisma.user.findMany({
       where: { OR: [
-        { firstName: { contains: search } },
-        { lastName: { contains: search } },
-        { email: { contains: search } },
+        buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']),
         { ministryName: { contains: search } },
       ] },
       select: { id: true },

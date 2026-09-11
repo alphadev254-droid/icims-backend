@@ -11,6 +11,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { packageInvoiceTemplate } from '../lib/emailTemplates';
 import { ICIMS_LOGO_CID, getIcimsLogoAttachment } from '../lib/emailAssets';
 import { generatePackageInvoicePDF } from '../lib/packageInvoicePDF';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 import {
   addBillingCycle,
   allowedPublicInvoicePaymentMonths,
@@ -100,9 +101,7 @@ export async function getAdminPackageInvoices(req: Request, res: Response): Prom
     where.OR = [
       { invoiceNumber: { contains: search } },
       { packageName: { contains: search } },
-      { ministryAdmin: { firstName: { contains: search } } },
-      { ministryAdmin: { lastName: { contains: search } } },
-      { ministryAdmin: { email: { contains: search } } },
+      { ministryAdmin: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']) },
       { ministryAdmin: { ministryName: { contains: search } } },
     ];
   }

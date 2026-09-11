@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { queueEmail } from '../lib/emailQueue';
 import { teamMemberAddedTemplate, teamLeaderAppointedTemplate } from '../lib/teamEmailTemplates';
@@ -231,11 +232,7 @@ export const getTeamMembers = async (req: Request, res: Response) => {
     };
 
     if (search) {
-      whereClause.OR = [
-        { firstName: { contains: search as string } },
-        { lastName: { contains: search as string } },
-        { email: { contains: search as string } },
-      ];
+      Object.assign(whereClause, buildPersonSearchWhere(search as string, ['firstName', 'lastName', 'email']));
     }
     
     // Age filtering using date calculations
@@ -259,7 +256,7 @@ export const getTeamMembers = async (req: Request, res: Response) => {
       }
       
       if (ageFilters.length > 0) {
-        whereClause.AND = ageFilters;
+        whereClause.AND = [...(whereClause.AND || []), ...ageFilters];
       }
     }
 

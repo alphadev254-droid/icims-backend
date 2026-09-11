@@ -7,6 +7,7 @@ import { queueEmail } from '../lib/emailQueue';
 import { cellMemberAddedTemplate } from '../lib/cellEmailTemplates';
 import { assertScheduleAccess } from '../lib/scheduleAccess';
 import { deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncCellMeetingToSchedule } from '../services/schedulerService';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -776,14 +777,7 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
 
   // Search by user name/email — filter in DB via user relation
   const userWhere = search
-    ? {
-        OR: [
-          { firstName: { contains: search } },
-          { lastName: { contains: search } },
-          { email: { contains: search } },
-          { phone: { contains: search } },
-        ],
-      }
+    ? buildPersonSearchWhere(search)
     : undefined;
 
   const [total, members] = await Promise.all([
@@ -1634,11 +1628,9 @@ export async function getCellDonations(req: Request, res: Response): Promise<voi
 
   // Build search filter
   const searchFilter = search
-    ? {
+      ? {
         OR: [
-          { user: { firstName: { contains: search } } },
-          { user: { lastName: { contains: search } } },
-          { user: { email: { contains: search } } },
+          { user: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']) },
           { guestName: { contains: search } },
           { guestEmail: { contains: search } },
           { donorName: { contains: search } },
@@ -2368,7 +2360,7 @@ export async function getCellChurchMembers(req: Request, res: Response): Promise
     .split(/\s+/)
     .map(term => term.replace(/[+\-<>()~*"@]+/g, '').trim())
     .filter(term => term.length >= 3)
-    .map(term => `${term}*`)
+    .map(term => `+${term}*`)
     .join(' ');
 
   if (!booleanSearch) {
@@ -2446,12 +2438,7 @@ export async function getCellChurchMembers(req: Request, res: Response): Promise
         ...(memberRole && { roleId: memberRole.id }),
         status: 'active',
         cellMemberships: { none: { cellId, status: { not: 'inactive' } } },
-        OR: [
-          { firstName: { contains: searchTerm } },
-          { lastName: { contains: searchTerm } },
-          { email: { contains: searchTerm } },
-          { phone: { contains: searchTerm } },
-        ],
+        ...buildPersonSearchWhere(searchTerm),
     };
     const [fallbackTotal, fallbackUsers] = await Promise.all([
       prisma.user.count({ where }),

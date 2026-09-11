@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 import { cancelUserAccount } from '../lib/userCancellation';
 import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
 
@@ -259,13 +260,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
 
   // Search: scoped with AND so it narrows within the ministry, never widens
   if (search) {
-    andConditions.push({
-      OR: [
-        { firstName: { contains: search } },
-        { lastName:  { contains: search } },
-        { email:     { contains: search } },
-      ],
-    });
+    andConditions.push(buildPersonSearchWhere(search, ['firstName', 'lastName', 'email', 'phone']));
   }
 
   // Age filters

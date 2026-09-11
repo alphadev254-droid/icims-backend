@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
 // ─── POST /api/announcements/:id/view ────────────────────────────────────────
@@ -63,13 +64,7 @@ export async function getAnnouncementViewers(req: Request, res: Response): Promi
     where: {
       announcementId,
       ...(search ? {
-        user: {
-          OR: [
-            { firstName: { contains: search } },
-            { lastName: { contains: search } },
-            { email: { contains: search } },
-          ],
-        },
+        user: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']),
       } : {}),
     },
     select: { viewedAt: true, user: { select: { firstName: true, lastName: true, email: true } } },
@@ -140,13 +135,7 @@ export async function getResourceViewers(req: Request, res: Response): Promise<v
     where: {
       resourceId,
       ...(search ? {
-        user: {
-          OR: [
-            { firstName: { contains: search } },
-            { lastName: { contains: search } },
-            { email: { contains: search } },
-          ],
-        },
+        user: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']),
       } : {}),
     },
     select: { viewedAt: true, user: { select: { firstName: true, lastName: true, email: true } } },

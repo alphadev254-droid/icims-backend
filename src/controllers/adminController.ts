@@ -5,6 +5,7 @@ import { hashPassword } from '../lib/password';
 import { cancelUserAccount } from '../lib/userCancellation';
 import { optionalPhoneSchema } from '../lib/inputValidation';
 import { reconcilePendingTransactionById } from '../services/paymentReconciliationService';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 import {
   buildUserCountryWhereForMarket,
   getPricingMarketContext,
@@ -436,12 +437,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
   const where: any = {};
 
   if (search) {
-    where.OR = [
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { email: { contains: search } },
-      { phone: { contains: search } },
-    ];
+    Object.assign(where, buildPersonSearchWhere(search));
   }
   if (roleFilter) {
     const roleRecord = await prisma.role.findUnique({ where: { name: roleFilter }, select: { id: true } });
@@ -848,11 +844,7 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
 
   const userWhere: any = { churchId: id };
   if (search) {
-    userWhere.OR = [
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { email: { contains: search } },
-    ];
+    Object.assign(userWhere, buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']));
   }
   if (roleFilter) {
     const roleRecord = await prisma.role.findUnique({ where: { name: roleFilter }, select: { id: true } });
@@ -1144,7 +1136,7 @@ export async function getAdminTransactions(req: Request, res: Response): Promise
 
   if (search) {
     const matchingUsers = await prisma.user.findMany({
-      where: { OR: [{ firstName: { contains: search } }, { lastName: { contains: search } }, { email: { contains: search } }] },
+      where: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']),
       select: { id: true },
     });
     adminIdFilters.push(matchingUsers.map((u: any) => u.id));
@@ -1264,13 +1256,7 @@ export async function getAdminSystemTransactions(req: Request, res: Response): P
   // Search — matches user name/email, guest name/email, or reference
   if (search) {
     const matchingUsers = await prisma.user.findMany({
-      where: {
-        OR: [
-          { firstName: { contains: search } },
-          { lastName: { contains: search } },
-          { email: { contains: search } },
-        ],
-      },
+      where: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']),
       select: { id: true },
     });
     andConditions.push({
@@ -1524,10 +1510,7 @@ export async function getAdminWithdrawals(req: Request, res: Response): Promise<
     const matchingUsers = await prisma.user.findMany({
       where: {
         OR: [
-          { firstName: { contains: search } },
-          { lastName: { contains: search } },
-          { email: { contains: search } },
-          { phone: { contains: search } },
+          buildPersonSearchWhere(search),
           { ministryName: { contains: search } },
         ],
       },

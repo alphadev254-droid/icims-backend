@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { hashPassword } from '../lib/password';
 import { optionalPhoneSchema } from '../lib/inputValidation';
+import { buildPersonSearchWhere } from '../lib/personSearch';
 
 const childSchema = z.object({
   churchId: z.string().min(1),
@@ -205,13 +206,7 @@ export async function getChildren(req: Request, res: Response): Promise<void> {
 
   const where: any = {
     churchId: { in: scopedChurchIds },
-    ...(search ? {
-      OR: [
-        { firstName: { contains: search } },
-        { lastName: { contains: search } },
-        { phone: { contains: search } },
-      ],
-    } : {}),
+    ...(search ? buildPersonSearchWhere(search, ['firstName', 'lastName', 'phone']) : {}),
     ...(guardianId ? { guardians: { some: { guardianId } } } : {}),
     ...(unlinked ? { guardians: { none: {} } } : {}),
   };
