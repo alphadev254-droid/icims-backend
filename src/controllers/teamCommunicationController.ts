@@ -68,15 +68,26 @@ async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>
     status: string;
     timezone: string;
     recurrenceRuleId: string | null;
-    occurrences: unknown;
   }>>`
-    SELECT se.sourceId, se.startAt, se.endAt, se.status, se.timezone, se.recurrenceRuleId,
-      COALESCE(JSON_ARRAYAGG(CASE WHEN seo.id IS NOT NULL THEN seo.occurrenceStartAt END), JSON_ARRAY()) AS occurrences
+    SELECT se.sourceId, se.startAt, se.endAt, se.status, se.timezone, se.recurrenceRuleId
     FROM scheduled_events se
-    LEFT JOIN scheduled_event_occurrences seo ON seo.scheduledEventId = se.id AND seo.status IN ('pending', 'failed')
     WHERE se.sourceModule = 'team_communications' AND se.sourceId IN (${Prisma.join(ids)})
-    GROUP BY se.id
   `;
+  const occurrenceRows = await prisma.$queryRaw<Array<{ sourceId: string; occurrenceStartAt: Date }>>`
+    SELECT se.sourceId, seo.occurrenceStartAt
+    FROM scheduled_event_occurrences seo
+    JOIN scheduled_events se ON se.id = seo.scheduledEventId
+    WHERE se.sourceModule = 'team_communications'
+      AND se.sourceId IN (${Prisma.join(ids)})
+      AND seo.status IN ('pending', 'failed')
+    ORDER BY seo.occurrenceStartAt ASC
+  `;
+  const occurrencesBySourceId = new Map<string, Date[]>();
+  for (const occurrence of occurrenceRows) {
+    const values = occurrencesBySourceId.get(occurrence.sourceId) ?? [];
+    values.push(occurrence.occurrenceStartAt);
+    occurrencesBySourceId.set(occurrence.sourceId, values);
+  }
   const recurrenceRulesById = await getRecurrenceRulesById(rows.map(row => row.recurrenceRuleId).filter((id): id is string => Boolean(id)));
   const schedulesBySourceId = new Map(rows.map(row => [row.sourceId, row]));
 
@@ -92,7 +103,7 @@ async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>
           timezone: schedule.timezone,
           recurrenceRuleId: schedule.recurrenceRuleId,
           recurrenceRule: schedule.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedule.recurrenceRuleId)) : null,
-          occurrenceTimes: Array.isArray(schedule.occurrences) ? schedule.occurrences.filter(Boolean) : [],
+          occurrenceTimes: occurrencesBySourceId.get(item.id) ?? [],
         }
         : null,
     };
