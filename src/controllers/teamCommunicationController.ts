@@ -11,6 +11,7 @@ import {
   parseRecurrenceRuleForApi,
   type RecurrenceRuleInput,
   saveRecurrenceRule,
+  buildExactScheduleInstants,
   syncTeamCommunicationToSchedule,
 } from '../services/schedulerService';
 import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
@@ -46,6 +47,16 @@ function parseRecurrenceRuleBody(value: unknown): RecurrenceRuleInput {
   };
 }
 
+function parseOccurrenceTimes(value: unknown): string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>(communications: T): Promise<Array<T[number] & { scheduledEvent: any | null }>> {
   const ids = communications.map(item => item.id);
   if (ids.length === 0) return communications.map(item => ({ ...item, scheduledEvent: null }));
@@ -57,10 +68,14 @@ async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>
     status: string;
     timezone: string;
     recurrenceRuleId: string | null;
+    occurrences: unknown;
   }>>`
-    SELECT sourceId, startAt, endAt, status, timezone, recurrenceRuleId
-    FROM scheduled_events
-    WHERE sourceModule = 'team_communications' AND sourceId IN (${Prisma.join(ids)})
+    SELECT se.sourceId, se.startAt, se.endAt, se.status, se.timezone, se.recurrenceRuleId,
+      COALESCE(JSON_ARRAYAGG(CASE WHEN seo.id IS NOT NULL THEN seo.occurrenceStartAt END), JSON_ARRAY()) AS occurrences
+    FROM scheduled_events se
+    LEFT JOIN scheduled_event_occurrences seo ON seo.scheduledEventId = se.id AND seo.status IN ('pending', 'failed')
+    WHERE se.sourceModule = 'team_communications' AND se.sourceId IN (${Prisma.join(ids)})
+    GROUP BY se.id
   `;
   const recurrenceRulesById = await getRecurrenceRulesById(rows.map(row => row.recurrenceRuleId).filter((id): id is string => Boolean(id)));
   const schedulesBySourceId = new Map(rows.map(row => [row.sourceId, row]));
@@ -77,6 +92,7 @@ async function attachTeamCommunicationSchedules<T extends Array<{ id: string }>>
           timezone: schedule.timezone,
           recurrenceRuleId: schedule.recurrenceRuleId,
           recurrenceRule: schedule.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedule.recurrenceRuleId)) : null,
+          occurrenceTimes: Array.isArray(schedule.occurrences) ? schedule.occurrences.filter(Boolean) : [],
         }
         : null,
     };
@@ -233,6 +249,8 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
     const { title, content, teamId, deliveryMode, scheduledAt, timezone: requestedTimezone } = req.body;
+    const schedulePattern = req.body.schedulePattern === 'custom_dates' ? 'custom_dates' : 'repeat';
+    const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(parseOccurrenceTimes(req.body.occurrenceTimes)) : undefined;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
     if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ error: 'Invalid IANA timezone' });
     const mode = ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : 'now';
@@ -253,10 +271,16 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
     }
 
     if (mode === 'scheduled') {
-      if (!scheduledAt) {
+      if (schedulePattern === 'custom_dates' && exactOccurrences?.length === 0) {
+        return res.status(400).json({ error: 'Add at least one send date and time' });
+      }
+      if (schedulePattern !== 'custom_dates' && !scheduledAt) {
         return res.status(400).json({ error: 'Scheduled date and time required' });
       }
-      const scheduleAccess = await assertScheduleAccess(req, recurrenceRule, 'create');
+      if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
+        return res.status(400).json({ error: 'Send date and time must be in the future' });
+      }
+      const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, 'create');
       if (!scheduleAccess.allowed) {
         return res.status(403).json({ error: scheduleAccess.message });
       }
@@ -307,8 +331,8 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       ministryAdminId: communication.team.church.ministryAdminId,
     });
 
-    const startAt = mode === 'scheduled' ? new Date(scheduledAt) : new Date();
-    const recurrenceRuleId = mode === 'scheduled'
+    const startAt = mode === 'scheduled' ? (exactOccurrences?.[0] ?? new Date(scheduledAt)) : new Date();
+    const recurrenceRuleId = mode === 'scheduled' && schedulePattern !== 'custom_dates'
       ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
       : null;
     await syncTeamCommunicationToSchedule({
@@ -316,7 +340,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       scheduledAt: startAt,
       recurrenceRuleId,
       timezone,
-    });
+    }, exactOccurrences);
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([
       { ...communication, author, team: { id: communication.team.id, name: communication.team.name, color: communication.team.color } },
@@ -334,6 +358,8 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     const userId = req.user?.userId;
     const { id } = req.params;
     const { title, content, deliveryMode, scheduledAt, timezone: requestedTimezone } = req.body;
+    const schedulePattern = req.body.schedulePattern === 'custom_dates' ? 'custom_dates' : 'repeat';
+    const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(parseOccurrenceTimes(req.body.occurrenceTimes)) : undefined;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
     if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ error: 'Invalid IANA timezone' });
     const mode = deliveryMode && ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : undefined;
@@ -422,17 +448,23 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     `;
 
     if (mode === 'scheduled') {
-      if (!scheduledAt) {
+      if (schedulePattern === 'custom_dates' && exactOccurrences?.length === 0) {
+        return res.status(400).json({ error: 'Add at least one send date and time' });
+      }
+      if (schedulePattern !== 'custom_dates' && !scheduledAt) {
         return res.status(400).json({ error: 'Scheduled date and time required' });
       }
+      if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
+        return res.status(400).json({ error: 'Send date and time must be in the future' });
+      }
       const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
-      const scheduleAccess = await assertScheduleAccess(req, recurrenceRule, scheduleAction);
+      const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, scheduleAction);
       if (!scheduleAccess.allowed) {
         return res.status(403).json({ error: scheduleAccess.message });
       }
 
-      const startAt = new Date(scheduledAt);
-      const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
+      const startAt = exactOccurrences?.[0] ?? new Date(scheduledAt);
+      const recurrenceRuleId = await saveRecurrenceRule(schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
       const timezone = requestedTimezone
         ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: communication.team.churchId, ministryAdminId: communication.team.church?.ministryAdminId })
         : existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: communication.team.churchId, ministryAdminId: communication.team.church?.ministryAdminId });
@@ -441,7 +473,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
         scheduledAt: startAt,
         recurrenceRuleId,
         timezone,
-      });
+      }, exactOccurrences);
     } else if (mode === 'now') {
       if (existingSchedule.length > 0) {
         const scheduleAccess = await assertScheduleAccess(req, null, 'update');

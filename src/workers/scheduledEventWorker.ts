@@ -833,13 +833,60 @@ async function advanceOrCompleteSchedule(event: ScheduledEventRow) {
 
 export async function processDueScheduledCommunicationEvents() {
   const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
+  const customOccurrences = await prisma.$queryRaw<DueCellMeetingOccurrenceRow[]>`
+    SELECT
+      se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.timezone, se.recurrenceRuleId,
+      seo.id AS occurrenceId, seo.occurrenceStartAt, seo.occurrenceEndAt,
+      seo.status AS occurrenceStatus, seo.generatedSourceId AS occurrenceGeneratedSourceId
+    FROM scheduled_event_occurrences seo
+    JOIN scheduled_events se ON se.id = seo.scheduledEventId
+    WHERE se.status = 'scheduled'
+      AND se.sourceModule IN (${Prisma.join(['announcements', 'team_communications'])})
+      AND se.recurrenceRuleId IS NULL
+      AND seo.status IN ('pending', 'failed')
+      AND seo.occurrenceStartAt <= NOW(3)
+    ORDER BY seo.occurrenceStartAt ASC
+    LIMIT ${limit}
+  `;
+
+  for (const occurrence of customOccurrences) {
+    if (!occurrence.sourceId) {
+      await markScheduledEventCancelled(occurrence.id);
+      continue;
+    }
+    try {
+      const claimed = await claimScheduledEventOccurrence(occurrence.occurrenceId);
+      if (!claimed) continue;
+      const sent = occurrence.sourceModule === 'announcements'
+        ? await sendAnnouncement(occurrence.sourceId)
+        : await sendTeamCommunication(occurrence.sourceId);
+      if (!sent) {
+        await markScheduledEventCancelled(occurrence.id);
+        continue;
+      }
+      await prisma.$executeRaw`
+        UPDATE scheduled_event_occurrences
+        SET status = 'generated', generatedSourceModule = ${occurrence.sourceModule},
+            generatedSourceId = ${occurrence.sourceId}, errorMessage = NULL, updatedAt = NOW(3)
+        WHERE id = ${occurrence.occurrenceId}
+      `;
+      await completeCustomScheduleIfDone(occurrence.id);
+    } catch (error) {
+      console.error(`[ScheduledEvents] Failed to send selected-time communication ${occurrence.sourceModule}:${occurrence.sourceId}`, error);
+      await markOccurrenceRowFailed(occurrence.occurrenceId, error);
+    }
+  }
+
   const events = await prisma.$queryRaw<ScheduledEventRow[]>`
-    SELECT id, sourceModule, sourceId, title, startAt, endAt, timezone, recurrenceRuleId
-    FROM scheduled_events
-    WHERE status = 'scheduled'
-      AND startAt <= NOW(3)
-      AND sourceModule IN (${Prisma.join(['announcements', 'team_communications'])})
-    ORDER BY startAt ASC
+    SELECT se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.timezone, se.recurrenceRuleId
+    FROM scheduled_events se
+    WHERE se.status = 'scheduled'
+      AND se.startAt <= NOW(3)
+      AND se.sourceModule IN (${Prisma.join(['announcements', 'team_communications'])})
+      AND (se.recurrenceRuleId IS NOT NULL OR NOT EXISTS (
+        SELECT 1 FROM scheduled_event_occurrences seo WHERE seo.scheduledEventId = se.id
+      ))
+    ORDER BY se.startAt ASC
     LIMIT ${limit}
   `;
 
@@ -867,8 +914,8 @@ export async function processDueScheduledCommunicationEvents() {
     }
   }
 
-  if (events.length > 0) {
-    console.log(`[ScheduledEvents] Processed ${events.length} due communication schedule(s)`);
+  if (customOccurrences.length > 0 || events.length > 0) {
+    console.log(`[ScheduledEvents] Processed ${customOccurrences.length + events.length} due communication schedule(s)`);
   }
 }
 

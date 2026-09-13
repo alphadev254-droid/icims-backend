@@ -42,6 +42,13 @@ export function buildExactScheduleOccurrenceStarts(
     .sort((left, right) => left.getTime() - right.getTime());
 }
 
+export function buildExactScheduleInstants(values: string[] | undefined): Date[] {
+  return [...new Set(values ?? [])]
+    .map(value => new Date(value))
+    .filter(value => !Number.isNaN(value.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime());
+}
+
 export function buildExactScheduleOccurrenceRanges(
   ranges: Array<{ startDate: string; endDate: string; startTime: string; endTime: string }> | undefined,
   timezone = 'UTC',
@@ -476,11 +483,14 @@ export async function syncCellMeetingToSchedule(
   }
 }
 
-export async function syncAnnouncementToSchedule(announcement: AnnouncementScheduleSource): Promise<void> {
+export async function syncAnnouncementToSchedule(
+  announcement: AnnouncementScheduleSource,
+  exactOccurrences?: ExactScheduleOccurrenceInput[],
+): Promise<void> {
   const ministryId = announcement.church?.ministryAdminId ?? announcement.createdById ?? announcement.churchId;
   const endAt = new Date(announcement.scheduledAt.getTime() + 5 * 60 * 1000);
 
-  await upsertScheduledEvent({
+  const scheduledEventId = await upsertScheduledEvent({
     ministryId,
     churchId: announcement.churchId,
     title: announcement.title,
@@ -497,13 +507,18 @@ export async function syncAnnouncementToSchedule(announcement: AnnouncementSched
     createdById: announcement.createdById,
     recurrenceRuleId: announcement.recurrenceRuleId,
   });
+  if (exactOccurrences) await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, 5 * 60 * 1000);
+  else await clearPendingScheduledEventOccurrences(scheduledEventId);
 }
 
-export async function syncTeamCommunicationToSchedule(communication: TeamCommunicationScheduleSource): Promise<void> {
+export async function syncTeamCommunicationToSchedule(
+  communication: TeamCommunicationScheduleSource,
+  exactOccurrences?: ExactScheduleOccurrenceInput[],
+): Promise<void> {
   const ministryId = communication.team.church?.ministryAdminId ?? communication.authorId ?? communication.team.churchId;
   const endAt = new Date(communication.scheduledAt.getTime() + 5 * 60 * 1000);
 
-  await upsertScheduledEvent({
+  const scheduledEventId = await upsertScheduledEvent({
     ministryId,
     churchId: communication.team.churchId,
     title: communication.title,
@@ -520,4 +535,6 @@ export async function syncTeamCommunicationToSchedule(communication: TeamCommuni
     createdById: communication.authorId,
     recurrenceRuleId: communication.recurrenceRuleId,
   });
+  if (exactOccurrences) await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, 5 * 60 * 1000);
+  else await clearPendingScheduledEventOccurrences(scheduledEventId);
 }

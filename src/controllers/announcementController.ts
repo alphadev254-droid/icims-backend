@@ -11,6 +11,7 @@ import {
   getRecurrenceRulesById,
   parseRecurrenceRuleForApi,
   saveRecurrenceRule,
+  buildExactScheduleInstants,
   syncAnnouncementToSchedule,
 } from '../services/schedulerService';
 import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
@@ -37,6 +38,8 @@ const schema = z.object({
   scheduledAt: z.string().datetime().optional().nullable(),
   timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
   recurrenceRule: recurrenceRuleSchema,
+  schedulePattern: z.enum(['repeat', 'custom_dates']).default('repeat').optional(),
+  occurrenceTimes: z.array(z.string().datetime()).max(366).optional(),
 });
 
 function deleteUploadedFile(url: string) {
@@ -62,10 +65,14 @@ async function attachAnnouncementSchedules<T extends Array<{ id: string }>>(anno
     status: string;
     timezone: string;
     recurrenceRuleId: string | null;
+    occurrences: unknown;
   }>>`
-    SELECT sourceId, startAt, endAt, status, timezone, recurrenceRuleId
-    FROM scheduled_events
-    WHERE sourceModule = 'announcements' AND sourceId IN (${Prisma.join(ids)})
+    SELECT se.sourceId, se.startAt, se.endAt, se.status, se.timezone, se.recurrenceRuleId,
+      COALESCE(JSON_ARRAYAGG(CASE WHEN seo.id IS NOT NULL THEN seo.occurrenceStartAt END), JSON_ARRAY()) AS occurrences
+    FROM scheduled_events se
+    LEFT JOIN scheduled_event_occurrences seo ON seo.scheduledEventId = se.id AND seo.status IN ('pending', 'failed')
+    WHERE se.sourceModule = 'announcements' AND se.sourceId IN (${Prisma.join(ids)})
+    GROUP BY se.id
   `;
   const recurrenceRulesById = await getRecurrenceRulesById(rows.map(row => row.recurrenceRuleId).filter((id): id is string => Boolean(id)));
   const schedulesBySourceId = new Map(rows.map(row => [row.sourceId, row]));
@@ -82,6 +89,7 @@ async function attachAnnouncementSchedules<T extends Array<{ id: string }>>(anno
           timezone: schedule.timezone,
           recurrenceRuleId: schedule.recurrenceRuleId,
           recurrenceRule: schedule.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedule.recurrenceRuleId)) : null,
+          occurrenceTimes: Array.isArray(schedule.occurrences) ? schedule.occurrences.filter(Boolean) : [],
         }
         : null,
     };
@@ -150,8 +158,9 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, timezone: requestedTimezone, ...announcementData } = parsed.data;
+  const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, schedulePattern = 'repeat', occurrenceTimes, timezone: requestedTimezone, ...announcementData } = parsed.data;
   const mode = deliveryMode ?? 'now';
+  const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(occurrenceTimes) : undefined;
 
   if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
@@ -159,11 +168,19 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
   }
 
   if (mode === 'scheduled') {
-    if (!scheduledAt) {
+    if (schedulePattern === 'custom_dates' && exactOccurrences?.length === 0) {
+      res.status(400).json({ success: false, message: 'Add at least one send date and time' });
+      return;
+    }
+    if (schedulePattern !== 'custom_dates' && !scheduledAt) {
       res.status(400).json({ success: false, message: 'Scheduled date and time required' });
       return;
     }
-    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, 'create');
+    if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt!)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
+      res.status(400).json({ success: false, message: 'Send date and time must be in the future' });
+      return;
+    }
+    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, 'create');
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -195,8 +212,8 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     include: { church: { select: { ministryAdminId: true } } },
   });
 
-  const startAt = mode === 'scheduled' ? new Date(scheduledAt!) : new Date();
-  const recurrenceRuleId = mode === 'scheduled'
+  const startAt = mode === 'scheduled' ? (exactOccurrences?.[0] ?? new Date(scheduledAt!)) : new Date();
+  const recurrenceRuleId = mode === 'scheduled' && schedulePattern !== 'custom_dates'
     ? await saveRecurrenceRule(recurrenceRule ?? null, startAt)
     : null;
   await syncAnnouncementToSchedule({
@@ -204,7 +221,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     scheduledAt: startAt,
     recurrenceRuleId,
     timezone,
-  });
+  }, exactOccurrences);
 
   const [itemWithSchedule] = await attachAnnouncementSchedules([item]);
   res.status(201).json({ success: true, data: itemWithSchedule });
@@ -246,8 +263,9 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { deliveryMode, scheduledAt, recurrenceRule, timezone: requestedTimezone, ...announcementData } = parsed.data;
+  const { deliveryMode, scheduledAt, recurrenceRule, schedulePattern = 'repeat', occurrenceTimes, timezone: requestedTimezone, ...announcementData } = parsed.data;
   const mode = deliveryMode ?? undefined;
+  const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(occurrenceTimes) : undefined;
 
   if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
     res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
@@ -275,25 +293,33 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
   `;
 
   if (mode === 'scheduled') {
-    if (!scheduledAt) {
+    if (schedulePattern === 'custom_dates' && exactOccurrences?.length === 0) {
+      res.status(400).json({ success: false, message: 'Add at least one send date and time' });
+      return;
+    }
+    if (schedulePattern !== 'custom_dates' && !scheduledAt) {
       res.status(400).json({ success: false, message: 'Scheduled date and time required' });
       return;
     }
+    if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt!)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
+      res.status(400).json({ success: false, message: 'Send date and time must be in the future' });
+      return;
+    }
     const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
-    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, scheduleAction);
+    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, scheduleAction);
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
     }
 
-    const startAt = new Date(scheduledAt);
-    const recurrenceRuleId = await saveRecurrenceRule(recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
+    const startAt = exactOccurrences?.[0] ?? new Date(scheduledAt!);
+    const recurrenceRuleId = await saveRecurrenceRule(schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
     await syncAnnouncementToSchedule({
       ...updated,
       scheduledAt: startAt,
       recurrenceRuleId,
       timezone,
-    });
+    }, exactOccurrences);
   } else if (mode === 'now') {
     if (existingSchedule.length > 0) {
       const scheduleAccess = await assertScheduleAccess(req, null, 'update');
