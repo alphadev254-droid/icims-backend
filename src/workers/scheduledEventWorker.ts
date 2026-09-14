@@ -4,7 +4,7 @@ import prisma from '../lib/prisma';
 import { queueChurchMemberEmails } from '../lib/churchMemberEmail';
 import { queueEmail } from '../lib/emailQueue';
 import { sendPushToUsers } from '../lib/fcm';
-import { announcementCreatedTemplate } from '../lib/emailTemplates';
+import { announcementCreatedTemplate, eventCreatedTemplate } from '../lib/emailTemplates';
 import { teamCommunicationNotificationTemplate } from '../lib/teamEmailTemplates';
 import { normalizeTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
 import { queueCellPush, queueChurchPush } from '../lib/notificationQueue';
@@ -330,6 +330,13 @@ async function sendAnnouncement(sourceId: string) {
     emailType: 'notification',
   });
 
+  if (announcement.publicationStatus !== 'published') {
+    await prisma.announcement.update({
+      where: { id: sourceId },
+      data: { publicationStatus: 'published', publishedAt: new Date() },
+    });
+  }
+
   return true;
 }
 
@@ -382,6 +389,13 @@ async function sendTeamCommunication(sourceId: string) {
       `${authorName}: ${communication.title}`,
       { type: 'team_communication', id: communication.id, teamId: communication.teamId }
     );
+  }
+
+  if (communication.publicationStatus !== 'published') {
+    await prisma.teamCommunication.update({
+      where: { id: sourceId },
+      data: { publicationStatus: 'published', publishedAt: new Date() },
+    });
   }
 
   return true;
@@ -722,18 +736,22 @@ async function createCellMeetingOccurrence(
       await tx.$executeRaw`
         INSERT INTO cell_meetings (
           id, cellId, date, time, topic, notes, recurrenceRuleId,
-          recordType, sourceMeetingId, scheduledOccurrenceId, createdAt, updatedAt
+          recordType, sourceMeetingId, scheduledOccurrenceId,
+          publicationStatus, publishAt, publishedAt, createdAt, updatedAt
         ) VALUES (
           ${generatedMeetingId}, ${template.cellId}, ${occurrenceStartAt},
           ${template.time || template.meetingTime || formatTimeForMeeting(occurrenceStartAt)},
           ${template.topic}, NULL, NULL,
-          'scheduled_occurrence', ${event.sourceId}, ${occurrence.id}, NOW(3), NOW(3)
+          'scheduled_occurrence', ${event.sourceId}, ${occurrence.id},
+          'published', ${occurrenceStartAt}, NOW(3), NOW(3), NOW(3)
         )
       `;
     } else {
       await tx.$executeRaw`
         UPDATE cell_meetings
         SET recordType = 'scheduled_source',
+            publicationStatus = 'published',
+            publishedAt = COALESCE(publishedAt, NOW(3)),
             sourceMeetingId = NULL,
             scheduledOccurrenceId = ${occurrence.id},
             updatedAt = NOW(3)
@@ -753,6 +771,65 @@ async function createCellMeetingOccurrence(
 
     return generatedMeetingId;
   });
+}
+
+export async function processDuePublications() {
+  const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
+  const [events, meetings] = await Promise.all([
+    prisma.event.findMany({
+      where: { publicationStatus: 'draft', publishAt: { lte: new Date() } },
+      include: { church: { select: { name: true } } },
+      orderBy: { publishAt: 'asc' },
+      take: limit,
+    }),
+    prisma.cellMeeting.findMany({
+      where: { publicationStatus: 'draft', publishAt: { lte: new Date() } },
+      orderBy: { publishAt: 'asc' },
+      take: limit,
+    }),
+  ]);
+
+  for (const event of events) {
+    const claimed = await prisma.event.updateMany({
+      where: { id: event.id, publicationStatus: 'draft' },
+      data: { publicationStatus: 'published', publishedAt: new Date() },
+    });
+    if (!claimed.count) continue;
+    await Promise.allSettled([
+      queueChurchPush(
+        event.churchId,
+        `${event.church.name} · New Event`,
+        `${event.title} on ${new Date(event.date).toLocaleDateString()}`,
+        { type: 'event_created', eventId: event.id, churchId: event.churchId },
+      ),
+      queueChurchMemberEmails({
+        churchId: event.churchId,
+        subject: `${event.church.name} - New Event: ${event.title}`,
+        buildHtml: member => eventCreatedTemplate({
+          firstName: member.firstName,
+          eventTitle: event.title,
+          eventDate: new Date(event.date).toLocaleDateString(),
+          eventEndDate: new Date(event.endDate).toLocaleDateString(),
+          eventTime: event.time,
+          eventLocation: event.location,
+          description: event.description || undefined,
+          churchName: event.church.name,
+        }),
+        emailType: 'notification',
+      }),
+    ]);
+  }
+
+  if (meetings.length > 0) {
+    await prisma.cellMeeting.updateMany({
+      where: { id: { in: meetings.map(meeting => meeting.id) }, publicationStatus: 'draft' },
+      data: { publicationStatus: 'published', publishedAt: new Date() },
+    });
+  }
+
+  if (events.length || meetings.length) {
+    console.log(`[ScheduledEvents] Published ${events.length} event(s) and ${meetings.length} cell meeting(s)`);
+  }
 }
 
 async function markOccurrenceFailed(event: ScheduledEventRow, error: unknown) {

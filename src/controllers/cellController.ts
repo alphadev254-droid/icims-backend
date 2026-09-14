@@ -10,6 +10,7 @@ import { buildExactScheduleOccurrenceStarts, deleteScheduledEventForSource, getR
 import { buildPersonSearchWhere } from '../lib/personSearch';
 import { queueCellPush } from '../lib/notificationQueue';
 import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone, todayInTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
+import { publicationForStart } from '../lib/publication';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -139,7 +140,6 @@ function cellAttendanceRate(entry: CellAttendanceRateEntry | undefined, activeMe
     meetingCount,
   });
 }
-
 function summarizeCellMemberAttendance(
   members: CellMemberAttendanceInput[],
   meetings: CellMeetingInput[],
@@ -502,7 +502,6 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
   });
 }
-
 // ─── GET /api/cells/:id ───────────────────────────────────────────────────────
 
 export async function getCell(req: Request, res: Response): Promise<void> {
@@ -916,6 +915,7 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   const skip = (pageNum - 1) * limitNum;
 
   const where: any = { cellId };
+  if (req.user?.role === 'member') where.publicationStatus = 'published';
   if (dateFrom || dateTo) {
     const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
     const timezone = await resolveTimeZone({ req, churchId: cell?.churchId ?? req.user?.churchId });
@@ -929,6 +929,7 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
       select: {
         id: true, cellId: true, date: true, time: true, topic: true, notes: true, recurrenceRuleId: true,
         recordType: true, sourceMeetingId: true, scheduledOccurrenceId: true, createdAt: true, updatedAt: true,
+        publicationStatus: true, publishAt: true, publishedAt: true,
         _count: { select: { attendance: true } },
         attendance: { select: { status: true, isVisitor: true } },
       },
@@ -998,6 +999,7 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   const enriched = meetings.map(m => ({
     id: m.id, cellId: m.cellId, date: m.date, time: m.time, topic: m.topic, notes: m.notes, recurrenceRuleId: m.recurrenceRuleId,
     recordType: m.recordType, sourceMeetingId: m.sourceMeetingId, scheduledOccurrenceId: m.scheduledOccurrenceId,
+    publicationStatus: m.publicationStatus, publishAt: m.publishAt, publishedAt: m.publishedAt,
     recurrenceRule: m.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(m.recurrenceRuleId)) : null,
     scheduledEvent: schedulesByMeetingId.has(m.id) ? {
       id: schedulesByMeetingId.get(m.id)!.id,
@@ -1105,7 +1107,7 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
   if (shouldSchedule) {
-    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, 'create');
+    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, 'create', schedulePattern === 'custom_dates');
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -1134,6 +1136,9 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
       recurrenceRuleId,
       date: meetingDate,
       recordType: shouldSchedule ? 'scheduled_source' : 'direct',
+      ...(shouldSchedule
+        ? publicationForStart(scheduledStartAt)
+        : { publicationStatus: 'published' as const, publishAt: new Date(), publishedAt: new Date() }),
     },
   });
   if (shouldSchedule) {
@@ -1243,8 +1248,8 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
   if (shouldSchedule) {
-    const scheduleAction = existingRecurrenceRuleId ? 'update' : 'create';
-    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, scheduleAction);
+    const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
+    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, scheduleAction, schedulePattern === 'custom_dates');
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -1284,11 +1289,22 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     : shouldClearSchedule
       ? null
       : existingMeeting.recurrenceRuleId;
+  const nextMeetingStartAt = combineScheduleDateAndTime(
+    meetingDate,
+    meetingData.time || existingMeeting.time || existingMeeting.cell.meetingTime,
+    timezone,
+  );
+  const publicationUpdate = existingMeeting.publicationStatus === 'draft'
+    ? shouldSchedule
+      ? publicationForStart(nextMeetingStartAt)
+      : { publicationStatus: 'published' as const, publishAt: new Date(), publishedAt: new Date() }
+    : {};
 
   const meeting = await prisma.cellMeeting.update({
     where: { id: meetingId },
     data: {
       ...meetingData,
+      ...publicationUpdate,
       recurrenceRuleId,
       ...(shouldSchedule ? { recordType: 'scheduled_source', sourceMeetingId: null } : {}),
       ...(shouldClearSchedule && !(existingMeeting as any).scheduledOccurrenceId

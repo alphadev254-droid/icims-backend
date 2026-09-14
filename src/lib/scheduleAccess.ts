@@ -15,6 +15,7 @@ export async function assertScheduleAccess(
   req: Request,
   recurrenceRule?: RecurrenceRuleLike,
   action: ScheduleAction = 'create',
+  requiresRecurringFeature = false,
 ): Promise<{ allowed: boolean; message?: string }> {
   const userId = req.user?.userId;
   if (!userId) return { allowed: false, message: 'Not authenticated' };
@@ -28,7 +29,7 @@ export async function assertScheduleAccess(
     return { allowed: false, message: 'This package does not include scheduling.' };
   }
 
-  if (hasRecurringRule(recurrenceRule) && !(await hasFeature(userId, 'scheduler_recurring_events'))) {
+  if ((requiresRecurringFeature || hasRecurringRule(recurrenceRule)) && !(await hasFeature(userId, 'scheduler_recurring_events'))) {
     return { allowed: false, message: 'This package does not include recurring schedules.' };
   }
 

@@ -350,6 +350,9 @@ model Event {
   createdById          String
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
+  publicationStatus    String    @default("published")
+  publishAt            DateTime?
+  publishedAt          DateTime?
 
   church         Church          @relation(fields: [churchId], references: [id])
   linkedChurches EventChurch[]
@@ -359,6 +362,7 @@ model Event {
   @@index([churchId, date])
   @@index([scopeType])
   @@index([recurrenceRuleId])
+  @@index([publicationStatus, publishAt])
   @@map("events")
 }
 
@@ -878,6 +882,8 @@ model Announcement {
   createdById String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  publicationStatus String @default("published")
+  publishedAt DateTime?
 
   church Church             @relation(fields: [churchId], references: [id])
   views  AnnouncementView[]
@@ -1662,6 +1668,8 @@ model TeamCommunication {
   mediaUrls Json? // [{url, type, name, size}]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  publicationStatus String @default("published")
+  publishedAt DateTime?
 
   team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
@@ -1870,6 +1878,9 @@ model CellMeeting {
   scheduledOccurrenceId String? @unique
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+  publicationStatus String @default("published")
+  publishAt          DateTime?
+  publishedAt        DateTime?
 
   cell       Cell             @relation(fields: [cellId], references: [id], onDelete: Cascade)
   attendance CellAttendance[]
@@ -1879,6 +1890,7 @@ model CellMeeting {
   @@index([recurrenceRuleId])
   @@index([recordType])
   @@index([sourceMeetingId])
+  @@index([publicationStatus, publishAt])
   @@map("cell_meetings")
 }
 

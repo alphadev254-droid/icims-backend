@@ -14,7 +14,8 @@ import { hasFeature } from '../lib/packageChecker';
 import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import { refreshReminderCache } from '../workers/reminderCacheWorker';
 import { buildExactScheduleOccurrenceRanges, cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule, type ExactScheduleOccurrenceRangeInput } from '../services/schedulerService';
-import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone } from '../lib/timezone';
+import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
+import { publicationForStart } from '../lib/publication';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
 const scheduleDateSchema = z.string()
@@ -351,6 +352,9 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   }
 
   const where: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
+  if (roleName === 'member') {
+    (where.AND as Prisma.EventWhereInput[]).push({ publicationStatus: 'published' });
+  }
   if (filterStatus === 'current') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
@@ -428,6 +432,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   }
 
   const whereClause: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
+  if (roleName === 'member') {
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ publicationStatus: 'published' });
+  }
   if (filterStatus === 'current') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
@@ -453,6 +460,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         churchId: true,
         scopeType: true,
         recurrenceRuleId: true,
+        publicationStatus: true,
+        publishAt: true,
+        publishedAt: true,
         requiresTicket: true,
         linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
         church: { select: { id: true, name: true } },
@@ -496,6 +506,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         updatedAt: true,
         contactEmail: true,
         contactPhone: true,
+        publicationStatus: true,
+        publishAt: true,
+        publishedAt: true,
         linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
         church: { select: { id: true, name: true } },
       },
@@ -548,6 +561,10 @@ export async function getPublicEvent(req: Request, res: Response): Promise<void>
     res.status(404).json({ success: false, message: 'Event not found' }); 
     return; 
   }
+  if (event.publicationStatus !== 'published') {
+    res.status(404).json({ success: false, message: 'Event not found' });
+    return;
+  }
 
   if (!(await eventOwnerHasFeature(event.id, 'event_public_links'))) {
     res.status(403).json({ success: false, message: featureUnavailableMessage('event_public_links') });
@@ -567,6 +584,10 @@ export async function getEvent(req: Request, res: Response): Promise<void> {
     },
   });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  if (req.user?.role === 'member' && event.publicationStatus !== 'published') {
+    res.status(404).json({ success: false, message: 'Event not found' });
+    return;
+  }
   const [eventWithRecurrence] = await attachEventRecurrenceRules([event]);
   res.json({ success: true, data: decorateEventAvailability(eventWithRecurrence) });
 }
@@ -628,7 +649,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   }
 
   if (mode === 'scheduled') {
-    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, 'create');
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, 'create', usesExactDates);
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -717,6 +738,12 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   const recurrenceRuleId = mode === 'scheduled' && !usesExactDates
     ? await saveRecurrenceRule(recurrenceRule ?? null, new Date(eventData.date))
     : null;
+  const eventStartAt = exactOccurrenceRanges?.[0]?.startAt
+    ? new Date(exactOccurrenceRanges[0].startAt)
+    : zonedDateTimeToUtc(eventData.date, eventData.time, timezone);
+  const publication = mode === 'scheduled'
+    ? publicationForStart(eventStartAt)
+    : { publicationStatus: 'published' as const, publishAt: new Date(), publishedAt: new Date() };
 
   const event = await prisma.event.create({
     data: {
@@ -730,6 +757,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
         ? new Date(eventData.ticketSalesCutoff) 
         : null,
       createdById: req.user!.userId,
+      ...publication,
       linkedChurches: {
         create: eventChurchIds.map(churchId => ({ churchId })),
       },
@@ -745,7 +773,8 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
 
-  // Fire-and-forget: worker resolves members and sends push off the request cycle
+  // Immediate events notify now; scheduled drafts notify when the publication worker publishes them.
+  if (publication.publicationStatus === 'published') {
   const church = await prisma.church.findUnique({ where: { id: primaryChurchId }, select: { name: true } });
   queueChurchPush(
     primaryChurchId,
@@ -772,6 +801,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
 
   // Refresh reminder cache immediately so new event appears without waiting for nightly cron
   refreshReminderCache().catch(err => console.error('[Event] Failed to refresh reminder cache:', err));
+  }
 }
 
 export async function updateEvent(req: Request, res: Response): Promise<void> {
@@ -850,8 +880,8 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const shouldClearSchedule = hasDeliveryMode && mode !== 'scheduled';
 
   if (shouldSchedule) {
-    const scheduleAction = existingRecurrenceRuleId ? 'update' : 'create';
-    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, scheduleAction);
+    const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
+    const scheduleAccess = await assertScheduleAccess(req, recurrenceRule ?? null, scheduleAction, usesExactDates);
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -930,11 +960,20 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     : shouldClearSchedule
       ? null
       : oldEvent.recurrenceRuleId;
+  const nextStartAt = exactOccurrenceRanges?.[0]?.startAt
+    ? new Date(exactOccurrenceRanges[0].startAt)
+    : zonedDateTimeToUtc(nextEventDate, eventData.time ?? oldEvent.time, scheduleTimezone ?? 'UTC');
+  const publicationUpdate = oldEvent.publicationStatus === 'draft'
+    ? shouldSchedule
+      ? publicationForStart(nextStartAt)
+      : { publicationStatus: 'published' as const, publishAt: new Date(), publishedAt: new Date() }
+    : {};
 
   const event = await prisma.event.update({
     where: { id: eventId },
     data: {
       ...eventData,
+      ...publicationUpdate,
       recurrenceRuleId,
       ...(nextPrimaryChurchId ? { churchId: nextPrimaryChurchId } : {}),
       ...(hasBodyKey('scopeType') ? { scopeType } : {}),
@@ -1043,6 +1082,10 @@ export async function bookTicket(req: Request, res: Response): Promise<void> {
     include: { linkedChurches: { select: { churchId: true } } },
   });
   if (!event) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  if (event.publicationStatus !== 'published') {
+    res.status(400).json({ success: false, message: 'This event is not open for booking yet' });
+    return;
+  }
   if (!(await eventOwnerHasFeature(event.id, 'event_ticketing'))) {
     res.status(403).json({ success: false, message: featureUnavailableMessage('event_ticketing') });
     return;

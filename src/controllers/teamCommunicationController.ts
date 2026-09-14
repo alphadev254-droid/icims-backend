@@ -15,6 +15,7 @@ import {
   syncTeamCommunicationToSchedule,
 } from '../services/schedulerService';
 import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
+import { communicationPublication } from '../lib/publication';
 
 const prisma = new PrismaClient();
 
@@ -243,7 +244,7 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
     const resultWithSchedules = await attachTeamCommunicationSchedules(result);
     const visibleResult = isAdmin
       ? resultWithSchedules
-      : resultWithSchedules.filter(post => post.canEdit || !post.scheduledEvent || post.scheduledEvent.status === 'completed');
+      : resultWithSchedules.filter(post => post.canEdit || post.publicationStatus === 'published');
 
     // Group by date ranges
     const grouped = groupByDateRanges(visibleResult);
@@ -291,7 +292,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
       if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
         return res.status(400).json({ error: 'Send date and time must be in the future' });
       }
-      const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, 'create');
+      const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, 'create', schedulePattern === 'custom_dates');
       if (!scheduleAccess.allowed) {
         return res.status(403).json({ error: scheduleAccess.message });
       }
@@ -315,7 +316,8 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
         content,
         teamId,
         authorId: userId!,
-        mediaUrls: mediaUrls.length > 0 ? mediaUrls : []
+        mediaUrls: mediaUrls.length > 0 ? mediaUrls : [],
+        ...communicationPublication(mode === 'scheduled'),
       },
       include: {
         team: {
@@ -404,18 +406,12 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Recurrence is only available when delivery mode is Schedule.' });
     }
 
-    // Delete removed media files from server
+    let removedUrls: string[] = [];
+    // Determine removed media now; delete only after the record and schedule update succeed.
     if (existing.mediaUrls && Array.isArray(existing.mediaUrls)) {
       const existingUrls = (existing.mediaUrls as any[]).map(m => m.url);
       const keptUrls = (existingMediaUrls || []).map((m: any) => m.url);
-      const removedUrls = existingUrls.filter(url => !keptUrls.includes(url));
-      
-      removedUrls.forEach(url => {
-        const filePath = path.join(process.cwd(), url.replace('/uploads/', 'uploads/'));
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      });
+      removedUrls = existingUrls.filter(url => !keptUrls.includes(url));
     }
 
     // Process new uploaded files
@@ -469,7 +465,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'Send date and time must be in the future' });
       }
       const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
-      const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, scheduleAction);
+      const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, scheduleAction, schedulePattern === 'custom_dates');
       if (!scheduleAccess.allowed) {
         return res.status(403).json({ error: scheduleAccess.message });
       }
@@ -487,7 +483,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       }, exactOccurrences);
     } else if (mode === 'now') {
       if (existingSchedule.length > 0) {
-        const scheduleAccess = await assertScheduleAccess(req, null, 'update');
+        const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
         if (!scheduleAccess.allowed) {
           return res.status(403).json({ error: scheduleAccess.message });
         }
@@ -498,9 +494,15 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
         recurrenceRuleId: null,
         timezone: existingSchedule[0]?.timezone ?? await resolveTimeZone({ req, churchId: communication.team.churchId, ministryAdminId: communication.team.church?.ministryAdminId }),
       });
+      await prisma.teamCommunication.update({ where: { id: String(id) }, data: communicationPublication(false) });
     }
 
     const [communicationWithSchedule] = await attachTeamCommunicationSchedules([{ ...communication, author }]);
+    const uploadRoot = path.resolve(process.cwd(), 'uploads');
+    removedUrls.forEach(url => {
+      const filePath = path.resolve(process.cwd(), String(url).replace(/^\/+/, ''));
+      if (filePath.startsWith(`${uploadRoot}${path.sep}`) && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    });
     res.json(communicationWithSchedule);
   } catch (error: any) {
     console.error('Update team communication error:', error);
@@ -531,10 +533,9 @@ export const deleteTeamCommunication = async (req: Request, res: Response) => {
     // Delete media files from server
     if (existing.mediaUrls && Array.isArray(existing.mediaUrls)) {
       (existing.mediaUrls as any[]).forEach(media => {
-        const filePath = path.join(process.cwd(), media.url.replace('/uploads/', 'uploads/'));
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+        const uploadRoot = path.resolve(process.cwd(), 'uploads', 'communication');
+        const filePath = path.resolve(process.cwd(), String(media.url).replace(/^\/+/, ''));
+        if (filePath.startsWith(`${uploadRoot}${path.sep}`) && fs.existsSync(filePath)) fs.unlinkSync(filePath);
       });
     }
 
@@ -728,5 +729,4 @@ async function canUserEditOrDelete(userId: string, teamId: string, authorId: str
 
   return false;
 }
-
 

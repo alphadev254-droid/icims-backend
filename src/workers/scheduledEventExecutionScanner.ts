@@ -3,6 +3,7 @@ import { normalizeTimeZone } from '../lib/timezone';
 import {
   processDueScheduledCellMeetingEvents,
   processDueScheduledCommunicationEvents,
+  processDuePublications,
 } from './scheduledEventWorker';
 
 function cronExpression() {
@@ -23,6 +24,7 @@ export async function processDueScheduledActions() {
   const results = await Promise.allSettled([
     processDueScheduledCommunicationEvents(),
     processDueScheduledCellMeetingEvents(),
+    processDuePublications(),
   ]);
 
   const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');

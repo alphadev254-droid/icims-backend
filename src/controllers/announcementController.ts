@@ -15,6 +15,7 @@ import {
   syncAnnouncementToSchedule,
 } from '../services/schedulerService';
 import { isValidTimeZone, resolveTimeZone } from '../lib/timezone';
+import { communicationPublication } from '../lib/publication';
 
 const recurrenceRuleSchema = z.object({
   frequency: z.enum(['none', 'daily', 'weekly', 'monthly', 'yearly']).optional().nullable(),
@@ -42,16 +43,25 @@ const schema = z.object({
   occurrenceTimes: z.array(z.string().datetime()).max(366).optional(),
 });
 
-function deleteUploadedFile(url: string) {
-  if (url.startsWith('/uploads/')) {
-    const p = path.join(process.cwd(), url.replace(/^\//,''));
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
+type StoredAttachment = { url: string; name?: string; size?: number; mimeType?: string };
+
+function deleteUploadedFile(value: string | StoredAttachment) {
+  const url = typeof value === 'string' ? value : value?.url;
+  if (!url?.startsWith('/uploads/')) return;
+  const uploadRoot = path.resolve(process.cwd(), 'uploads');
+  const filePath = path.resolve(process.cwd(), url.replace(/^\/+/, ''));
+  if (!filePath.startsWith(`${uploadRoot}${path.sep}`)) return;
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
-function parseAttachments(json: unknown): string[] {
+function parseAttachments(json: unknown): StoredAttachment[] {
   if (!json) return [];
-  try { return JSON.parse(json as string) as string[]; } catch { return []; }
+  try {
+    const parsed = JSON.parse(json as string);
+    return Array.isArray(parsed)
+      ? parsed.map(value => typeof value === 'string' ? { url: value } : value).filter(value => typeof value?.url === 'string')
+      : [];
+  } catch { return []; }
 }
 
 async function attachAnnouncementSchedules<T extends Array<{ id: string }>>(announcements: T) {
@@ -153,7 +163,7 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
   });
   const itemsWithSchedules = await attachAnnouncementSchedules(items);
   const visibleItems = roleName === 'member'
-    ? itemsWithSchedules.filter(item => !item.scheduledEvent || item.scheduledEvent.status === 'completed')
+    ? itemsWithSchedules.filter(item => (item as any).publicationStatus === 'published')
     : itemsWithSchedules;
   res.json({ success: true, data: visibleItems });
 }
@@ -191,7 +201,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
       res.status(400).json({ success: false, message: 'Send date and time must be in the future' });
       return;
     }
-    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, 'create');
+    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, 'create', schedulePattern === 'custom_dates');
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -219,6 +229,7 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
       ...announcementData,
       churchId: targetChurchId,
       createdById: userId!,
+      ...communicationPublication(mode === 'scheduled'),
     },
     include: { church: { select: { ministryAdminId: true } } },
   });
@@ -295,6 +306,9 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     data: announcementData,
     include: { church: { select: { ministryAdminId: true } } },
   });
+  const removedAttachments = announcementData.attachments !== undefined
+    ? parseAttachments(item.attachments).filter(oldFile => !parseAttachments(announcementData.attachments).some(newFile => newFile.url === oldFile.url))
+    : [];
 
   const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
     SELECT recurrenceRuleId
@@ -317,7 +331,7 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       return;
     }
     const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
-    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, scheduleAction);
+    const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, scheduleAction, schedulePattern === 'custom_dates');
     if (!scheduleAccess.allowed) {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
@@ -333,7 +347,7 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     }, exactOccurrences);
   } else if (mode === 'now') {
     if (existingSchedule.length > 0) {
-      const scheduleAccess = await assertScheduleAccess(req, null, 'update');
+      const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
       if (!scheduleAccess.allowed) {
         res.status(403).json({ success: false, message: scheduleAccess.message });
         return;
@@ -345,9 +359,11 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       recurrenceRuleId: null,
       timezone,
     });
+    await prisma.announcement.update({ where: { id }, data: communicationPublication(false) });
   }
 
   const [updatedWithSchedule] = await attachAnnouncementSchedules([updated]);
+  removedAttachments.forEach(deleteUploadedFile);
   res.json({ success: true, data: updatedWithSchedule });
 }
 

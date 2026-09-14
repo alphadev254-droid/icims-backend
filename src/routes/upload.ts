@@ -38,7 +38,16 @@ router.delete('/delete', (req: Request, res: Response) => {
   }
   
   try {
-    const filePath = path.join(process.cwd(), fileUrl.replace(/^\//, ''));
+    if (typeof fileUrl !== 'string' || !fileUrl.startsWith('/uploads/communication/')) {
+      res.status(400).json({ success: false, message: 'Invalid upload path' });
+      return;
+    }
+    const uploadRoot = path.resolve(process.cwd(), 'uploads');
+    const filePath = path.resolve(process.cwd(), fileUrl.replace(/^\/+/, ''));
+    if (!filePath.startsWith(`${uploadRoot}${path.sep}`)) {
+      res.status(400).json({ success: false, message: 'Invalid upload path' });
+      return;
+    }
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
