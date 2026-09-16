@@ -14,16 +14,11 @@ export function hasRecurringRule(recurrenceRule?: RecurrenceRuleLike): boolean {
 export async function assertScheduleAccess(
   req: Request,
   recurrenceRule?: RecurrenceRuleLike,
-  action: ScheduleAction = 'create',
+  _action: ScheduleAction = 'create',
   requiresRecurringFeature = false,
 ): Promise<{ allowed: boolean; message?: string }> {
   const userId = req.user?.userId;
   if (!userId) return { allowed: false, message: 'Not authenticated' };
-
-  const permission = `schedules:${action}`;
-  if (!req.user?.permissions?.includes(permission)) {
-    return { allowed: false, message: `Permission denied: ${permission} required` };
-  }
 
   if (!(await hasFeature(userId, 'scheduler_event_creation'))) {
     return { allowed: false, message: 'This package does not include scheduling.' };

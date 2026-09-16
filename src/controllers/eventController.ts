@@ -319,7 +319,7 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   const roleName = req.user?.role ?? 'member';
   const filterChurchId = req.query.churchId as string | undefined;
   const requestedStatus = (req.query.status as string | undefined)?.trim();
-  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'all'].includes(requestedStatus)
+  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'draft', 'all'].includes(requestedStatus)
     ? requestedStatus
     : 'current';
 
@@ -352,10 +352,8 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   }
 
   const where: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
-  if (roleName === 'member') {
-    (where.AND as Prisma.EventWhereInput[]).push({ publicationStatus: 'published' });
-  }
-  if (filterStatus === 'current') {
+  (where.AND as Prisma.EventWhereInput[]).push({ publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published' });
+  if (filterStatus === 'draft' || filterStatus === 'current') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
@@ -391,7 +389,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
   const requestedStatus = (req.query.status as string | undefined)?.trim();
-  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'all'].includes(requestedStatus)
+  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'draft', 'all'].includes(requestedStatus)
     ? requestedStatus
     : 'current';
   const isSimple = req.query.simple === 'true'; // lightweight dropdown mode
@@ -432,10 +430,8 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   }
 
   const whereClause: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
-  if (roleName === 'member') {
-    (whereClause.AND as Prisma.EventWhereInput[]).push({ publicationStatus: 'published' });
-  }
-  if (filterStatus === 'current') {
+  (whereClause.AND as Prisma.EventWhereInput[]).push({ publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published' });
+  if (filterStatus === 'draft' || filterStatus === 'current') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });

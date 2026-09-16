@@ -3,7 +3,7 @@ import { authenticate, authorizeAnyPermission, authorizePermission } from '../mi
 import {
   getCells, getCell, createCell, updateCell, deleteCell,
   getCellMembers, addCellMember, updateCellMember, removeCellMember,
-  getCellMeetings, createCellMeeting, updateCellMeeting, deleteCellMeeting,
+  getCellMeetings, createCellMeeting, updateCellMeeting, deleteCellMeeting, bulkDeleteDraftCellMeetings,
   getMeetingAttendance, submitMeetingAttendance,
   getCellStats, getCellFinanceStats,
   getCellDonations,
@@ -50,6 +50,7 @@ router.delete('/:id/members/:memberId', authorizePermission('cells:update'), rem
 
 router.get('/:id/meetings', authorizePermission('cells:read'), getCellMeetings);
 router.post('/:id/meetings', authorizePermission('cells:update'), createCellMeeting);
+router.post('/meetings/bulk-delete-drafts', authorizePermission('cells:update'), bulkDeleteDraftCellMeetings);
 
 router.get('/meetings/:meetingId/attendance', authorizeAnyPermission(['cells:read', 'cells:update']), getMeetingAttendance);
 router.post('/meetings/:meetingId/attendance', authorizePermission('cells:update'), submitMeetingAttendance);

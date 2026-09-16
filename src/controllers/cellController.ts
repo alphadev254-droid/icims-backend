@@ -906,7 +906,7 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
 export async function getCellMeetings(req: Request, res: Response): Promise<void> {
   const cellId = String(req.params.id);
   const {
-    dateFrom, dateTo,
+    dateFrom, dateTo, publicationStatus,
     page = '1', limit = '50',
   } = req.query as Record<string, string>;
 
@@ -914,8 +914,10 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
   const skip = (pageNum - 1) * limitNum;
 
-  const where: any = { cellId };
-  if (req.user?.role === 'member') where.publicationStatus = 'published';
+  const where: any = {
+    cellId,
+    publicationStatus: req.user?.role === 'member' || publicationStatus !== 'draft' ? 'published' : 'draft',
+  };
   if (dateFrom || dateTo) {
     const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
     const timezone = await resolveTimeZone({ req, churchId: cell?.churchId ?? req.user?.churchId });
@@ -1226,6 +1228,17 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
+  const isGeneratedOccurrence = existingMeeting.recordType === 'scheduled_occurrence';
+  const containsSeriesChanges = ['deliveryMode', 'schedulePattern', 'occurrenceDates', 'recurrenceRule']
+    .some(field => Object.prototype.hasOwnProperty.call(req.body, field));
+  if (isGeneratedOccurrence && containsSeriesChanges) {
+    res.status(400).json({
+      success: false,
+      message: 'A generated meeting occurrence can only be edited individually. Edit the original meeting schedule to change recurrence.',
+    });
+    return;
+  }
+
   const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, timezone: requestedTimezone, ...meetingData } = parsed.data;
   const existingSchedule = await prisma.$queryRaw<Array<{ id: string; recurrenceRuleId: string | null; timezone: string }>>`
     SELECT id, recurrenceRuleId, timezone
@@ -1368,11 +1381,73 @@ export async function deleteCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
+  if (meeting.recordType === 'scheduled_source') {
+    const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+  }
+
   await prisma.cellMeeting.delete({ where: { id: meetingId } });
   deleteScheduledEventForSource('cell_meetings', meetingId)
     .catch(err => console.error('[Scheduler] Failed to delete cell meeting schedule:', err));
 
   res.json({ success: true, message: 'Meeting deleted' });
+}
+
+// ─── POST /api/cells/meetings/bulk-delete-drafts ─────────────────────────────
+
+export async function bulkDeleteDraftCellMeetings(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.userId!;
+  const roleName = req.user?.role ?? 'member';
+  const churchId = req.user?.churchId;
+  const parsed = z.object({
+    meetingIds: z.array(z.string().min(1)).min(1).max(200),
+  }).safeParse(req.body);
+
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+
+  const meetingIds = [...new Set(parsed.data.meetingIds)];
+  const meetings = await prisma.cellMeeting.findMany({
+    where: { id: { in: meetingIds } },
+    select: { id: true, publicationStatus: true, recordType: true, cell: { select: { churchId: true } } },
+  });
+
+  if (meetings.length !== meetingIds.length) {
+    res.status(404).json({ success: false, message: 'One or more draft meetings no longer exist.' });
+    return;
+  }
+  if (meetings.some(meeting => meeting.publicationStatus !== 'draft')) {
+    res.status(400).json({ success: false, message: 'Only draft meetings can be deleted in bulk.' });
+    return;
+  }
+
+  const accessibleChurchIds = await getAccessibleChurchIds(
+    roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId,
+  );
+  if (meetings.some(meeting => !accessibleChurchIds.includes(meeting.cell.churchId))) {
+    res.status(403).json({ success: false, message: 'You do not have access to one or more selected meetings.' });
+    return;
+  }
+
+  const scheduledSources = meetings.filter(meeting => meeting.recordType === 'scheduled_source');
+  if (scheduledSources.length > 0) {
+    const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+    if (!scheduleAccess.allowed) {
+      res.status(403).json({ success: false, message: scheduleAccess.message });
+      return;
+    }
+    await Promise.all(scheduledSources.map(meeting => deleteScheduledEventForSource('cell_meetings', meeting.id)));
+  }
+
+  const result = await prisma.cellMeeting.deleteMany({
+    where: { id: { in: meetingIds }, publicationStatus: 'draft' },
+  });
+  res.json({ success: true, message: `${result.count} draft meeting(s) deleted`, deletedCount: result.count });
 }
 
 // ─── GET /api/cells/meetings/:meetingId/attendance ────────────────────────────
