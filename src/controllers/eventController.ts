@@ -13,6 +13,7 @@ import { eventCreatedTemplate } from '../lib/emailTemplates';
 import { hasFeature } from '../lib/packageChecker';
 import { assertScheduleAccess, hasRecurringRule } from '../lib/scheduleAccess';
 import { refreshReminderCache } from '../workers/reminderCacheWorker';
+import { materializeUpcomingEventDrafts } from '../workers/scheduledEventWorker';
 import { buildExactScheduleOccurrenceRanges, cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule, type ExactScheduleOccurrenceRangeInput } from '../services/schedulerService';
 import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
 import { publicationForStart } from '../lib/publication';
@@ -240,8 +241,10 @@ async function attachEventRecurrenceRules<T extends Array<{ id: string; recurren
   const scheduleIds = schedules.map(schedule => schedule.id);
   const occurrences = scheduleIds.length > 0 ? await prisma.$queryRaw<Array<{
     id: string; scheduledEventId: string; occurrenceStartAt: Date; occurrenceEndAt: Date; status: string;
+    generatedSourceModule: string | null; generatedSourceId: string | null;
   }>>`
-    SELECT id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status
+    SELECT id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+           generatedSourceModule, generatedSourceId
     FROM scheduled_event_occurrences
     WHERE scheduledEventId IN (${Prisma.join(scheduleIds)})
     ORDER BY occurrenceStartAt ASC
@@ -319,7 +322,7 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   const roleName = req.user?.role ?? 'member';
   const filterChurchId = req.query.churchId as string | undefined;
   const requestedStatus = (req.query.status as string | undefined)?.trim();
-  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'draft', 'all'].includes(requestedStatus)
+  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'draft', 'schedule', 'all'].includes(requestedStatus)
     ? requestedStatus
     : 'current';
 
@@ -352,8 +355,13 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
   }
 
   const where: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
-  (where.AND as Prisma.EventWhereInput[]).push({ publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published' });
-  if (filterStatus === 'draft' || filterStatus === 'current') {
+  (where.AND as Prisma.EventWhereInput[]).push(filterStatus === 'schedule' && roleName !== 'member'
+    ? { recordType: 'scheduled_source' }
+    : {
+        publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published',
+        recordType: { not: 'scheduled_source' },
+      });
+  if (filterStatus === 'draft' || filterStatus === 'schedule' || filterStatus === 'current') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
@@ -389,7 +397,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   const startDate = req.query.startDate as string | undefined;
   const endDate = req.query.endDate as string | undefined;
   const requestedStatus = (req.query.status as string | undefined)?.trim();
-  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'draft', 'all'].includes(requestedStatus)
+  const filterStatus = requestedStatus && ['upcoming', 'ongoing', 'completed', 'cancelled', 'draft', 'schedule', 'all'].includes(requestedStatus)
     ? requestedStatus
     : 'current';
   const isSimple = req.query.simple === 'true'; // lightweight dropdown mode
@@ -430,8 +438,13 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
   }
 
   const whereClause: Prisma.EventWhereInput = { AND: [eventAccessWhere(scopedChurchIds)] };
-  (whereClause.AND as Prisma.EventWhereInput[]).push({ publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published' });
-  if (filterStatus === 'draft' || filterStatus === 'current') {
+  (whereClause.AND as Prisma.EventWhereInput[]).push(filterStatus === 'schedule' && roleName !== 'member'
+    ? { recordType: 'scheduled_source' }
+    : {
+        publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published',
+        recordType: { not: 'scheduled_source' },
+      });
+  if (filterStatus === 'draft' || filterStatus === 'schedule' || filterStatus === 'current') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
@@ -459,6 +472,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         publicationStatus: true,
         publishAt: true,
         publishedAt: true,
+        recordType: true,
+        sourceEventId: true,
+        scheduledOccurrenceId: true,
         requiresTicket: true,
         linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
         church: { select: { id: true, name: true } },
@@ -505,6 +521,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         publicationStatus: true,
         publishAt: true,
         publishedAt: true,
+        recordType: true,
+        sourceEventId: true,
+        scheduledOccurrenceId: true,
         linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
         church: { select: { id: true, name: true } },
       },
@@ -754,6 +773,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
         : null,
       createdById: req.user!.userId,
       ...publication,
+      recordType: mode === 'scheduled' ? 'scheduled_source' : 'direct',
       linkedChurches: {
         create: eventChurchIds.map(churchId => ({ churchId })),
       },
@@ -765,6 +785,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   });
   if (mode === 'scheduled') {
     await syncEventToSchedule({ ...event, timezone }, exactOccurrenceRanges);
+    await materializeUpcomingEventDrafts();
   }
 
   res.status(201).json({ success: true, data: decorateEventAvailability(event) });
@@ -807,6 +828,13 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   const eventId = String(req.params.id);
   const oldEvent = await prisma.event.findUnique({ where: { id: eventId } });
   if (!oldEvent) { res.status(404).json({ success: false, message: 'Event not found' }); return; }
+  const isGeneratedOccurrence = oldEvent.recordType === 'scheduled_occurrence'
+    || Boolean(oldEvent.scheduledOccurrenceId && oldEvent.sourceEventId);
+  if (isGeneratedOccurrence && ['deliveryMode', 'schedulePattern', 'occurrenceDates', 'occurrenceRanges', 'recurrenceRule']
+    .some(field => Object.prototype.hasOwnProperty.call(req.body, field))) {
+    res.status(400).json({ success: false, message: 'Edit this draft event individually. Use Edit Scheduler to change the remaining series.' });
+    return;
+  }
   const {
     churchIds: requestedChurchIds,
     scopeType,
@@ -960,7 +988,9 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     ? new Date(exactOccurrenceRanges[0].startAt)
     : zonedDateTimeToUtc(nextEventDate, eventData.time ?? oldEvent.time, scheduleTimezone ?? 'UTC');
   const publicationUpdate = oldEvent.publicationStatus === 'draft'
-    ? shouldSchedule
+    ? isGeneratedOccurrence
+      ? { publicationStatus: 'draft' as const, publishAt: nextStartAt, publishedAt: null }
+      : shouldSchedule
       ? publicationForStart(nextStartAt)
       : { publicationStatus: 'published' as const, publishAt: new Date(), publishedAt: new Date() }
     : {};
@@ -970,6 +1000,8 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     data: {
       ...eventData,
       ...publicationUpdate,
+      ...(shouldSchedule ? { recordType: 'scheduled_source', sourceEventId: null } : {}),
+      ...(shouldClearSchedule ? { recordType: 'direct', sourceEventId: null, scheduledOccurrenceId: null } : {}),
       recurrenceRuleId,
       ...(nextPrimaryChurchId ? { churchId: nextPrimaryChurchId } : {}),
       ...(hasBodyKey('scopeType') ? { scopeType } : {}),
@@ -998,6 +1030,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
   });
   if (shouldSchedule) {
     await syncEventToSchedule({ ...event, timezone: scheduleTimezone ?? 'UTC' }, exactOccurrenceRanges);
+    await materializeUpcomingEventDrafts();
   } else if (shouldClearSchedule) {
     deleteScheduledEventForSource('events', eventId).catch(err => console.error('[Scheduler] Failed to delete cleared event schedule:', err));
     if (oldEvent.recurrenceRuleId && existingSchedule.length === 0) {
@@ -1041,6 +1074,36 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
   const eventChurchIds = getEventChurchIds(event);
   if (!eventChurchIds.some(churchId => churchIds.includes(churchId))) {
     res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  if (event.recordType === 'scheduled_source') {
+    await prisma.$transaction(async tx => {
+      await tx.$executeRaw`
+        DELETE draft
+        FROM events draft
+        JOIN scheduled_event_occurrences seo ON seo.id = draft.scheduledOccurrenceId
+        JOIN scheduled_events se ON se.id = seo.scheduledEventId
+        WHERE se.sourceModule = 'events' AND se.sourceId = ${event.id}
+          AND draft.publicationStatus = 'draft'
+      `;
+      await tx.event.delete({ where: { id: event.id } });
+    });
+    await deleteScheduledEventForSource('events', event.id);
+    res.json({ success: true, message: 'Event schedule and remaining drafts deleted' });
+    return;
+  }
+
+  if (event.publicationStatus === 'draft' && event.recordType === 'scheduled_occurrence') {
+    if (event.scheduledOccurrenceId) {
+      await prisma.$executeRaw`
+        UPDATE scheduled_event_occurrences
+        SET status = 'cancelled', generatedSourceModule = NULL, generatedSourceId = NULL, updatedAt = NOW(3)
+        WHERE id = ${event.scheduledOccurrenceId} AND status IN ('pending', 'failed')
+      `;
+    }
+    await prisma.event.delete({ where: { id: event.id } });
+    res.json({ success: true, message: 'Draft event deleted' });
     return;
   }
 

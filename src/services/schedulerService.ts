@@ -438,6 +438,13 @@ export async function syncEventToSchedule(
   });
 
   const durationMs = Math.max(60 * 60 * 1000, endAt.getTime() - startAt.getTime());
+  await prisma.$executeRaw`
+    DELETE e
+    FROM events e
+    JOIN scheduled_event_occurrences seo ON seo.id = e.scheduledOccurrenceId
+    WHERE seo.scheduledEventId = ${scheduledEventId}
+      AND seo.status NOT IN ('generated', 'cancelled')
+  `;
   if (exactOccurrenceRanges) {
     await replaceScheduledEventOccurrenceRanges(scheduledEventId, exactOccurrenceRanges);
   } else {

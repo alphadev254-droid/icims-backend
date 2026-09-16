@@ -353,6 +353,9 @@ model Event {
   publicationStatus    String    @default("published")
   publishAt            DateTime?
   publishedAt          DateTime?
+  recordType           String    @default("direct")
+  sourceEventId        String?
+  scheduledOccurrenceId String?  @unique
 
   church         Church          @relation(fields: [churchId], references: [id])
   linkedChurches EventChurch[]
@@ -363,6 +366,8 @@ model Event {
   @@index([scopeType])
   @@index([recurrenceRuleId])
   @@index([publicationStatus, publishAt])
+  @@index([recordType])
+  @@index([sourceEventId])
   @@map("events")
 }
 

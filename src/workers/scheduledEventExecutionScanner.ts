@@ -4,6 +4,7 @@ import {
   processDueScheduledCellMeetingEvents,
   processDueScheduledCommunicationEvents,
   processDuePublications,
+  materializeUpcomingEventDrafts,
 } from './scheduledEventWorker';
 
 function cronExpression() {
@@ -24,6 +25,7 @@ export async function processDueScheduledActions() {
   const results = await Promise.allSettled([
     processDueScheduledCommunicationEvents(),
     processDueScheduledCellMeetingEvents(),
+    materializeUpcomingEventDrafts(),
     processDuePublications(),
   ]);
 

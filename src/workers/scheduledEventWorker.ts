@@ -893,11 +893,99 @@ export async function materializeUpcomingCellMeetingDrafts() {
   }
 }
 
+export async function materializeUpcomingEventDrafts() {
+  const schedules = await prisma.$queryRaw<ScheduledEventRow[]>`
+    SELECT id, sourceModule, sourceId, title, startAt, endAt, timezone, recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'events' AND status = 'scheduled' AND sourceId IS NOT NULL
+  `;
+  for (const event of schedules) {
+    if (!event.recurrenceRuleId) continue;
+    const rule = await getRecurrenceRule(event.recurrenceRuleId);
+    if (!rule) continue;
+    const durationMs = Math.max(60_000, event.endAt.getTime() - event.startAt.getTime());
+    let cursor = new Date(rule.startsAt);
+    let occurrenceNumber = 0;
+    for (let guard = 0; guard < 10000; guard += 1) {
+      if (rule.endsAt && cursor > rule.endsAt) break;
+      if (matchesRule(rule, cursor, event.timezone || 'UTC')) {
+        occurrenceNumber += 1;
+        if (!rule.count || occurrenceNumber <= rule.count) {
+          await prisma.$executeRaw`
+            INSERT INTO scheduled_event_occurrences (
+              id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+              generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+            ) VALUES (
+              ${randomUUID()}, ${event.id}, ${cursor}, ${new Date(cursor.getTime() + durationMs)}, 'pending',
+              NULL, NULL, NULL, NOW(3), NOW(3)
+            ) ON DUPLICATE KEY UPDATE updatedAt = updatedAt
+          `;
+        }
+        if ((!rule.count && !rule.endsAt) || (rule.count && occurrenceNumber >= rule.count)) break;
+      }
+      const next = getNextOccurrence(rule, cursor, event.timezone || 'UTC');
+      if (!next || next <= cursor) break;
+      cursor = next;
+    }
+  }
+
+  const occurrences = await prisma.$queryRaw<Array<{
+    occurrenceId: string; occurrenceStartAt: Date; occurrenceEndAt: Date; sourceId: string; timezone: string;
+  }>>`
+    SELECT seo.id AS occurrenceId, seo.occurrenceStartAt, seo.occurrenceEndAt, se.sourceId, se.timezone
+    FROM scheduled_event_occurrences seo
+    JOIN scheduled_events se ON se.id = seo.scheduledEventId
+    LEFT JOIN events draft ON draft.scheduledOccurrenceId = seo.id
+    WHERE se.sourceModule = 'events'
+      AND se.status = 'scheduled'
+      AND seo.status = 'pending'
+      AND seo.occurrenceStartAt > NOW(3)
+      AND se.sourceId IS NOT NULL
+      AND draft.id IS NULL
+    ORDER BY seo.occurrenceStartAt ASC
+    LIMIT 1000
+  `;
+
+  for (const occurrence of occurrences) {
+    const source = await prisma.event.findUnique({
+      where: { id: occurrence.sourceId },
+      include: { linkedChurches: { select: { churchId: true } } },
+    });
+    if (!source) continue;
+    const id = randomUUID();
+    const durationMs = Math.max(60_000, source.endDate.getTime() - source.date.getTime());
+    await prisma.event.create({
+      data: {
+        id,
+        title: source.title, description: source.description,
+        date: occurrence.occurrenceStartAt, endDate: occurrence.occurrenceEndAt ?? new Date(occurrence.occurrenceStartAt.getTime() + durationMs),
+        time: formatTimeForMeeting(occurrence.occurrenceStartAt, occurrence.timezone),
+        endTime: formatTimeForMeeting(occurrence.occurrenceEndAt, occurrence.timezone),
+        location: source.location, contactEmail: source.contactEmail, contactPhone: source.contactPhone,
+        type: source.type, status: 'upcoming', attendeeCount: 0,
+        requiresTicket: source.requiresTicket, isFree: source.isFree, ticketPrice: source.ticketPrice,
+        currency: source.currency, totalTickets: source.totalTickets, ticketsSold: 0,
+        ticketSalesCutoff: source.ticketSalesCutoff, allowPublicTicketing: source.allowPublicTicketing,
+        imageUrl: source.imageUrl, churchId: source.churchId, scopeType: source.scopeType,
+        createdById: source.createdById, publicationStatus: 'draft', publishAt: occurrence.occurrenceStartAt,
+        publishedAt: null, recordType: 'scheduled_occurrence', sourceEventId: source.id,
+        scheduledOccurrenceId: occurrence.occurrenceId,
+        linkedChurches: { create: source.linkedChurches.map(link => ({ churchId: link.churchId })) },
+      },
+    });
+    await prisma.$executeRaw`
+      UPDATE scheduled_event_occurrences
+      SET generatedSourceModule = 'events', generatedSourceId = ${id}, updatedAt = NOW(3)
+      WHERE id = ${occurrence.occurrenceId} AND status = 'pending'
+    `;
+  }
+}
+
 export async function processDuePublications() {
   const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
   const [events, meetings] = await Promise.all([
     prisma.event.findMany({
-      where: { publicationStatus: 'draft', publishAt: { lte: new Date() } },
+      where: { publicationStatus: 'draft', recordType: { not: 'scheduled_source' }, publishAt: { lte: new Date() } },
       include: { church: { select: { name: true } } },
       orderBy: { publishAt: 'asc' },
       take: limit,
@@ -915,6 +1003,13 @@ export async function processDuePublications() {
       data: { publicationStatus: 'published', publishedAt: new Date() },
     });
     if (!claimed.count) continue;
+    if (event.scheduledOccurrenceId) {
+      await prisma.$executeRaw`
+        UPDATE scheduled_event_occurrences
+        SET status = 'generated', updatedAt = NOW(3)
+        WHERE id = ${event.scheduledOccurrenceId} AND status = 'pending'
+      `;
+    }
     await Promise.allSettled([
       queueChurchPush(
         event.churchId,
