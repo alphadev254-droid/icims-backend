@@ -297,6 +297,31 @@ export async function upsertScheduledEvent(input: UpsertScheduledEventInput): Pr
   return rows[0].id;
 }
 
+async function deleteUnpublishedOccurrenceDrafts(
+  tx: Prisma.TransactionClient,
+  scheduledEventId: string,
+): Promise<void> {
+  // A schedule edit owns only unpublished occurrences. Remove their materialized
+  // drafts in the same transaction as the occurrence replacement so a removed
+  // date cannot reappear after refresh or leave an orphaned draft behind.
+  await tx.$executeRaw`
+    DELETE e
+    FROM events e
+    JOIN scheduled_event_occurrences seo ON seo.id = e.scheduledOccurrenceId
+    WHERE seo.scheduledEventId = ${scheduledEventId}
+      AND seo.status <> 'generated'
+      AND e.publicationStatus = 'draft'
+  `;
+  await tx.$executeRaw`
+    DELETE cm
+    FROM cell_meetings cm
+    JOIN scheduled_event_occurrences seo ON seo.id = cm.scheduledOccurrenceId
+    WHERE seo.scheduledEventId = ${scheduledEventId}
+      AND seo.status <> 'generated'
+      AND cm.publicationStatus = 'draft'
+  `;
+}
+
 export async function replaceScheduledEventOccurrences(
   scheduledEventId: string,
   occurrenceStarts: ExactScheduleOccurrenceInput[],
@@ -310,6 +335,7 @@ export async function replaceScheduledEventOccurrences(
   )].map(value => new Date(value)).sort((a, b) => a.getTime() - b.getTime());
 
   await prisma.$transaction(async tx => {
+    await deleteUnpublishedOccurrenceDrafts(tx, scheduledEventId);
     await tx.$executeRaw`
       DELETE FROM scheduled_event_occurrences
       WHERE scheduledEventId = ${scheduledEventId}
@@ -337,11 +363,14 @@ export async function replaceScheduledEventOccurrences(
 }
 
 export async function clearPendingScheduledEventOccurrences(scheduledEventId: string): Promise<void> {
-  await prisma.$executeRaw`
-    DELETE FROM scheduled_event_occurrences
-    WHERE scheduledEventId = ${scheduledEventId}
-      AND status <> 'generated'
-  `;
+  await prisma.$transaction(async tx => {
+    await deleteUnpublishedOccurrenceDrafts(tx, scheduledEventId);
+    await tx.$executeRaw`
+      DELETE FROM scheduled_event_occurrences
+      WHERE scheduledEventId = ${scheduledEventId}
+        AND status <> 'generated'
+    `;
+  });
 }
 
 export async function replaceScheduledEventOccurrenceRanges(
@@ -355,6 +384,7 @@ export async function replaceScheduledEventOccurrenceRanges(
   })).values()].sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
 
   await prisma.$transaction(async tx => {
+    await deleteUnpublishedOccurrenceDrafts(tx, scheduledEventId);
     await tx.$executeRaw`
       DELETE FROM scheduled_event_occurrences
       WHERE scheduledEventId = ${scheduledEventId}
@@ -437,14 +467,6 @@ export async function syncEventToSchedule(
     recurrenceRuleId: event.recurrenceRuleId,
   });
 
-  const durationMs = Math.max(60 * 60 * 1000, endAt.getTime() - startAt.getTime());
-  await prisma.$executeRaw`
-    DELETE e
-    FROM events e
-    JOIN scheduled_event_occurrences seo ON seo.id = e.scheduledOccurrenceId
-    WHERE seo.scheduledEventId = ${scheduledEventId}
-      AND seo.status NOT IN ('generated', 'cancelled')
-  `;
   if (exactOccurrenceRanges) {
     await replaceScheduledEventOccurrenceRanges(scheduledEventId, exactOccurrenceRanges);
   } else {
@@ -482,14 +504,6 @@ export async function syncCellMeetingToSchedule(
     createdById: createdById ?? null,
     recurrenceRuleId: meeting.recurrenceRuleId,
   });
-
-  await prisma.$executeRaw`
-    DELETE cm
-    FROM cell_meetings cm
-    JOIN scheduled_event_occurrences seo ON seo.id = cm.scheduledOccurrenceId
-    WHERE seo.scheduledEventId = ${scheduledEventId}
-      AND seo.status NOT IN ('generated', 'cancelled')
-  `;
 
   if (exactOccurrences) {
     await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, durationMs);

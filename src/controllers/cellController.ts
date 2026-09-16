@@ -1365,12 +1365,8 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   }
 
   if (shouldSchedule) {
-    try {
-      await syncCellMeetingToSchedule({ ...meeting, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined);
-      await materializeUpcomingCellMeetingDrafts();
-    } catch (err) {
-      console.error('[Scheduler] Failed to sync updated cell meeting:', err);
-    }
+    await syncCellMeetingToSchedule({ ...meeting, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined);
+    await materializeUpcomingCellMeetingDrafts();
   } else if (shouldClearSchedule) {
     deleteScheduledEventForSource('cell_meetings', meetingId)
       .catch(err => console.error('[Scheduler] Failed to delete cleared cell meeting schedule:', err));
