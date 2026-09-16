@@ -1240,7 +1240,8 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const isGeneratedOccurrence = existingMeeting.recordType === 'scheduled_occurrence';
+  const isGeneratedOccurrence = existingMeeting.recordType === 'scheduled_occurrence'
+    || Boolean(existingMeeting.scheduledOccurrenceId && existingMeeting.sourceMeetingId);
   const containsSeriesChanges = ['deliveryMode', 'schedulePattern', 'occurrenceDates', 'recurrenceRule']
     .some(field => Object.prototype.hasOwnProperty.call(req.body, field));
   if (isGeneratedOccurrence && containsSeriesChanges) {
