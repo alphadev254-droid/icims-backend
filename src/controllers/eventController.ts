@@ -361,7 +361,9 @@ export async function getEventSelect(req: Request, res: Response): Promise<void>
         publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published',
         recordType: { not: 'scheduled_source' },
       });
-  if (filterStatus === 'draft' || filterStatus === 'schedule' || filterStatus === 'current') {
+  if (filterStatus === 'current') {
+    (where.AND as Prisma.EventWhereInput[]).push({ status: { in: ['upcoming', 'ongoing'] } });
+  } else if (filterStatus === 'draft' || filterStatus === 'schedule') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
     (where.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
@@ -444,7 +446,9 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         publicationStatus: filterStatus === 'draft' && roleName !== 'member' ? 'draft' : 'published',
         recordType: { not: 'scheduled_source' },
       });
-  if (filterStatus === 'draft' || filterStatus === 'schedule' || filterStatus === 'current') {
+  if (filterStatus === 'current') {
+    (whereClause.AND as Prisma.EventWhereInput[]).push({ status: { in: ['upcoming', 'ongoing'] } });
+  } else if (filterStatus === 'draft' || filterStatus === 'schedule') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: { not: 'cancelled' } });
   } else if (filterStatus !== 'all') {
     (whereClause.AND as Prisma.EventWhereInput[]).push({ status: filterStatus });
