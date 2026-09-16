@@ -399,7 +399,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
     prisma.cell.findMany({
       where,
       include: {
-        _count: { select: { members: { where: { status: { not: 'inactive' } } }, meetings: true } },
+        _count: { select: { members: { where: { status: { not: 'inactive' } } }, meetings: { where: { publicationStatus: 'published', recordType: { not: 'scheduled_source' } } } } },
         members: {
           where: { isLeader: true, status: { not: 'inactive' } },
           include: { user: { select: { id: true, firstName: true, lastName: true } } },
@@ -418,7 +418,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   const [lastMeetingsRaw, attendanceRowsScoped, visitorRowsPerCell, offeringStatsRaw] = await Promise.all([
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds }, ...(hasDates && { date: dateFilter }) },
+      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, ...(hasDates && { date: dateFilter }) },
       _max: { date: true },
       _count: { _all: true },
     }),
@@ -523,7 +523,7 @@ export async function getCell(req: Request, res: Response): Promise<void> {
         where: { status: { not: 'inactive' }, OR: [{ isLeader: true }, { isAssistant: true }] },
         orderBy: [{ isLeader: 'desc' }, { isAssistant: 'desc' }],
       },
-      _count: { select: { meetings: true, members: { where: { status: { not: 'inactive' } } } } },
+      _count: { select: { meetings: { where: { publicationStatus: 'published', recordType: { not: 'scheduled_source' } } }, members: { where: { status: { not: 'inactive' } } } } },
     },
   });
 
@@ -849,7 +849,7 @@ export async function getCellMembers(req: Request, res: Response): Promise<void>
 
     eligibleMeetings = meetingOr.length > 0
       ? await prisma.cellMeeting.findMany({
-          where: { cellId, OR: meetingOr },
+          where: { cellId, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, OR: meetingOr },
           select: { id: true, date: true },
           orderBy: { date: 'asc' },
         })
@@ -1631,19 +1631,19 @@ export async function getCellStats(req: Request, res: Response): Promise<void> {
     activeMembers,
   ] = await Promise.all([
     prisma.cellMember.count({ where: { cellId, status: 'active' } }),
-    prisma.cellMeeting.findMany({ where: { cellId }, select: { id: true, date: true } }),
+    prisma.cellMeeting.findMany({ where: { cellId, publicationStatus: 'published', recordType: { not: 'scheduled_source' } }, select: { id: true, date: true } }),
     prisma.cellAttendance.count({ where: { cellId, isVisitor: true } }),
     prisma.cellMember.count({ where: { cellId, joinedAt: { gte: startOfMonth } } }),
     prisma.cellMember.count({ where: { cellId, status: 'inactive', leftAt: { gte: startOfMonth } } }),
     prisma.cellMember.count({ where: { cellId, joinedAt: { gte: startOfLastMonth, lte: endOfLastMonth } } }),
     prisma.cellMeeting.findMany({
-      where: { cellId },
+      where: { cellId, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
       orderBy: { date: 'desc' },
       take: 5,
       select: { id: true },
     }),
     prisma.cellMeeting.findMany({
-      where: { cellId, date: { gte: eightWeeksAgo } },
+      where: { cellId, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, date: { gte: eightWeeksAgo } },
       select: {
         id: true, date: true, topic: true,
         attendance: { select: { status: true, isVisitor: true } },
@@ -2174,7 +2174,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     prisma.cell.count({ where: { id: { in: cellIds } } }),
     prisma.cell.count({ where: { id: { in: cellIds }, status: 'active' } }),
     prisma.cellMember.count({ where: { cellId: { in: cellIds }, status: 'active' } }),
-    prisma.cellMeeting.count({ where: { cellId: { in: cellIds } } }),
+    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } } }),
     prisma.cellAttendance.count({ where: { cellId: { in: cellIds }, isVisitor: true } }),
     prisma.cellAttendance.findMany({
       where: { cellId: { in: cellIds }, isVisitor: false, userId: { not: null } },
@@ -2188,7 +2188,7 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       where: { cellId: { in: cellIds }, status: 'active' },
       select: { cellId: true, userId: true, joinedAt: true, user: { select: { firstName: true, lastName: true, phone: true, email: true } } },
     }),
-    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, date: { gte: thirtyDaysAgo } } }),
+    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, date: { gte: thirtyDaysAgo } } }),
     prisma.cellMember.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds }, status: 'active' },
@@ -2198,13 +2198,13 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
     }),
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds } },
+      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
     prisma.cellMeeting.findMany({
-      where: { cellId: { in: cellIds } },
+      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
       select: { id: true, cellId: true, date: true },
     }),
     prisma.cellAttendance.groupBy({

@@ -495,6 +495,8 @@ export async function getPublicProfile(req: Request, res: Response): Promise<voi
         },
       ],
       status: 'upcoming',
+      publicationStatus: 'published',
+      recordType: { not: 'scheduled_source' },
       date: { gte: new Date() },
     },
     select: {

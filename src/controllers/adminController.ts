@@ -831,7 +831,7 @@ export async function getAdminChurch(req: Request, res: Response): Promise<void>
       ministryAdmin: {
         select: { id: true, firstName: true, lastName: true, email: true, phone: true, accountCountry: true },
       },
-      _count: { select: { users: true, events: true, givingCampaigns: true } },
+      _count: { select: { users: true, events: { where: { publicationStatus: 'published', recordType: { not: 'scheduled_source' } } }, givingCampaigns: true } },
     },
   });
   if (!church) { res.status(404).json({ success: false, message: 'Church not found' }); return; }

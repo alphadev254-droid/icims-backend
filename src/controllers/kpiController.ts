@@ -332,7 +332,7 @@ export const kpiController = {
               }
               case 'event_count': {
                 currentValue = await prisma.event.count({
-                  where: { churchId: kpi.churchId, date: { gte: kpi.startDate, lte: kpi.endDate } },
+                  where: { churchId: kpi.churchId, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, date: { gte: kpi.startDate, lte: kpi.endDate } },
                 });
                 break;
               }

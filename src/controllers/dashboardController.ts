@@ -26,7 +26,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     // Get member-specific data
     const [myDonations, churchEvents] = await Promise.all([
       prisma.donationTransaction.findMany({ where: { userId } }),
-      prisma.event.findMany({ where: { churchId } }),
+      prisma.event.findMany({ where: { churchId, publicationStatus: 'published', recordType: { not: 'scheduled_source' } } }),
     ]);
 
     const myTotalDonations = myDonations.filter(d => d.status === 'completed').reduce((sum, d) => sum + d.amount, 0);
@@ -111,7 +111,7 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     prisma.user.count({ where: { churchId: { in: churchIds }, createdAt: { gte: twoMonthsAgo, lt: lastMonth } } }),
     // Events — only need status + count, use select
     prisma.event.findMany({
-      where: { churchId: { in: churchIds } },
+      where: { churchId: { in: churchIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
       select: { status: true },
     }),
     // All-time donations for total + monthly breakdown
