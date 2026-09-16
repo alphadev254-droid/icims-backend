@@ -1036,7 +1036,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     await syncEventToSchedule({ ...event, timezone: scheduleTimezone ?? 'UTC' }, exactOccurrenceRanges);
     await materializeUpcomingEventDrafts();
   } else if (shouldClearSchedule) {
-    deleteScheduledEventForSource('events', eventId).catch(err => console.error('[Scheduler] Failed to delete cleared event schedule:', err));
+    await deleteScheduledEventForSource('events', eventId);
     if (oldEvent.recurrenceRuleId && existingSchedule.length === 0) {
       saveRecurrenceRule(null, oldEvent.date, oldEvent.recurrenceRuleId)
         .catch(err => console.error('[Scheduler] Failed to delete orphaned event recurrence:', err));

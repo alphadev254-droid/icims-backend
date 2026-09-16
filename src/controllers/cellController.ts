@@ -1368,8 +1368,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     await syncCellMeetingToSchedule({ ...meeting, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined);
     await materializeUpcomingCellMeetingDrafts();
   } else if (shouldClearSchedule) {
-    deleteScheduledEventForSource('cell_meetings', meetingId)
-      .catch(err => console.error('[Scheduler] Failed to delete cleared cell meeting schedule:', err));
+    await deleteScheduledEventForSource('cell_meetings', meetingId);
     if (existingMeeting.recurrenceRuleId && existingSchedule.length === 0) {
       saveRecurrenceRule(null, existingMeeting.date, existingMeeting.recurrenceRuleId)
         .catch(err => console.error('[Scheduler] Failed to delete orphaned cell meeting recurrence:', err));

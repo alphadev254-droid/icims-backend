@@ -419,24 +419,29 @@ export async function cancelScheduledEventForSource(sourceModule: SourceModule, 
 }
 
 export async function deleteScheduledEventForSource(sourceModule: SourceModule, sourceId: string): Promise<void> {
-  const existing = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
-    SELECT recurrenceRuleId
+  const existing = await prisma.$queryRaw<Array<{ id: string; recurrenceRuleId: string | null }>>`
+    SELECT id, recurrenceRuleId
     FROM scheduled_events
     WHERE sourceModule = ${sourceModule} AND sourceId = ${sourceId}
     LIMIT 1
   `;
 
-  await prisma.$executeRaw`
-    DELETE FROM scheduled_events
-    WHERE sourceModule = ${sourceModule} AND sourceId = ${sourceId}
-  `;
+  const scheduledEvent = existing[0];
+  if (!scheduledEvent) return;
 
-  if (existing[0]?.recurrenceRuleId) {
-    await prisma.$executeRaw`
-      DELETE FROM schedule_recurrence_rules
-      WHERE id = ${existing[0].recurrenceRuleId}
+  await prisma.$transaction(async tx => {
+    await deleteUnpublishedOccurrenceDrafts(tx, scheduledEvent.id);
+    await tx.$executeRaw`
+      DELETE FROM scheduled_events
+      WHERE id = ${scheduledEvent.id}
     `;
-  }
+    if (scheduledEvent.recurrenceRuleId) {
+      await tx.$executeRaw`
+        DELETE FROM schedule_recurrence_rules
+        WHERE id = ${scheduledEvent.recurrenceRuleId}
+      `;
+    }
+  });
 }
 
 export async function syncEventToSchedule(
