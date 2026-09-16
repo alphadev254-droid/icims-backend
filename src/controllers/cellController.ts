@@ -11,6 +11,7 @@ import { buildPersonSearchWhere } from '../lib/personSearch';
 import { queueCellPush } from '../lib/notificationQueue';
 import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone, todayInTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
 import { publicationForStart } from '../lib/publication';
+import { materializeUpcomingCellMeetingDrafts } from '../workers/scheduledEventWorker';
 
 type CellChurchMemberSearchRow = {
   id: string;
@@ -914,10 +915,14 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
   const skip = (pageNum - 1) * limitNum;
 
-  const where: any = {
-    cellId,
-    publicationStatus: req.user?.role === 'member' || publicationStatus !== 'draft' ? 'published' : 'draft',
-  };
+  const wantsSchedules = req.user?.role !== 'member' && publicationStatus === 'schedule';
+  const where: any = wantsSchedules
+    ? { cellId, recordType: 'scheduled_source' }
+    : {
+        cellId,
+        publicationStatus: req.user?.role === 'member' || publicationStatus !== 'draft' ? 'published' : 'draft',
+        recordType: { not: 'scheduled_source' },
+      };
   if (dateFrom || dateTo) {
     const cell = await prisma.cell.findUnique({ where: { id: cellId }, select: { churchId: true } });
     const timezone = await resolveTimeZone({ req, churchId: cell?.churchId ?? req.user?.churchId });
@@ -942,7 +947,8 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
   ]);
 
   const meetingIds = meetings.map(m => m.id);
-  const scheduleRows = meetingIds.length > 0
+  const scheduleSourceIds = [...new Set(meetings.map(m => m.recordType === 'scheduled_occurrence' ? m.sourceMeetingId : m.id).filter((id): id is string => Boolean(id)))];
+  const scheduleRows = scheduleSourceIds.length > 0
     ? await prisma.$queryRaw<Array<{
       id: string;
       sourceId: string;
@@ -965,7 +971,7 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
              locationText, status, approvalStatus, organizerUserId, createdById,
              recurrenceRuleId, createdAt, updatedAt
       FROM scheduled_events
-      WHERE sourceModule = 'cell_meetings' AND sourceId IN (${Prisma.join(meetingIds)})
+      WHERE sourceModule = 'cell_meetings' AND sourceId IN (${Prisma.join(scheduleSourceIds)})
     `
     : [];
   const schedulesByMeetingId = new Map(scheduleRows.map(row => [row.sourceId, row]));
@@ -1003,27 +1009,29 @@ export async function getCellMeetings(req: Request, res: Response): Promise<void
     recordType: m.recordType, sourceMeetingId: m.sourceMeetingId, scheduledOccurrenceId: m.scheduledOccurrenceId,
     publicationStatus: m.publicationStatus, publishAt: m.publishAt, publishedAt: m.publishedAt,
     recurrenceRule: m.recurrenceRuleId ? parseRecurrenceRuleForApi(recurrenceRulesById.get(m.recurrenceRuleId)) : null,
-    scheduledEvent: schedulesByMeetingId.has(m.id) ? {
-      id: schedulesByMeetingId.get(m.id)!.id,
-      title: schedulesByMeetingId.get(m.id)!.title,
-      description: schedulesByMeetingId.get(m.id)!.description,
-      type: schedulesByMeetingId.get(m.id)!.type,
-      startAt: schedulesByMeetingId.get(m.id)!.startAt,
-      endAt: schedulesByMeetingId.get(m.id)!.endAt,
-      timezone: schedulesByMeetingId.get(m.id)!.timezone,
-      locationText: schedulesByMeetingId.get(m.id)!.locationText,
-      status: schedulesByMeetingId.get(m.id)!.status,
-      approvalStatus: schedulesByMeetingId.get(m.id)!.approvalStatus,
-      organizerUserId: schedulesByMeetingId.get(m.id)!.organizerUserId,
-      createdById: schedulesByMeetingId.get(m.id)!.createdById,
-      recurrenceRuleId: schedulesByMeetingId.get(m.id)!.recurrenceRuleId,
-      recurrenceRule: schedulesByMeetingId.get(m.id)!.recurrenceRuleId
-        ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedulesByMeetingId.get(m.id)!.recurrenceRuleId!))
+    scheduledEvent: schedulesByMeetingId.has(m.recordType === 'scheduled_occurrence' ? m.sourceMeetingId! : m.id) ? (() => {
+      const schedule = schedulesByMeetingId.get(m.recordType === 'scheduled_occurrence' ? m.sourceMeetingId! : m.id)!;
+      return {
+      id: schedule.id,
+      title: schedule.title,
+      description: schedule.description,
+      type: schedule.type,
+      startAt: schedule.startAt,
+      endAt: schedule.endAt,
+      timezone: schedule.timezone,
+      locationText: schedule.locationText,
+      status: schedule.status,
+      approvalStatus: schedule.approvalStatus,
+      organizerUserId: schedule.organizerUserId,
+      createdById: schedule.createdById,
+      recurrenceRuleId: schedule.recurrenceRuleId,
+      recurrenceRule: schedule.recurrenceRuleId
+        ? parseRecurrenceRuleForApi(recurrenceRulesById.get(schedule.recurrenceRuleId))
         : null,
-      occurrences: occurrencesByScheduleId.get(schedulesByMeetingId.get(m.id)!.id) ?? [],
-      createdAt: schedulesByMeetingId.get(m.id)!.createdAt,
-      updatedAt: schedulesByMeetingId.get(m.id)!.updatedAt,
-    } : null,
+      occurrences: occurrencesByScheduleId.get(schedule.id) ?? [],
+      createdAt: schedule.createdAt,
+      updatedAt: schedule.updatedAt,
+    }; })() : null,
     createdAt: m.createdAt, updatedAt: m.updatedAt,
     presentCount: m.attendance.filter(a => a.status === 'present').length,
     visitorCount: m.attendance.filter(a => a.isVisitor).length,
@@ -1144,8 +1152,12 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
     },
   });
   if (shouldSchedule) {
-    syncCellMeetingToSchedule({ ...meeting, cell, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined)
-      .catch(err => console.error('[Scheduler] Failed to sync created cell meeting:', err));
+    try {
+      await syncCellMeetingToSchedule({ ...meeting, cell, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined);
+      await materializeUpcomingCellMeetingDrafts();
+    } catch (err) {
+      console.error('[Scheduler] Failed to sync created cell meeting:', err);
+    }
   }
   res.status(201).json({ success: true, data: meeting });
 
@@ -1308,7 +1320,9 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     timezone,
   );
   const publicationUpdate = existingMeeting.publicationStatus === 'draft'
-    ? shouldSchedule
+    ? isGeneratedOccurrence
+      ? { publicationStatus: 'draft' as const, publishAt: nextMeetingStartAt, publishedAt: null }
+      : shouldSchedule
       ? publicationForStart(nextMeetingStartAt)
       : { publicationStatus: 'published' as const, publishAt: new Date(), publishedAt: new Date() }
     : {};
@@ -1339,9 +1353,23 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     },
   });
 
+  if (isGeneratedOccurrence && existingMeeting.scheduledOccurrenceId) {
+    await prisma.$executeRaw`
+      UPDATE scheduled_event_occurrences
+      SET occurrenceStartAt = ${nextMeetingStartAt},
+          occurrenceEndAt = ${new Date(nextMeetingStartAt.getTime() + 120 * 60 * 1000)},
+          updatedAt = NOW(3)
+      WHERE id = ${existingMeeting.scheduledOccurrenceId} AND status IN ('pending', 'failed')
+    `;
+  }
+
   if (shouldSchedule) {
-    syncCellMeetingToSchedule({ ...meeting, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined)
-      .catch(err => console.error('[Scheduler] Failed to sync updated cell meeting:', err));
+    try {
+      await syncCellMeetingToSchedule({ ...meeting, timezone }, userId, schedulePattern === 'custom_dates' ? exactOccurrenceStarts : undefined);
+      await materializeUpcomingCellMeetingDrafts();
+    } catch (err) {
+      console.error('[Scheduler] Failed to sync updated cell meeting:', err);
+    }
   } else if (shouldClearSchedule) {
     deleteScheduledEventForSource('cell_meetings', meetingId)
       .catch(err => console.error('[Scheduler] Failed to delete cleared cell meeting schedule:', err));
@@ -1387,6 +1415,24 @@ export async function deleteCellMeeting(req: Request, res: Response): Promise<vo
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
     }
+    await prisma.$executeRaw`
+      DELETE cm
+      FROM cell_meetings cm
+      JOIN scheduled_event_occurrences seo ON seo.id = cm.scheduledOccurrenceId
+      WHERE cm.sourceMeetingId = ${meeting.id} AND seo.status IN ('pending', 'failed', 'cancelled')
+    `;
+  } else if (meeting.recordType === 'scheduled_occurrence' && meeting.scheduledOccurrenceId) {
+    await prisma.$executeRaw`
+      UPDATE scheduled_event_occurrences
+      SET status = 'cancelled', generatedSourceId = NULL, updatedAt = NOW(3)
+      WHERE id = ${meeting.scheduledOccurrenceId} AND status IN ('pending', 'failed')
+    `;
+    await prisma.$executeRaw`
+      UPDATE scheduled_events se
+      JOIN scheduled_event_occurrences seo ON seo.scheduledEventId = se.id
+      SET se.status = IF(se.recurrenceRuleId IS NULL, 'completed', se.status), se.updatedAt = NOW(3)
+      WHERE seo.id = ${meeting.scheduledOccurrenceId}
+    `;
   }
 
   await prisma.cellMeeting.delete({ where: { id: meetingId } });
@@ -1414,7 +1460,7 @@ export async function bulkDeleteDraftCellMeetings(req: Request, res: Response): 
   const meetingIds = [...new Set(parsed.data.meetingIds)];
   const meetings = await prisma.cellMeeting.findMany({
     where: { id: { in: meetingIds } },
-    select: { id: true, publicationStatus: true, recordType: true, cell: { select: { churchId: true } } },
+    select: { id: true, publicationStatus: true, recordType: true, scheduledOccurrenceId: true, cell: { select: { churchId: true } } },
   });
 
   if (meetings.length !== meetingIds.length) {
@@ -1441,7 +1487,32 @@ export async function bulkDeleteDraftCellMeetings(req: Request, res: Response): 
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
     }
+    await prisma.$executeRaw`
+      DELETE cm
+      FROM cell_meetings cm
+      JOIN scheduled_event_occurrences seo ON seo.id = cm.scheduledOccurrenceId
+      WHERE cm.sourceMeetingId IN (${Prisma.join(scheduledSources.map(meeting => meeting.id))})
+        AND seo.status IN ('pending', 'failed', 'cancelled')
+    `;
     await Promise.all(scheduledSources.map(meeting => deleteScheduledEventForSource('cell_meetings', meeting.id)));
+  }
+
+  const occurrenceIds = meetings
+    .filter(meeting => meeting.recordType === 'scheduled_occurrence')
+    .map(meeting => meeting.scheduledOccurrenceId)
+    .filter(Boolean);
+  if (occurrenceIds.length > 0) {
+    await prisma.$executeRaw`
+      UPDATE scheduled_event_occurrences
+      SET status = 'cancelled', generatedSourceId = NULL, updatedAt = NOW(3)
+      WHERE id IN (${Prisma.join(occurrenceIds)}) AND status IN ('pending', 'failed')
+    `;
+    await prisma.$executeRaw`
+      UPDATE scheduled_events se
+      JOIN scheduled_event_occurrences seo ON seo.scheduledEventId = se.id
+      SET se.status = IF(se.recurrenceRuleId IS NULL, 'completed', se.status), se.updatedAt = NOW(3)
+      WHERE seo.id IN (${Prisma.join(occurrenceIds)})
+    `;
   }
 
   const result = await prisma.cellMeeting.deleteMany({

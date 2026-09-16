@@ -725,14 +725,26 @@ async function createCellMeetingOccurrence(
     if (!occurrence) return null;
     if (occurrence.status === 'generated' && occurrence.generatedSourceId) return occurrence.generatedSourceId;
 
-    const generatedCount = await countGeneratedOccurrences(tx, event.id);
     const template = await getCellMeetingTemplate(tx, event.sourceId!);
     if (!template) return null;
 
     const occurrenceStartAt = occurrence.occurrenceStartAt ?? event.startAt;
-    const generatedMeetingId = generatedCount === 0 ? event.sourceId! : randomUUID();
+    const generatedMeetingId = occurrence.generatedSourceId ?? randomUUID();
+    const existingDraft = occurrence.generatedSourceId
+      ? await tx.cellMeeting.findUnique({ where: { id: occurrence.generatedSourceId } })
+      : null;
 
-    if (generatedCount > 0) {
+    if (existingDraft) {
+      await tx.cellMeeting.update({
+        where: { id: existingDraft.id },
+        data: {
+          date: occurrenceStartAt,
+          publicationStatus: 'published',
+          publishAt: occurrenceStartAt,
+          publishedAt: existingDraft.publishedAt ?? new Date(),
+        },
+      });
+    } else {
       await tx.$executeRaw`
         INSERT INTO cell_meetings (
           id, cellId, date, time, topic, notes, recurrenceRuleId,
@@ -745,17 +757,6 @@ async function createCellMeetingOccurrence(
           'scheduled_occurrence', ${event.sourceId}, ${occurrence.id},
           'published', ${occurrenceStartAt}, NOW(3), NOW(3), NOW(3)
         )
-      `;
-    } else {
-      await tx.$executeRaw`
-        UPDATE cell_meetings
-        SET recordType = 'scheduled_source',
-            publicationStatus = 'published',
-            publishedAt = COALESCE(publishedAt, NOW(3)),
-            sourceMeetingId = NULL,
-            scheduledOccurrenceId = ${occurrence.id},
-            updatedAt = NOW(3)
-        WHERE id = ${event.sourceId}
       `;
     }
 
@@ -773,6 +774,125 @@ async function createCellMeetingOccurrence(
   });
 }
 
+export async function materializeUpcomingCellMeetingDrafts() {
+  const schedules = await prisma.$queryRaw<ScheduledEventRow[]>`
+    SELECT id, sourceModule, sourceId, title, startAt, endAt, timezone, recurrenceRuleId
+    FROM scheduled_events
+    WHERE sourceModule = 'cell_meetings' AND status = 'scheduled' AND sourceId IS NOT NULL
+  `;
+
+  for (const event of schedules) {
+    if (event.recurrenceRuleId) {
+      const rule = await getRecurrenceRule(event.recurrenceRuleId);
+      if (rule) {
+        const durationMs = Math.max(60_000, event.endAt.getTime() - event.startAt.getTime());
+        if (!rule.count && !rule.endsAt) {
+          await prisma.$executeRaw`
+            INSERT INTO scheduled_event_occurrences (
+              id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+              generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+            ) VALUES (
+              ${randomUUID()}, ${event.id}, ${event.startAt}, ${new Date(event.startAt.getTime() + durationMs)}, 'pending',
+              NULL, NULL, NULL, NOW(3), NOW(3)
+            ) ON DUPLICATE KEY UPDATE updatedAt = updatedAt
+          `;
+        } else {
+          let cursor = new Date(rule.startsAt);
+          let occurrenceNumber = 0;
+          for (let guard = 0; guard < 10000; guard += 1) {
+            if (rule.endsAt && cursor > rule.endsAt) break;
+            if (matchesRule(rule, cursor, event.timezone || 'UTC')) {
+              occurrenceNumber += 1;
+              if (!rule.count || occurrenceNumber <= rule.count) {
+                await prisma.$executeRaw`
+                  INSERT INTO scheduled_event_occurrences (
+                    id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+                    generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+                  ) VALUES (
+                    ${randomUUID()}, ${event.id}, ${cursor}, ${new Date(cursor.getTime() + durationMs)}, 'pending',
+                    NULL, NULL, NULL, NOW(3), NOW(3)
+                  ) ON DUPLICATE KEY UPDATE updatedAt = updatedAt
+                `;
+              }
+              if (rule.count && occurrenceNumber >= rule.count) break;
+            }
+            const next = getNextOccurrence(rule, cursor, event.timezone || 'UTC');
+            if (!next || next <= cursor) break;
+            cursor = next;
+          }
+        }
+      }
+    } else {
+      const existing = await prisma.$queryRaw<Array<{ total: bigint | number }>>`
+        SELECT COUNT(*) AS total FROM scheduled_event_occurrences WHERE scheduledEventId = ${event.id}
+      `;
+      if (Number(existing[0]?.total ?? 0) === 0) {
+        await prisma.$executeRaw`
+          INSERT IGNORE INTO scheduled_event_occurrences (
+            id, scheduledEventId, occurrenceStartAt, occurrenceEndAt, status,
+            generatedSourceModule, generatedSourceId, errorMessage, createdAt, updatedAt
+          ) VALUES (
+            ${randomUUID()}, ${event.id}, ${event.startAt}, ${event.endAt}, 'pending',
+            NULL, NULL, NULL, NOW(3), NOW(3)
+          )
+        `;
+      }
+    }
+  }
+
+  const pending = await prisma.$queryRaw<Array<{
+    occurrenceId: string;
+    occurrenceStartAt: Date;
+    sourceId: string;
+    cellId: string;
+    time: string | null;
+    topic: string | null;
+    notes: string | null;
+  }>>`
+    SELECT seo.id AS occurrenceId, seo.occurrenceStartAt, se.sourceId,
+           cm.cellId, cm.time, cm.topic, cm.notes
+    FROM scheduled_event_occurrences seo
+    JOIN scheduled_events se ON se.id = seo.scheduledEventId
+    JOIN cell_meetings cm ON cm.id = se.sourceId
+    LEFT JOIN cell_meetings draft ON draft.scheduledOccurrenceId = seo.id
+    WHERE se.sourceModule = 'cell_meetings'
+      AND se.status = 'scheduled'
+      AND seo.status = 'pending'
+      AND draft.id IS NULL
+      AND seo.occurrenceStartAt > NOW(3)
+    ORDER BY seo.occurrenceStartAt ASC
+    LIMIT 1000
+  `;
+  for (const occurrence of pending) {
+    const meetingId = randomUUID();
+    const publishAt = occurrence.occurrenceStartAt;
+    await prisma.$transaction(async tx => {
+      await tx.$executeRaw`
+        INSERT IGNORE INTO cell_meetings (
+          id, cellId, date, time, topic, notes, recurrenceRuleId,
+          recordType, sourceMeetingId, scheduledOccurrenceId,
+          publicationStatus, publishAt, publishedAt, createdAt, updatedAt
+        ) VALUES (
+          ${meetingId}, ${occurrence.cellId}, ${occurrence.occurrenceStartAt}, ${occurrence.time},
+          ${occurrence.topic}, ${occurrence.notes}, NULL,
+          'scheduled_occurrence', ${occurrence.sourceId}, ${occurrence.occurrenceId},
+          'draft', ${publishAt}, NULL, NOW(3), NOW(3)
+        )
+      `;
+      const savedDraft = await tx.cellMeeting.findFirst({
+        where: { scheduledOccurrenceId: occurrence.occurrenceId },
+        select: { id: true },
+      });
+      if (!savedDraft) return;
+      await tx.$executeRaw`
+        UPDATE scheduled_event_occurrences
+        SET generatedSourceModule = 'cell_meetings', generatedSourceId = ${savedDraft.id}, updatedAt = NOW(3)
+        WHERE id = ${occurrence.occurrenceId} AND status = 'pending'
+      `;
+    });
+  }
+}
+
 export async function processDuePublications() {
   const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
   const [events, meetings] = await Promise.all([
@@ -783,7 +903,7 @@ export async function processDuePublications() {
       take: limit,
     }),
     prisma.cellMeeting.findMany({
-      where: { publicationStatus: 'draft', publishAt: { lte: new Date() } },
+      where: { publicationStatus: 'draft', recordType: { not: 'scheduled_source' }, publishAt: { lte: new Date() } },
       orderBy: { publishAt: 'asc' },
       take: limit,
     }),
@@ -997,6 +1117,7 @@ export async function processDueScheduledCommunicationEvents() {
 }
 
 export async function processDueScheduledCellMeetingEvents() {
+  await materializeUpcomingCellMeetingDrafts();
   const limit = Number(process.env.SCHEDULED_EVENTS_BATCH_SIZE || 25);
   const customOccurrences = await prisma.$queryRaw<DueCellMeetingOccurrenceRow[]>`
     SELECT
@@ -1007,7 +1128,6 @@ export async function processDueScheduledCellMeetingEvents() {
     JOIN scheduled_events se ON se.id = seo.scheduledEventId
     WHERE se.status = 'scheduled'
       AND se.sourceModule = 'cell_meetings'
-      AND se.recurrenceRuleId IS NULL
       AND seo.status IN ('pending', 'failed')
       AND seo.occurrenceStartAt <= NOW(3)
     ORDER BY seo.occurrenceStartAt ASC
@@ -1035,12 +1155,28 @@ export async function processDueScheduledCellMeetingEvents() {
         await markScheduledEventCancelled(occurrenceEvent.id);
         continue;
       }
-
-      await completeCustomScheduleIfDone(occurrenceEvent.id);
+      if (occurrenceEvent.recurrenceRuleId) await advanceOrCompleteSchedule(occurrenceEvent);
+      else await completeCustomScheduleIfDone(occurrenceEvent.id);
     } catch (error) {
       console.error(`[ScheduledEvents] Failed to generate custom-date cell meeting for ${occurrenceEvent.sourceId}`, error);
       await markOccurrenceRowFailed(occurrenceEvent.occurrenceId, error);
     }
+  }
+
+  const cancelledRecurringOccurrences = await prisma.$queryRaw<ScheduledEventRow[]>`
+    SELECT se.id, se.sourceModule, se.sourceId, se.title, se.startAt, se.endAt, se.timezone, se.recurrenceRuleId
+    FROM scheduled_events se
+    JOIN scheduled_event_occurrences seo
+      ON seo.scheduledEventId = se.id AND seo.occurrenceStartAt = se.startAt
+    WHERE se.status = 'scheduled'
+      AND se.sourceModule = 'cell_meetings'
+      AND se.recurrenceRuleId IS NOT NULL
+      AND seo.status = 'cancelled'
+      AND seo.occurrenceStartAt <= NOW(3)
+    LIMIT ${limit}
+  `;
+  for (const event of cancelledRecurringOccurrences) {
+    await advanceOrCompleteSchedule(event);
   }
 
   const events = await prisma.$queryRaw<ScheduledEventRow[]>`
@@ -1050,10 +1186,9 @@ export async function processDueScheduledCellMeetingEvents() {
       AND se.startAt <= NOW(3)
       AND se.sourceModule = 'cell_meetings'
       AND (
-        se.recurrenceRuleId IS NOT NULL
-        OR NOT EXISTS (
+        NOT EXISTS (
           SELECT 1 FROM scheduled_event_occurrences seo
-          WHERE seo.scheduledEventId = se.id
+          WHERE seo.scheduledEventId = se.id AND seo.occurrenceStartAt = se.startAt
         )
       )
     ORDER BY se.startAt ASC

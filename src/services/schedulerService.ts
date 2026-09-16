@@ -328,7 +328,7 @@ export async function replaceScheduledEventOccurrences(
         )
         ON DUPLICATE KEY UPDATE
           occurrenceEndAt = VALUES(occurrenceEndAt),
-          status = IF(status = 'generated', status, VALUES(status)),
+          status = IF(status IN ('generated', 'cancelled'), status, VALUES(status)),
           errorMessage = NULL,
           updatedAt = NOW(3)
       `;
@@ -372,7 +372,7 @@ export async function replaceScheduledEventOccurrenceRanges(
         )
         ON DUPLICATE KEY UPDATE
           occurrenceEndAt = VALUES(occurrenceEndAt),
-          status = IF(status = 'generated', status, VALUES(status)),
+          status = IF(status IN ('generated', 'cancelled'), status, VALUES(status)),
           errorMessage = NULL,
           updatedAt = NOW(3)
       `;
@@ -475,6 +475,14 @@ export async function syncCellMeetingToSchedule(
     createdById: createdById ?? null,
     recurrenceRuleId: meeting.recurrenceRuleId,
   });
+
+  await prisma.$executeRaw`
+    DELETE cm
+    FROM cell_meetings cm
+    JOIN scheduled_event_occurrences seo ON seo.id = cm.scheduledOccurrenceId
+    WHERE seo.scheduledEventId = ${scheduledEventId}
+      AND seo.status NOT IN ('generated', 'cancelled')
+  `;
 
   if (exactOccurrences) {
     await replaceScheduledEventOccurrences(scheduledEventId, exactOccurrences, durationMs);
