@@ -125,6 +125,7 @@ const baseEventSchema = z.object({
   scopeType: z.enum(['one_church', 'selected_churches', 'all_churches']).optional().default('one_church'),
   churchIds: z.array(z.string().min(1)).optional(),
   deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
+  removeScheduleSource: z.boolean().optional(),
   schedulePattern: z.enum(['repeat', 'custom_dates']).default('repeat').optional(),
   occurrenceDates: z.array(scheduleDateSchema).max(366).optional(),
   occurrenceRanges: z.array(occurrenceRangeSchema).max(366).optional(),
@@ -640,6 +641,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
     scopeType,
     churchIds: requestedChurchIds,
     deliveryMode,
+    removeScheduleSource,
     schedulePattern = 'repeat',
     occurrenceDates,
     occurrenceRanges,
@@ -844,6 +846,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     scopeType,
     churchId: targetChurchId,
     deliveryMode,
+    removeScheduleSource,
     schedulePattern,
     occurrenceDates,
     occurrenceRanges,
@@ -920,6 +923,13 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
     }
+  }
+
+  if (removeScheduleSource && shouldClearSchedule && oldEvent.recordType === 'scheduled_source') {
+    await deleteScheduledEventForSource('events', eventId);
+    await prisma.event.delete({ where: { id: eventId } });
+    res.json({ success: true, data: null, message: 'Event scheduler and unpublished drafts deleted' });
+    return;
   }
 
   const hasBodyKey = (key: string) => Object.prototype.hasOwnProperty.call(req.body, key);
@@ -1078,6 +1088,24 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
   const eventChurchIds = getEventChurchIds(event);
   if (!eventChurchIds.some(churchId => churchIds.includes(churchId))) {
     res.status(403).json({ success: false, message: 'Access denied' });
+    return;
+  }
+
+  if (event.status === 'cancelled') {
+    await deleteScheduledEventForSource('events', event.id);
+    await prisma.$transaction(async tx => {
+      await tx.transaction.updateMany({ where: { eventId: event.id }, data: { eventId: null } });
+      await tx.pendingTransaction.updateMany({ where: { eventId: event.id }, data: { eventId: null } });
+      if (event.scheduledOccurrenceId) {
+        await tx.$executeRaw`
+          UPDATE scheduled_event_occurrences
+          SET status = 'cancelled', generatedSourceModule = NULL, generatedSourceId = NULL, updatedAt = NOW(3)
+          WHERE id = ${event.scheduledOccurrenceId}
+        `;
+      }
+      await tx.event.delete({ where: { id: event.id } });
+    });
+    res.json({ success: true, message: 'Cancelled event permanently deleted' });
     return;
   }
 

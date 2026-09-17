@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate, authorizePermission } from '../middleware/auth';
+import { requireFeature } from '../middleware/packageCheck';
 import {
   createChild,
   deleteChild,
@@ -13,6 +14,7 @@ import {
 
 const router = Router();
 router.use(authenticate);
+router.use(requireFeature('users_management'));
 
 router.get('/', authorizePermission('children:read'), getChildren);
 router.post('/', authorizePermission('children:create'), createChild);

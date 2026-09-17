@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { authenticate, authorizePermission } from '../middleware/auth';
+import { requireFeature } from '../middleware/packageCheck';
 import { getUsers, createUser, updateUser, deleteUser, bulkCreateUsers } from '../controllers/userController';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireFeature('users_management'));
 
 router.get('/',      authorizePermission('users:read'),   getUsers);
 router.post('/',     authorizePermission('users:create'), createUser);

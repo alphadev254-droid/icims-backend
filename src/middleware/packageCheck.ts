@@ -9,6 +9,10 @@ export function requireFeature(featureName: string) {
       return res.status(401).json({ success: false, message: 'Not authenticated' });
     }
 
+    if (req.user?.role === 'system_admin') {
+      return next();
+    }
+
     const allowed = await hasFeature(userId, featureName);
 
     if (!allowed) {

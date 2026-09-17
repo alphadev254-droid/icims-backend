@@ -39,7 +39,7 @@ export async function getUserPackageFeatures(userId: string): Promise<PackageFea
   if (!ministryAdminId) return {};
 
   const subscription = await prisma.subscription.findFirst({
-    where: { ministryAdminId, status: 'active' },
+    where: { ministryAdminId, status: 'active', expiresAt: { gt: new Date() } },
     include: {
       package: { include: packageEntitlementInclude },
     },

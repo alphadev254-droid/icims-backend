@@ -1189,6 +1189,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
   const meetingId = String(req.params.meetingId);
   const schema = z.object({
     deliveryMode: z.enum(['now', 'scheduled']).optional(),
+    removeScheduleSource: z.boolean().optional(),
     schedulePattern: z.enum(['repeat', 'custom_dates']).optional(),
     occurrenceDates: z.array(z.string().min(1)).optional(),
     date: z.string().min(1).optional(),
@@ -1252,7 +1253,7 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
     return;
   }
 
-  const { deliveryMode, schedulePattern, occurrenceDates, recurrenceRule, timezone: requestedTimezone, ...meetingData } = parsed.data;
+  const { deliveryMode, removeScheduleSource, schedulePattern, occurrenceDates, recurrenceRule, timezone: requestedTimezone, ...meetingData } = parsed.data;
   const existingSchedule = await prisma.$queryRaw<Array<{ id: string; recurrenceRuleId: string | null; timezone: string }>>`
     SELECT id, recurrenceRuleId, timezone
     FROM scheduled_events
@@ -1286,6 +1287,12 @@ export async function updateCellMeeting(req: Request, res: Response): Promise<vo
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
     }
+  }
+  if (removeScheduleSource && shouldClearSchedule && existingMeeting.recordType === 'scheduled_source') {
+    await deleteScheduledEventForSource('cell_meetings', meetingId);
+    await prisma.cellMeeting.delete({ where: { id: meetingId } });
+    res.json({ success: true, data: null, message: 'Meeting scheduler and unpublished drafts deleted' });
+    return;
   }
   const meetingDate = exactOccurrenceStarts[0] ?? (meetingData.date ? new Date(meetingData.date) : existingMeeting.date);
   if (shouldSchedule) {

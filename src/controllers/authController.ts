@@ -62,12 +62,23 @@ async function getUserWithPackage(userId: string) {
   const effectiveMinistryAdminId = await getEffectiveMinistryAdminId(user);
   if (effectiveMinistryAdminId) {
     const subscription = await prisma.subscription.findFirst({
-      where: { ministryAdminId: effectiveMinistryAdminId, status: 'active' },
+      where: { ministryAdminId: effectiveMinistryAdminId },
       include: {
         package: { include: packageEntitlementInclude },
       },
     });
     if (subscription?.package) {
+      const isExpired = subscription.expiresAt.getTime() <= Date.now();
+      const effectiveStatus = isExpired ? 'expired' : subscription.status;
+      const subscriptionSummary = {
+        status: effectiveStatus,
+        startsAt: subscription.startsAt,
+        expiresAt: subscription.expiresAt,
+        packageName: subscription.package.displayName,
+      };
+      if (effectiveStatus !== 'active') {
+        return { ...user, package: null, subscription: subscriptionSummary };
+      }
       const accountCountry = await getUserPackageAccountCountry(user.id, user.role?.name);
       const market = await resolvePricingMarket(accountCountry);
       const generalMarket = market.code === 'general' ? market : await resolvePricingMarket('General');
@@ -78,12 +89,13 @@ async function getUserWithPackage(userId: string) {
           pricingMarketId: marketPrice?.pricingMarketId ?? market.id,
           fallbackPricingMarketId: generalMarket.id,
         }),
+        subscription: subscriptionSummary,
       };
     }
   }
 
   // No subscription found
-  return { ...user, package: null };
+  return { ...user, package: null, subscription: null };
 }
 
 async function getUserPermissions(user: any): Promise<string[]> {
