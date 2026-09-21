@@ -7,6 +7,7 @@ import { packageSubscriptionTemplate } from '../lib/emailTemplates';
 import { generateReceiptPDF } from '../lib/receiptPDF';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from '../services/packageInvoiceService';
+import { handleCompletedPackagePayment } from '../services/referralService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
@@ -165,6 +166,7 @@ export async function paychanguCallback(req: Request, res: Response): Promise<vo
           servicePeriodEnd: expiresAt,
         });
       }
+      await handleCompletedPackagePayment(payment.id);
       console.log(`[${traceId}] Subscription upserted — expiresAt: ${expiresAt.toISOString()}`);
 
       await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });

@@ -25,6 +25,7 @@ import {
   publicInvoicePaymentQuote,
   recalculatePackageInvoice,
 } from '../services/packageInvoiceService';
+import { handleCompletedPackagePayment } from '../services/referralService';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8080';
 const currencySchema = z.enum(['USD', 'KES', 'MWK']);
@@ -475,6 +476,7 @@ export async function recordAdminPackageInvoicePayment(req: Request, res: Respon
   });
 
   const updated = await recalculatePackageInvoice(invoice.id);
+  await handleCompletedPackagePayment(payment.id);
   res.status(201).json({ success: true, data: serializeInvoice(updated, marketContext) });
 }
 

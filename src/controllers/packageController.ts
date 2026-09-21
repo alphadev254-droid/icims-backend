@@ -13,6 +13,7 @@ import {
   packagePaymentAmountForDuration,
   resolvePricingMarket,
 } from '../utils/pricingMarkets';
+import { handleCompletedPackagePayment } from '../services/referralService';
 
 // ─── Packages (tiers) ─────────────────────────────────────────────────────────
 
@@ -441,6 +442,9 @@ export async function createPayment(req: Request, res: Response): Promise<void> 
     },
     include: { package: { select: { name: true, displayName: true } } },
   });
+  if (payment.status === 'completed') {
+    await handleCompletedPackagePayment(payment.id);
+  }
 
   res.status(201).json({ success: true, data: payment });
 }
@@ -461,6 +465,9 @@ export async function updatePayment(req: Request, res: Response): Promise<void> 
     data: { status },
     include: { package: { select: { name: true, displayName: true } } },
   });
+  if (updated.status === 'completed') {
+    await handleCompletedPackagePayment(updated.id);
+  }
 
   res.json({ success: true, data: updated });
 }

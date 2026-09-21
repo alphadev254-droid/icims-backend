@@ -90,6 +90,7 @@ const PERMISSIONS = [
 const ROLES = [
   { name: 'ministry_admin', displayName: 'Ministry Administrator' },
   { name: 'member', displayName: 'Member' },
+  { name: 'referrer', displayName: 'Referrer' },
 ];
 
 const MEMBER_PERMISSIONS = [

@@ -1,7 +1,8 @@
 export type UserRole =
   | 'system_admin'
   | 'ministry_admin'
-  | 'member';
+  | 'member'
+  | 'referrer';
 
 export type PackageTier = 'basic' | 'standard' | 'premium';
 export type ChurchLevel = 'national' | 'regional' | 'district' | 'local';

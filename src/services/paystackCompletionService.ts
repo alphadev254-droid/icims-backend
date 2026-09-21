@@ -14,6 +14,7 @@ import { generateTicketPDF } from '../lib/ticketPDF';
 import { recordPaymentEvent } from '../middleware/metrics';
 import { maskEmail, maskPhone } from '../utils/logger';
 import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from './packageInvoiceService';
+import { handleCompletedPackagePayment } from './referralService';
 
 const SYSTEM_SUBACCOUNT_CODE = process.env.SYSTEM_SUBACCOUNT_CODE!;
 
@@ -226,6 +227,7 @@ async function completePackageSubscription(txData: any, traceId: string, metadat
       servicePeriodEnd: expiresAt,
     });
   }
+  await handleCompletedPackagePayment(payment.id);
 
   await prisma.pendingTransaction.delete({ where: { id: pendingTx.id } });
 

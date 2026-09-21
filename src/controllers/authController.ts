@@ -11,6 +11,8 @@ import type { UserRole } from '../types';
 import { buildSafePackageEntitlement, packageEntitlementInclude } from '../lib/packageEntitlements';
 import { findPackageMarketPriceWithFallback, getUserPackageAccountCountry, resolvePricingMarket } from '../utils/pricingMarkets';
 import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
+import { linkReferralToMinistry } from '../services/referralService';
+import { sendEmailVerificationOtp, verifyEmailOtp } from '../services/emailVerificationService';
 
 const isProd = process.env.NODE_ENV === 'production';
 
@@ -209,6 +211,15 @@ const loginSchema = z.object({
   password: z.string().min(6, 'Password must be at least 6 characters'),
 });
 
+const verifyEmailSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  otpCode: z.string().regex(/^\d{6}$/, 'Enter the 6-digit OTP code'),
+});
+
+const resendVerificationSchema = z.object({
+  email: z.string().email('Invalid email address'),
+});
+
 export async function login(req: Request, res: Response): Promise<void> {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -262,6 +273,18 @@ export async function login(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  if (!user.emailVerified) {
+    await sendEmailVerificationOtp(user.id);
+    recordLoginAttempt('failed', 'email_not_verified', loginLogMeta);
+    res.status(403).json({
+      success: false,
+      code: 'EMAIL_NOT_VERIFIED',
+      message: 'Please verify your email address. We sent you a new OTP code.',
+      email: user.email,
+    });
+    return;
+  }
+
   // Get package from National Admin if needed
   const userWithPackage = await getUserWithPackage(user.id);
   if (!userWithPackage) {
@@ -296,6 +319,58 @@ export async function login(req: Request, res: Response): Promise<void> {
   res.cookie('icims_token', token, COOKIE_OPTIONS);
   recordLoginAttempt('success', 'none', loginLogMeta);
   res.json({ success: true, user: safeUser(userWithPackage, permissions) });
+}
+
+async function signInVerifiedUser(userId: string, res: Response) {
+  const userWithPackage = await getUserWithPackage(userId);
+  if (!userWithPackage) {
+    res.status(404).json({ success: false, message: 'Account not found' });
+    return;
+  }
+  const permissions = await getUserPermissions(userWithPackage);
+  const token = signToken({
+    userId: userWithPackage.id,
+    email: userWithPackage.email,
+    firstName: userWithPackage.firstName,
+    lastName: userWithPackage.lastName,
+    userName: displayName(userWithPackage.firstName, userWithPackage.lastName),
+    role: (userWithPackage.role?.name || 'member') as UserRole,
+    churchId: userWithPackage.churchId,
+    permissions,
+    accountCountry: userWithPackage.accountCountry ?? undefined,
+    regions: parseJson(userWithPackage.regions),
+    districts: parseJson(userWithPackage.districts),
+    traditionalAuthorities: parseJson(userWithPackage.traditionalAuthorities),
+  });
+  res.cookie('icims_token', token, COOKIE_OPTIONS);
+  res.json({ success: true, user: safeUser(userWithPackage, permissions) });
+}
+
+export async function verifyEmail(req: Request, res: Response): Promise<void> {
+  const parsed = verifyEmailSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+  const result = await verifyEmailOtp(parsed.data.email, parsed.data.otpCode);
+  if (!result.success || !result.userId) {
+    res.status(400).json({ success: false, message: result.message || 'Email verification failed' });
+    return;
+  }
+  await signInVerifiedUser(result.userId, res);
+}
+
+export async function resendVerificationOtp(req: Request, res: Response): Promise<void> {
+  const parsed = resendVerificationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, message: parsed.error.errors[0].message });
+    return;
+  }
+  const user = await prisma.user.findUnique({ where: { email: parsed.data.email }, select: { id: true, emailVerified: true } });
+  if (user && !user.emailVerified) {
+    await sendEmailVerificationOtp(user.id);
+  }
+  res.json({ success: true, message: 'If this account needs verification, an OTP has been sent.' });
 }
 
 const TITLES = ['Rev', 'Dr', 'Prof', 'Pastor', 'Prophet', 'Seer', 'Sister', 'Brother', 'Father', 'Deacon', 'Apostle', 'Evangelist', 'Other'] as const;
@@ -334,6 +409,8 @@ const registerSchema = z.object({
   serviceInterest: z.string().optional(),
   baptizedByImmersion: z.boolean().optional(),
   inviteToken: z.string().optional(),
+  referralCode: z.string().optional(),
+  ref: z.string().optional(),
   registrationType: z.enum(['ministry_admin', 'member']).optional(),
   ...termsAcceptanceSchema,
 }).superRefine((data, ctx) => {
@@ -477,6 +554,8 @@ export async function register(req: Request, res: Response): Promise<void> {
         accountCountry: data.inviteToken ? undefined : data.accountCountry,
         phone: data.phone,
         gender: data.gender,
+        emailVerified: Boolean(data.inviteToken),
+        emailVerifiedAt: data.inviteToken ? new Date() : undefined,
         anniversary: !data.inviteToken && data.anniversary ? new Date(data.anniversary) : undefined,
         dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
         maritalStatus: data.maritalStatus,
@@ -522,6 +601,15 @@ export async function register(req: Request, res: Response): Promise<void> {
       churchProfileCreated = true;
     }
 
+    if (!data.inviteToken) {
+      await linkReferralToMinistry({
+        db: tx,
+        referralCode: data.referralCode || data.ref,
+        ministryAdminId: user.id,
+        churchId: null,
+      });
+    }
+
     return { user, churchProfileCreated };
   });
   // ─────────────────────────────────────────────────────────────────────────
@@ -564,6 +652,17 @@ export async function register(req: Request, res: Response): Promise<void> {
     ).catch(err => console.error('Failed to queue member welcome email:', err));
   }
   // Note: Ministry admin welcome email is now sent AFTER subdomain is created (in queue worker)
+
+  if (!data.inviteToken) {
+    await sendEmailVerificationOtp(user.id);
+    res.status(201).json({
+      success: true,
+      requiresEmailVerification: true,
+      email: user.email,
+      user: { ...safeUser(registeredUserWithPackage, permissions), subdomain: subdomainValue },
+    });
+    return;
+  }
 
   const token = signToken({
     userId: user.id,
@@ -639,6 +738,8 @@ export async function registerMember(req: Request, res: Response): Promise<void>
       ministryAdminId: null,
       phone: data.phone,
       gender: data.gender,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
       dateOfBirth: new Date(data.dateOfBirth),
       maritalStatus: data.maritalStatus,
       weddingDate: data.weddingDate ? new Date(data.weddingDate) : undefined,

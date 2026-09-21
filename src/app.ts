@@ -34,6 +34,7 @@ import contactRoutes from './routes/contact';
 import churchProfileRoutes from './routes/churchProfile';
 import pushRoutes from './routes/pushRoutes';
 import childrenRoutes from './routes/children';
+import referralRoutes from './routes/referrals';
 import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/sharedAccessRoutes';
 import { errorHandler } from './middleware/errorHandler';
 import { metricsHandler, metricsMiddleware } from './middleware/metrics';
@@ -146,6 +147,7 @@ app.use('/api/contact', contactRoutes);
 app.use('/api', churchProfileRoutes);  // mounts /api/church-profile and /api/p/:slug
 app.use('/api/push', pushRoutes);
 app.use('/api/children', childrenRoutes);
+app.use('/api/referrals', referralRoutes);
 app.use('/api/shared-access', sharedAccessProtectedRoutes);
 app.use('/api/public/shared-access', sharedAccessPublicRoutes);
 

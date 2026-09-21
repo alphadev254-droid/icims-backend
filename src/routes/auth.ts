@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { acceptTerms, login, register, registerMember, logout, getMe, updateProfile, getAttendanceQr } from '../controllers/authController';
+import { acceptTerms, login, register, registerMember, logout, getMe, updateProfile, getAttendanceQr, verifyEmail, resendVerificationOtp } from '../controllers/authController';
 import { authenticate } from '../middleware/auth';
 import { uploadImage } from '../middleware/upload';
 
@@ -13,6 +13,8 @@ const setAvatarDir = (req: any, _res: any, next: any) => {
 router.post('/login', login);
 router.post('/register', register);
 router.post('/register/member', registerMember);
+router.post('/verify-email', verifyEmail);
+router.post('/resend-verification-otp', resendVerificationOtp);
 router.post('/logout', logout);
 router.get('/me', authenticate, getMe);
 router.post('/accept-terms', authenticate, acceptTerms);

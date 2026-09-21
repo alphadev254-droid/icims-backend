@@ -89,6 +89,22 @@ model PasswordResetToken {
   @@map("password_reset_tokens")
 }
 
+model EmailVerificationOtp {
+  id        String    @id @default(cuid())
+  userId    String
+  otpHash   String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("email_verification_otps")
+}
+
 model User {
   id                       String    @id @default(cuid())
   email                    String    @unique
@@ -120,6 +136,8 @@ model User {
   membershipType           String? // Visitor, Member
   memberType               String    @default("adult") // adult | child
   loginEnabled             Boolean   @default(true)
+  emailVerified            Boolean   @default(true)
+  emailVerifiedAt          DateTime?
   baptizedByImmersion      Boolean?
   status                   String    @default("active")
   acceptedTerms            Boolean   @default(false)
@@ -142,6 +160,7 @@ model User {
   transactions                  Transaction[]
   donationTransactions          DonationTransaction[]
   passwordResetTokens           PasswordResetToken[]
+  emailVerificationOtps         EmailVerificationOtp[]
   withdrawalOtps                WithdrawalOtp[]
   teams                         UserTeam[]
   reminders                     ReminderCache[]
@@ -162,6 +181,8 @@ model User {
   packageInvoices               PackageInvoice[]        @relation("PackageInvoiceMinistryAdmin")
   createdPackageInvoices        PackageInvoice[]        @relation("PackageInvoiceCreator")
   packageInvoicePayments        Payment[]               @relation("PackageInvoicePaymentCreator")
+  referrerProfile               Referrer?
+  referredMinistries            ReferralLink[]          @relation("ReferralMinistryAdmin")
 
   @@index([churchId, roleId, status, createdAt])
   @@index([memberType])
@@ -218,6 +239,7 @@ model Church {
 
   ministryAdmin          User?                   @relation("MinistryAdminChurches", fields: [ministryAdminId], references: [id])
   users                  User[]
+  referralLinks          ReferralLink[]
   events                 Event[]
   eventLinks             EventChurch[]
   eventTickets           EventTicket[]
@@ -321,41 +343,41 @@ model Subaccount {
 // ─── Events ────────────────────────────────────────────────────────────────────
 
 model Event {
-  id                   String    @id @default(cuid())
-  title                String
-  description          String    @db.Text
-  date                 DateTime
-  endDate              DateTime
-  time                 String
-  endTime              String?
-  location             String
-  contactEmail         String?
-  contactPhone         String?
-  type                 String    @default("service")
-  status               String    @default("upcoming")
-  attendeeCount        Int       @default(0)
+  id                    String    @id @default(cuid())
+  title                 String
+  description           String    @db.Text
+  date                  DateTime
+  endDate               DateTime
+  time                  String
+  endTime               String?
+  location              String
+  contactEmail          String?
+  contactPhone          String?
+  type                  String    @default("service")
+  status                String    @default("upcoming")
+  attendeeCount         Int       @default(0)
   // Ticketing fields
-  requiresTicket       Boolean   @default(false)
-  isFree               Boolean   @default(true)
-  ticketPrice          Float?
-  currency             String? // 'MWK' | 'KSH'
-  totalTickets         Int?
-  ticketsSold          Int       @default(0)
-  ticketSalesCutoff    DateTime?
-  allowPublicTicketing Boolean   @default(false)
-  imageUrl             String?
-  churchId             String
-  scopeType            String    @default("one_church") // one_church | selected_churches | all_churches
-  recurrenceRuleId     String?
-  createdById          String
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-  publicationStatus    String    @default("published")
-  publishAt            DateTime?
-  publishedAt          DateTime?
-  recordType           String    @default("direct")
-  sourceEventId        String?
-  scheduledOccurrenceId String?  @unique
+  requiresTicket        Boolean   @default(false)
+  isFree                Boolean   @default(true)
+  ticketPrice           Float?
+  currency              String? // 'MWK' | 'KSH'
+  totalTickets          Int?
+  ticketsSold           Int       @default(0)
+  ticketSalesCutoff     DateTime?
+  allowPublicTicketing  Boolean   @default(false)
+  imageUrl              String?
+  churchId              String
+  scopeType             String    @default("one_church") // one_church | selected_churches | all_churches
+  recurrenceRuleId      String?
+  createdById           String
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  publicationStatus     String    @default("published")
+  publishAt             DateTime?
+  publishedAt           DateTime?
+  recordType            String    @default("direct")
+  sourceEventId         String?
+  scheduledOccurrenceId String?   @unique
 
   church         Church          @relation(fields: [churchId], references: [id])
   linkedChurches EventChurch[]
@@ -875,20 +897,20 @@ model Meeting {
 // ─── Announcements / Communication ────────────────────────────────────────────
 
 model Announcement {
-  id          String   @id @default(cuid())
-  title       String
-  content     String   @db.Text
+  id                String    @id @default(cuid())
+  title             String
+  content           String    @db.Text
   // type: announcement | prayer_request | newsletter
-  type        String   @default("announcement")
+  type              String    @default("announcement")
   // priority: normal | urgent
-  priority    String   @default("normal")
-  attachments String?  @db.Text // JSON array of { url, name, size, mimeType }
-  churchId    String
-  createdById String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  publicationStatus String @default("published")
-  publishedAt DateTime?
+  priority          String    @default("normal")
+  attachments       String?   @db.Text // JSON array of { url, name, size, mimeType }
+  churchId          String
+  createdById       String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  publicationStatus String    @default("published")
+  publishedAt       DateTime?
 
   church Church             @relation(fields: [churchId], references: [id])
   views  AnnouncementView[]
@@ -994,6 +1016,7 @@ model PricingMarket {
   countries        Country[]
   packagePrices    PackageMarketPrice[]
   featureOverrides PackageMarketFeatureOverride[]
+  referrers        Referrer[]
 
   @@index([isActive, sortOrder])
   @@map("pricing_markets")
@@ -1161,55 +1184,62 @@ model PackageMarketFeatureOverride {
 }
 
 model Payment {
-  id                   String    @id @default(cuid())
-  ministryAdminId      String
-  packageId            String?
-  invoiceId            String?
-  amount               Float
-  currency             String    @default("MWK")
+  id                       String    @id @default(cuid())
+  ministryAdminId          String
+  packageId                String?
+  invoiceId                String?
+  amount                   Float
+  currency                 String    @default("MWK")
   // type: subscription | upgrade | downgrade | renewal | package_subscription
-  type                 String    @default("subscription")
+  type                     String    @default("subscription")
   // status: pending | completed | failed
-  status               String    @default("pending")
+  status                   String    @default("pending")
   // denormalized package name for historical records
-  packageName          String    @default("basic")
-  reference            String?   @unique
-  notes                String?   @db.Text
+  packageName              String    @default("basic")
+  reference                String?   @unique
+  notes                    String?   @db.Text
+  referralId               String?
+  referrerId               String?
+  referralCommissionRate   Decimal?  @db.Decimal(10, 6)
+  referralCommissionAmount Decimal?  @db.Decimal(18, 2)
+  referralCommissionStatus String?
   // Transaction details
-  transactionId        String? // Link to Transaction record
-  paymentMethod        String? // card | mobile_money | bank
-  channel              String? // Paystack channel used
-  paidAt               DateTime?
+  transactionId            String? // Link to Transaction record
+  paymentMethod            String? // card | mobile_money | bank
+  channel                  String? // Paystack channel used
+  paidAt                   DateTime?
   // Fee breakdown
-  baseAmount           Float? // Original package price
-  convenienceFee       Float? // 2% convenience fee
-  systemFeeAmount      Float? // Platform system fee on convenience fee
-  totalAmount          Float? // baseAmount + convenienceFee + systemFeeAmount (ceil'd)
-  ceilRoundingAmount   Float? // Extra collected due to Math.ceil rounding — goes to ICIMS
-  gatewayCharge        Float? // Actual charge reported by gateway
-  systemGatewayFeeRate Float? // Gateway fee rate used e.g. 0.02 Malawi, 0.029 Kenya
-  systemFeeRate        Float? // Platform fee rate used e.g. 0.005
+  baseAmount               Float? // Original package price
+  convenienceFee           Float? // 2% convenience fee
+  systemFeeAmount          Float? // Platform system fee on convenience fee
+  totalAmount              Float? // baseAmount + convenienceFee + systemFeeAmount (ceil'd)
+  ceilRoundingAmount       Float? // Extra collected due to Math.ceil rounding — goes to ICIMS
+  gatewayCharge            Float? // Actual charge reported by gateway
+  systemGatewayFeeRate     Float? // Gateway fee rate used e.g. 0.02 Malawi, 0.029 Kenya
+  systemFeeRate            Float? // Platform fee rate used e.g. 0.005
   // Gateway routing
-  gateway              String? // paystack | paychangu
+  gateway                  String? // paystack | paychangu
   // Subaccount info
-  subaccountCode       String? // Subaccount code used
-  subaccountName       String? // Subaccount name
+  subaccountCode           String? // Subaccount code used
+  subaccountName           String? // Subaccount name
   // Customer info
-  customerEmail        String?
-  customerPhone        String?
-  cardLast4            String?
-  cardBank             String?
+  customerEmail            String?
+  customerPhone            String?
+  cardLast4                String?
+  cardBank                 String?
   // Metadata
-  billingCycle         String? // monthly | yearly
-  expiresAt            DateTime? // When this subscription expires
-  gatewayPayload       String?   @db.LongText // Full outbound gateway initialization payload
-  gatewayResponse      String?   @db.LongText // Full Paystack response JSON
-  createdById          String
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  billingCycle             String? // monthly | yearly
+  expiresAt                DateTime? // When this subscription expires
+  gatewayPayload           String?   @db.LongText // Full outbound gateway initialization payload
+  gatewayResponse          String?   @db.LongText // Full Paystack response JSON
+  createdById              String
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   package      Package?                @relation(fields: [packageId], references: [id])
   invoice      PackageInvoice?         @relation(fields: [invoiceId], references: [id])
+  referral     ReferralLink?           @relation(fields: [referralId], references: [id], onDelete: SetNull)
+  referrer     Referrer?               @relation("PaymentReferrer", fields: [referrerId], references: [id], onDelete: SetNull)
   invoiceLinks PackagePaymentInvoice[]
   createdBy    User?                   @relation("PackageInvoicePaymentCreator", fields: [createdById], references: [id])
 
@@ -1219,7 +1249,142 @@ model Payment {
   @@index([paidAt])
   @@index([reference])
   @@index([expiresAt])
+  @@index([referralId])
+  @@index([referrerId])
   @@map("payments")
+}
+
+// ─── Referral Partner Programme ───────────────────────────────────────────────
+
+model Referrer {
+  id                String    @id @default(cuid())
+  userId            String    @unique
+  code              String    @unique
+  type              String    @default("referrer") // referrer | agent | ambassador | regional_partner
+  status            String    @default("pending") // pending | approved | suspended | rejected
+  displayName       String?
+  phone             String?
+  country           String?
+  city              String?
+  district          String?
+  pricingMarketId   String?
+  payoutPhone       String?
+  payoutProvider    String?
+  payoutSetupStatus String    @default("pending") // pending | complete | unsupported_market
+  approvedAt        DateTime?
+  approvedById      String?
+  rejectionReason   String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pricingMarket         PricingMarket?          @relation(fields: [pricingMarketId], references: [id], onDelete: SetNull)
+  referrals             ReferralLink[]
+  ledgerEntries         ReferrerLedgerEntry[]
+  withdrawals           ReferrerWithdrawal[]
+  payments              Payment[]               @relation("PaymentReferrer")
+  ReferrerWithdrawalOtp ReferrerWithdrawalOtp[]
+
+  @@index([status])
+  @@index([type])
+  @@index([pricingMarketId])
+  @@map("referrers")
+}
+
+model ReferralLink {
+  id              String    @id @default(cuid())
+  referrerId      String
+  ministryAdminId String    @unique
+  churchId        String?
+  referralCode    String
+  status          String    @default("registered") // registered | first_payment_made | inactive
+  registeredAt    DateTime  @default(now())
+  firstPaymentAt  DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  referrer      Referrer  @relation(fields: [referrerId], references: [id], onDelete: Restrict)
+  ministryAdmin User      @relation("ReferralMinistryAdmin", fields: [ministryAdminId], references: [id], onDelete: Restrict)
+  church        Church?   @relation(fields: [churchId], references: [id], onDelete: SetNull)
+  payments      Payment[]
+
+  @@index([referrerId])
+  @@index([churchId])
+  @@index([referralCode])
+  @@map("referral_links")
+}
+
+model ReferrerLedgerEntry {
+  id           String   @id @default(cuid())
+  referrerId   String
+  direction    String // credit | debit
+  category     String // commission | withdrawal | adjustment
+  amount       Decimal  @db.Decimal(18, 2)
+  currency     String   @default("MWK")
+  balanceAfter Decimal? @db.Decimal(18, 2)
+  sourceType   String
+  sourceId     String?
+  paymentId    String?
+  withdrawalId String?
+  description  String?  @db.Text
+  effectiveAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  referrer Referrer @relation(fields: [referrerId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceType, sourceId, category])
+  @@index([referrerId, effectiveAt])
+  @@index([paymentId])
+  @@index([withdrawalId])
+  @@map("referrer_ledger_entries")
+}
+
+model ReferrerWithdrawal {
+  id              String    @id @default(cuid())
+  referrerId      String
+  amount          Decimal   @db.Decimal(18, 2)
+  currency        String    @default("MWK")
+  status          String    @default("pending") // pending | approved | paid | rejected | cancelled
+  method          String?
+  accountName     String?
+  accountNumber   String?
+  mobileNumber    String?
+  bankName        String?
+  requestedAt     DateTime  @default(now())
+  approvedAt      DateTime?
+  paidAt          DateTime?
+  processedById   String?
+  rejectionReason String?   @db.Text
+  notes           String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  referrer Referrer                @relation(fields: [referrerId], references: [id], onDelete: Restrict)
+  otps     ReferrerWithdrawalOtp[]
+
+  @@index([referrerId, status])
+  @@index([createdAt])
+  @@map("referrer_withdrawals")
+}
+
+model ReferrerWithdrawalOtp {
+  id           String    @id @default(cuid())
+  referrerId   String
+  withdrawalId String?
+  otpHash      String
+  payloadHash  String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  attempts     Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  referrer   Referrer            @relation(fields: [referrerId], references: [id], onDelete: Cascade)
+  withdrawal ReferrerWithdrawal? @relation(fields: [withdrawalId], references: [id], onDelete: SetNull)
+
+  @@index([referrerId, expiresAt])
+  @@index([payloadHash])
+  @@map("referrer_withdrawal_otps")
 }
 
 model PackageInvoice {
@@ -1665,16 +1830,16 @@ model UserTeam {
 // ─── Team Communication ────────────────────────────────────────────────────────
 
 model TeamCommunication {
-  id        String   @id @default(cuid())
-  title     String
-  content   String   @db.Text
-  teamId    String
-  authorId  String
-  mediaUrls Json? // [{url, type, name, size}]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  publicationStatus String @default("published")
-  publishedAt DateTime?
+  id                String    @id @default(cuid())
+  title             String
+  content           String    @db.Text
+  teamId            String
+  authorId          String
+  mediaUrls         Json? // [{url, type, name, size}]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  publicationStatus String    @default("published")
+  publishedAt       DateTime?
 
   team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
@@ -1871,21 +2036,21 @@ model CellMember {
 }
 
 model CellMeeting {
-  id               String   @id @default(cuid())
-  cellId           String
-  date             DateTime
-  time             String?
-  topic            String?
-  notes            String?  @db.Text
-  recurrenceRuleId String?
-  recordType       String   @default("direct")
-  sourceMeetingId  String?
-  scheduledOccurrenceId String? @unique
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  publicationStatus String @default("published")
-  publishAt          DateTime?
-  publishedAt        DateTime?
+  id                    String    @id @default(cuid())
+  cellId                String
+  date                  DateTime
+  time                  String?
+  topic                 String?
+  notes                 String?   @db.Text
+  recurrenceRuleId      String?
+  recordType            String    @default("direct")
+  sourceMeetingId       String?
+  scheduledOccurrenceId String?   @unique
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  publicationStatus     String    @default("published")
+  publishAt             DateTime?
+  publishedAt           DateTime?
 
   cell       Cell             @relation(fields: [cellId], references: [id], onDelete: Cascade)
   attendance CellAttendance[]

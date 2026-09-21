@@ -14,6 +14,7 @@ import { recordPaymentEvent, recordWithdrawalEvent } from '../middleware/metrics
 import { maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from '../services/packageInvoiceService';
+import { handleCompletedPackagePayment } from '../services/referralService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function safeJsonParse(value: string): any {
@@ -352,6 +353,7 @@ async function processPaychanguSubscription(pendingTx: any, metadata: any, paylo
       servicePeriodEnd: expiresAt,
     });
   }
+  await handleCompletedPackagePayment(payment.id);
 
   console.log(`[${traceId}] Subscription activated until: ${expiresAt}`);
 

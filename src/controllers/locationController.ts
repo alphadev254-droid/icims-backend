@@ -1,6 +1,39 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 
+export async function getPublicRegions(req: Request, res: Response): Promise<void> {
+  const country = String(req.query.country || '').trim();
+  if (!country) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const regions = await prisma.location.findMany({
+    where: { country },
+    select: { region: true },
+    distinct: ['region'],
+    orderBy: { region: 'asc' },
+  });
+  res.json({ success: true, data: regions.map(r => r.region) });
+}
+
+export async function getPublicDistricts(req: Request, res: Response): Promise<void> {
+  const country = String(req.query.country || '').trim();
+  const region = String(req.query.region || '').trim();
+  if (!country || !region) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const districts = await prisma.location.findMany({
+    where: { country, region },
+    select: { district: true },
+    distinct: ['district'],
+    orderBy: { district: 'asc' },
+  });
+  res.json({ success: true, data: districts.map(d => d.district) });
+}
+
 export async function getRegions(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   
