@@ -18,6 +18,7 @@ export type { EmailJobData, EmailAttachment } from './bullQueue';
 export type EmailType =
   | 'user_created'
   | 'registration'
+  | 'email_verification'
   | 'password_reset'
   | 'password_changed'
   | 'ticket_purchase'

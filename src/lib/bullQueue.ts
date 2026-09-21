@@ -139,11 +139,11 @@ export async function queueEmailBull(
       emailType: type,
     },
     {
-      priority: type === 'password_reset' ? 1 : type === 'registration' ? 2 : 5, // Higher priority = faster processing
+      priority: type === 'password_reset' || type === 'email_verification' ? 1 : type === 'registration' ? 2 : 5, // Higher priority = faster processing
     }
   );
 
-  console.log(`[BullMQ] 📧 Queued email job ${job.id} - ${subject} to ${to} (priority: ${type === 'password_reset' ? 1 : type === 'registration' ? 2 : 5})`);
+  console.log(`[BullMQ] 📧 Queued email job ${job.id} - ${subject} to ${to} (priority: ${type === 'password_reset' || type === 'email_verification' ? 1 : type === 'registration' ? 2 : 5})`);
 }
 
 /**
