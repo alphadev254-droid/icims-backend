@@ -216,6 +216,8 @@ const verifyEmailSchema = z.object({
   otpCode: z.string().regex(/^\d{6}$/, 'Enter the 6-digit OTP code'),
 });
 
+const VERIFICATION_OTP_RESEND_SECONDS = 40;
+
 const resendVerificationSchema = z.object({
   email: z.string().email('Invalid email address'),
 });
@@ -368,6 +370,23 @@ export async function resendVerificationOtp(req: Request, res: Response): Promis
   }
   const user = await prisma.user.findUnique({ where: { email: parsed.data.email }, select: { id: true, emailVerified: true } });
   if (user && !user.emailVerified) {
+    const latestOtp = await prisma.emailVerificationOtp.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    if (latestOtp) {
+      const elapsedSeconds = Math.floor((Date.now() - latestOtp.createdAt.getTime()) / 1000);
+      const retryAfterSeconds = Math.max(VERIFICATION_OTP_RESEND_SECONDS - elapsedSeconds, 0);
+      if (retryAfterSeconds > 0) {
+        res.status(429).json({
+          success: false,
+          message: `Please wait ${retryAfterSeconds} seconds before requesting another code.`,
+          retryAfterSeconds,
+        });
+        return;
+      }
+    }
     await sendEmailVerificationOtp(user.id);
   }
   res.json({ success: true, message: 'If this account needs verification, an OTP has been sent.' });
