@@ -702,6 +702,9 @@ const updateUserSchema = z.object({
   phone: optionalPhoneSchema.nullable(),
   status: z.enum(['active', 'suspended', 'inactive', 'cancelled']).optional(),
   referrerStatus: z.enum(['pending', 'approved', 'suspended', 'rejected']).optional(),
+  referrerCountry: z.string().trim().min(2).max(80).nullable().optional(),
+  referrerCity: z.string().trim().max(120).nullable().optional(),
+  referrerDistrict: z.string().trim().max(120).nullable().optional(),
   accountCountry: z.string().trim().min(2).max(80).nullable().optional(),
   title: z.string().nullable().optional(),
   titleOther: z.string().nullable().optional(),
@@ -728,6 +731,9 @@ const updateUserSchema = z.object({
 function buildUserUpdateData(data: z.infer<typeof updateUserSchema>) {
   const updateData: any = { ...data };
   delete updateData.referrerStatus;
+  delete updateData.referrerCountry;
+  delete updateData.referrerCity;
+  delete updateData.referrerDistrict;
   if (data.dateOfBirth !== undefined) updateData.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
   if (data.weddingDate !== undefined) updateData.weddingDate = data.weddingDate ? new Date(data.weddingDate) : null;
   if (data.regions !== undefined) updateData.regions = JSON.stringify(data.regions);
@@ -826,19 +832,31 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
       });
 
   let referrerProfile = target.referrerProfile;
-  if (parsed.data.referrerStatus !== undefined) {
+  const hasReferrerUpdate =
+    parsed.data.referrerStatus !== undefined ||
+    parsed.data.referrerCountry !== undefined ||
+    parsed.data.referrerCity !== undefined ||
+    parsed.data.referrerDistrict !== undefined;
+
+  if (hasReferrerUpdate) {
     if (target.role?.name !== 'referrer' || !target.referrerProfile) {
       res.status(400).json({ success: false, message: 'This user does not have a marketer profile' }); return;
     }
 
+    const referrerUpdateData: any = {};
+    if (parsed.data.referrerStatus !== undefined) {
+      referrerUpdateData.status = parsed.data.referrerStatus;
+      referrerUpdateData.approvedAt = parsed.data.referrerStatus === 'approved' ? new Date() : null;
+      referrerUpdateData.approvedById = parsed.data.referrerStatus === 'approved' ? req.user?.userId ?? null : null;
+      referrerUpdateData.rejectionReason = parsed.data.referrerStatus === 'approved' ? null : undefined;
+    }
+    if (parsed.data.referrerCountry !== undefined) referrerUpdateData.country = parsed.data.referrerCountry;
+    if (parsed.data.referrerCity !== undefined) referrerUpdateData.city = parsed.data.referrerCity;
+    if (parsed.data.referrerDistrict !== undefined) referrerUpdateData.district = parsed.data.referrerDistrict;
+
     referrerProfile = await prisma.referrer.update({
       where: { userId: id },
-      data: {
-        status: parsed.data.referrerStatus,
-        approvedAt: parsed.data.referrerStatus === 'approved' ? new Date() : null,
-        approvedById: parsed.data.referrerStatus === 'approved' ? req.user?.userId ?? null : null,
-        rejectionReason: parsed.data.referrerStatus === 'approved' ? null : undefined,
-      },
+      data: referrerUpdateData,
     });
   }
 
