@@ -60,6 +60,30 @@ function safeUser(user: any) {
   };
 }
 
+function safeReferrerProfile(referrer: any) {
+  if (!referrer) return null;
+  return {
+    id: referrer.id,
+    code: referrer.code,
+    type: referrer.type,
+    status: referrer.status,
+    displayName: referrer.displayName ?? null,
+    phone: referrer.phone ?? null,
+    country: referrer.country ?? null,
+    city: referrer.city ?? null,
+    district: referrer.district ?? null,
+    pricingMarketId: referrer.pricingMarketId ?? null,
+    payoutPhone: referrer.payoutPhone ?? null,
+    payoutProvider: referrer.payoutProvider ?? null,
+    payoutSetupStatus: referrer.payoutSetupStatus ?? null,
+    approvedAt: referrer.approvedAt ?? null,
+    approvedById: referrer.approvedById ?? null,
+    rejectionReason: referrer.rejectionReason ?? null,
+    createdAt: referrer.createdAt,
+    updatedAt: referrer.updatedAt,
+  };
+}
+
 function tryParse(val: string) {
   try { return JSON.parse(val); } catch { return val; }
 }
@@ -477,6 +501,28 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
         createdAt: true,
         role: { select: { id: true, name: true, displayName: true } },
         church: { select: { id: true, name: true, ministryAdminId: true } },
+        referrerProfile: {
+          select: {
+            id: true,
+            code: true,
+            type: true,
+            status: true,
+            displayName: true,
+            phone: true,
+            country: true,
+            city: true,
+            district: true,
+            pricingMarketId: true,
+            payoutPhone: true,
+            payoutProvider: true,
+            payoutSetupStatus: true,
+            approvedAt: true,
+            approvedById: true,
+            rejectionReason: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
         _count: { select: { ownedChurches: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -544,6 +590,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
       createdAt: u.createdAt,
       role: u.role,
       roleName: u.role?.name ?? null,
+      referrer: safeReferrerProfile((u as any).referrerProfile),
       church: u.church ? { id: u.church.id, name: u.church.name } : null,
       churchCount: u._count.ownedChurches,
       resolvedCountry: resolveCountry(u),
@@ -586,6 +633,28 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
         },
         orderBy: { createdAt: 'desc' },
       },
+      referrerProfile: {
+        select: {
+          id: true,
+          code: true,
+          type: true,
+          status: true,
+          displayName: true,
+          phone: true,
+          country: true,
+          city: true,
+          district: true,
+          pricingMarketId: true,
+          payoutPhone: true,
+          payoutProvider: true,
+          payoutSetupStatus: true,
+          approvedAt: true,
+          approvedById: true,
+          rejectionReason: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
     },
   });
 
@@ -613,7 +682,14 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
 
   res.json({
     success: true,
-    data: { ...safeUser(user), ownedChurches: user.ownedChurches, subscription: activeSubscription, subscriptions, payments },
+    data: {
+      ...safeUser(user),
+      referrer: safeReferrerProfile((user as any).referrerProfile),
+      ownedChurches: user.ownedChurches,
+      subscription: activeSubscription,
+      subscriptions,
+      payments,
+    },
   });
 }
 
@@ -625,6 +701,7 @@ const updateUserSchema = z.object({
   email: z.string().email().optional(),
   phone: optionalPhoneSchema.nullable(),
   status: z.enum(['active', 'suspended', 'inactive', 'cancelled']).optional(),
+  referrerStatus: z.enum(['pending', 'approved', 'suspended', 'rejected']).optional(),
   accountCountry: z.string().trim().min(2).max(80).nullable().optional(),
   title: z.string().nullable().optional(),
   titleOther: z.string().nullable().optional(),
@@ -650,6 +727,7 @@ const updateUserSchema = z.object({
 
 function buildUserUpdateData(data: z.infer<typeof updateUserSchema>) {
   const updateData: any = { ...data };
+  delete updateData.referrerStatus;
   if (data.dateOfBirth !== undefined) updateData.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
   if (data.weddingDate !== undefined) updateData.weddingDate = data.weddingDate ? new Date(data.weddingDate) : null;
   if (data.regions !== undefined) updateData.regions = JSON.stringify(data.regions);
@@ -697,7 +775,7 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
 
   const target = await prisma.user.findUnique({
     where: { id },
-    include: { role: { select: { name: true } } },
+    include: { role: { select: { name: true } }, referrerProfile: true },
   });
   if (!target) { res.status(404).json({ success: false, message: 'User not found' }); return; }
   if (target.role?.name === 'system_admin') {
@@ -747,7 +825,24 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
         include: { role: { select: { id: true, name: true, displayName: true } } },
       });
 
-  res.json({ success: true, data: safeUser(updated) });
+  let referrerProfile = target.referrerProfile;
+  if (parsed.data.referrerStatus !== undefined) {
+    if (target.role?.name !== 'referrer' || !target.referrerProfile) {
+      res.status(400).json({ success: false, message: 'This user does not have a marketer profile' }); return;
+    }
+
+    referrerProfile = await prisma.referrer.update({
+      where: { userId: id },
+      data: {
+        status: parsed.data.referrerStatus,
+        approvedAt: parsed.data.referrerStatus === 'approved' ? new Date() : null,
+        approvedById: parsed.data.referrerStatus === 'approved' ? req.user?.userId ?? null : null,
+        rejectionReason: parsed.data.referrerStatus === 'approved' ? null : undefined,
+      },
+    });
+  }
+
+  res.json({ success: true, data: { ...safeUser(updated), referrer: safeReferrerProfile(referrerProfile) } });
 }
 
 // ─── DELETE /api/admin/users/:id ──────────────────────────────────────────────
