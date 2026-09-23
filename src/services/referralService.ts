@@ -5,6 +5,7 @@ import { hashPassword, comparePassword } from '../lib/password';
 
 const DEFAULT_RATE = 0.2;
 const COMMISSION_RATE_ENV = 'REFERRAL_COMMISSION_RATE';
+const OTP_RESEND_COOLDOWN_SECONDS = 40;
 
 type DbClient = typeof prisma | Prisma.TransactionClient;
 
@@ -93,6 +94,10 @@ function money(value: number): string {
   return (Math.round(value * 100) / 100).toFixed(2);
 }
 
+function payloadHashFor(payload: unknown): string {
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
 export async function handleCompletedPackagePayment(paymentId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const payment = await tx.payment.findUnique({ where: { id: paymentId } });
@@ -157,7 +162,7 @@ export async function handleCompletedPackagePayment(paymentId: string): Promise<
 
 export async function createWithdrawalOtp(referrerId: string, payload: unknown, options?: { exposeOtp?: boolean }) {
   const otp = crypto.randomInt(100000, 999999).toString();
-  const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const payloadHash = payloadHashFor(payload);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
   const record = await prisma.referrerWithdrawalOtp.create({
@@ -172,8 +177,22 @@ export async function createWithdrawalOtp(referrerId: string, payload: unknown, 
   return { record, otp: options?.exposeOtp || process.env.NODE_ENV !== 'production' ? otp : undefined, payloadHash };
 }
 
+export async function getWithdrawalOtpResendWaitSeconds(referrerId: string, payload: unknown): Promise<number> {
+  const payloadHash = payloadHashFor(payload);
+  const latestOtp = await prisma.referrerWithdrawalOtp.findFirst({
+    where: { referrerId, payloadHash, usedAt: null, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  });
+
+  if (!latestOtp) return 0;
+
+  const elapsedSeconds = Math.floor((Date.now() - latestOtp.createdAt.getTime()) / 1000);
+  return Math.max(0, OTP_RESEND_COOLDOWN_SECONDS - elapsedSeconds);
+}
+
 export async function consumeWithdrawalOtp(referrerId: string, otp: string, payload: unknown) {
-  const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const payloadHash = payloadHashFor(payload);
   const record = await prisma.referrerWithdrawalOtp.findFirst({
     where: { referrerId, payloadHash, usedAt: null, expiresAt: { gt: new Date() } },
     orderBy: { createdAt: 'desc' },

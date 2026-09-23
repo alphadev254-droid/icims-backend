@@ -8,6 +8,7 @@ import {
   ensureReferrerRole,
   generateUniqueReferralCode,
   getReferrerBalance,
+  getWithdrawalOtpResendWaitSeconds,
   referralLinkForCode,
 } from '../services/referralService';
 import { sendEmailVerificationOtp } from '../services/emailVerificationService';
@@ -374,7 +375,18 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     return;
   }
 
-  const { otp } = await createWithdrawalOtp(referrer.id, payoutSetupOtpPayload(parsed.data), { exposeOtp: true });
+  const otpPayload = payoutSetupOtpPayload(parsed.data);
+  const resendWaitSeconds = await getWithdrawalOtpResendWaitSeconds(referrer.id, otpPayload);
+  if (resendWaitSeconds > 0) {
+    res.status(429).json({
+      success: false,
+      message: `You can request another OTP in ${resendWaitSeconds}s`,
+      retryAfterSeconds: resendWaitSeconds,
+    });
+    return;
+  }
+
+  const { otp } = await createWithdrawalOtp(referrer.id, otpPayload, { exposeOtp: true });
   await queueEmail(
     referrer.user.email,
     'Confirm your ICIMS payout settings',
@@ -392,6 +404,7 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     success: true,
     message: `OTP sent to ${referrer.user.email}`,
     expiresInSeconds: 10 * 60,
+    retryAfterSeconds: 40,
     data: { devOtp: process.env.NODE_ENV === 'production' ? undefined : otp },
   });
 }
