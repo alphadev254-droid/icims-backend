@@ -84,6 +84,24 @@ function safeReferrerProfile(referrer: any) {
   };
 }
 
+async function resolveReferrerCountryMarket(countryName?: string | null) {
+  const value = String(countryName || '').trim();
+  if (!value) return null;
+
+  const country = await prisma.country.findFirst({
+    where: {
+      isActive: true,
+      OR: [
+        { name: { equals: value } },
+        { iso2: { equals: value.toUpperCase() } },
+      ],
+    },
+    include: { pricingMarket: true },
+  });
+
+  return country?.pricingMarket?.isActive ? country.pricingMarket : null;
+}
+
 function tryParse(val: string) {
   try { return JSON.parse(val); } catch { return val; }
 }
@@ -850,7 +868,20 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
       referrerUpdateData.approvedById = parsed.data.referrerStatus === 'approved' ? req.user?.userId ?? null : null;
       referrerUpdateData.rejectionReason = parsed.data.referrerStatus === 'approved' ? null : undefined;
     }
-    if (parsed.data.referrerCountry !== undefined) referrerUpdateData.country = parsed.data.referrerCountry;
+    if (parsed.data.referrerCountry !== undefined) {
+      const pricingMarket = await resolveReferrerCountryMarket(parsed.data.referrerCountry);
+      const nextPricingMarketId = pricingMarket?.id ?? null;
+      const marketChanged = target.referrerProfile.pricingMarketId !== nextPricingMarketId;
+
+      referrerUpdateData.country = parsed.data.referrerCountry;
+      referrerUpdateData.pricingMarketId = nextPricingMarketId;
+      referrerUpdateData.payoutSetupStatus = pricingMarket ? (marketChanged ? 'pending' : target.referrerProfile.payoutSetupStatus) : 'unsupported_market';
+
+      if (marketChanged) {
+        referrerUpdateData.payoutPhone = null;
+        referrerUpdateData.payoutProvider = null;
+      }
+    }
     if (parsed.data.referrerCity !== undefined) referrerUpdateData.city = parsed.data.referrerCity;
     if (parsed.data.referrerDistrict !== undefined) referrerUpdateData.district = parsed.data.referrerDistrict;
 
