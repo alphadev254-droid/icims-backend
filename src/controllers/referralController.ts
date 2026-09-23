@@ -66,7 +66,14 @@ async function resolveCountryMarket(countryName: string, db: typeof prisma | any
 
 async function getCurrentReferrer(userId?: string) {
   if (!userId) return null;
-  return prisma.referrer.findUnique({ where: { userId } });
+  return prisma.referrer.findUnique({
+    where: { userId },
+    include: { pricingMarket: true },
+  });
+}
+
+function referrerCurrency(referrer: { pricingMarket?: { currencyCode?: string | null } | null }) {
+  return String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase();
 }
 
 export async function registerReferrer(req: Request, res: Response): Promise<void> {
@@ -169,6 +176,7 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
   res.json({
     success: true,
     data: {
+      currency: referrerCurrency(referrer),
       referrer: {
         id: referrer.id,
         code: referrer.code,
@@ -177,6 +185,12 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
         displayName: referrer.displayName,
         referralLink: referralLinkForCode(referrer.code),
         country: referrer.country,
+        market: referrer.pricingMarket ? {
+          id: referrer.pricingMarket.id,
+          code: referrer.pricingMarket.code,
+          name: referrer.pricingMarket.name,
+          currencyCode: referrer.pricingMarket.currencyCode,
+        } : null,
         payoutPhone: referrer.payoutPhone,
         payoutProvider: referrer.payoutProvider,
         payoutSetupStatus: referrer.payoutSetupStatus,
@@ -315,12 +329,13 @@ export async function confirmWithdrawal(req: Request, res: Response): Promise<vo
   const withdrawal = await prisma.$transaction(async (tx) => {
     const balance = await getReferrerBalance(referrer.id, tx);
     if (payload.amount > balance) throw new Error('Withdrawal amount exceeds available balance');
+    const currency = referrerCurrency(referrer);
 
     const created = await tx.referrerWithdrawal.create({
       data: {
         referrerId: referrer.id,
         amount: payload.amount.toFixed(2),
-        currency: 'MWK',
+        currency,
         status: 'pending',
         method: payload.method,
         accountName: payload.accountName,
@@ -336,7 +351,7 @@ export async function confirmWithdrawal(req: Request, res: Response): Promise<vo
         direction: 'debit',
         category: 'withdrawal',
         amount: payload.amount.toFixed(2),
-        currency: 'MWK',
+        currency,
         balanceAfter: (balance - payload.amount).toFixed(2),
         sourceType: 'referrer_withdrawal',
         sourceId: created.id,
