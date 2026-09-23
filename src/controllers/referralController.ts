@@ -369,10 +369,38 @@ export async function confirmWithdrawal(req: Request, res: Response): Promise<vo
 
 export async function listAdminReferrers(_req: Request, res: Response): Promise<void> {
   const referrers = await prisma.referrer.findMany({
-    include: { user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
+    include: {
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, status: true, emailVerified: true } },
+      pricingMarket: { select: { id: true, code: true, name: true, currencyCode: true } },
+      _count: { select: { referrals: true, ledgerEntries: true, withdrawals: true } },
+    },
     orderBy: { createdAt: 'desc' },
   });
   res.json({ success: true, data: referrers });
+}
+
+export async function getAdminReferrer(req: Request, res: Response): Promise<void> {
+  const referrer = await prisma.referrer.findUnique({
+    where: { id: String(req.params.id) },
+    include: {
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, status: true, emailVerified: true, createdAt: true } },
+      pricingMarket: { select: { id: true, code: true, name: true, currencyCode: true, packageGateway: true } },
+      referrals: {
+        include: {
+          ministryAdmin: { select: { id: true, firstName: true, lastName: true, email: true, ministryName: true, accountCountry: true } },
+          church: { select: { id: true, name: true, country: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      },
+      ledgerEntries: { orderBy: { createdAt: 'desc' }, take: 100 },
+      withdrawals: { orderBy: { createdAt: 'desc' }, take: 50 },
+    },
+  });
+
+  if (!referrer) { res.status(404).json({ success: false, message: 'Marketer not found' }); return; }
+
+  const balance = await getReferrerBalance(referrer.id);
+  res.json({ success: true, data: { ...referrer, balance, currency: referrerCurrency(referrer) } });
 }
 
 export async function updateAdminReferrerStatus(req: Request, res: Response): Promise<void> {
