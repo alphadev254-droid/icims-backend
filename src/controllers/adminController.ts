@@ -486,6 +486,9 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     const roleRecord = await prisma.role.findUnique({ where: { name: roleFilter }, select: { id: true } });
     if (roleRecord) where.roleId = roleRecord.id;
     else { res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } }); return; }
+  } else {
+    const referrerRole = await prisma.role.findUnique({ where: { name: 'referrer' }, select: { id: true } });
+    if (referrerRole) where.roleId = { not: referrerRole.id };
   }
   if (countryFilter) {
     where.id = { in: await getUserIdsByCountry(countryFilter) };
