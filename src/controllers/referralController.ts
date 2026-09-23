@@ -14,6 +14,7 @@ import {
 import { sendEmailVerificationOtp } from '../services/emailVerificationService';
 import { fetchPayoutProvidersForMarket } from '../services/payoutProviderOptionsService';
 import { queueEmail } from '../lib/emailQueue';
+import { phoneSchema } from '../lib/inputValidation';
 
 const registerReferrerSchema = z.object({
   firstName: z.string().min(2, 'First name must be at least 2 characters'),
@@ -48,7 +49,7 @@ const withdrawalConfirmSchema = withdrawalOtpSchema.extend({
 });
 
 const payoutSetupSchema = z.object({
-  payoutPhone: z.string().min(6, 'Payout phone number is required'),
+  payoutPhone: phoneSchema,
   payoutProvider: z.string().min(2, 'Payout provider is required'),
 });
 
@@ -405,7 +406,6 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     message: `OTP sent to ${referrer.user.email}`,
     expiresInSeconds: 10 * 60,
     retryAfterSeconds: 40,
-    data: { devOtp: process.env.NODE_ENV === 'production' ? undefined : otp },
   });
 }
 
