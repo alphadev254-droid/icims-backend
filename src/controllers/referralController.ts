@@ -12,6 +12,7 @@ import {
 } from '../services/referralService';
 import { sendEmailVerificationOtp } from '../services/emailVerificationService';
 import { fetchPayoutProvidersForMarket } from '../services/payoutProviderOptionsService';
+import { queueEmail } from '../lib/emailQueue';
 
 const registerReferrerSchema = z.object({
   firstName: z.string().min(2, 'First name must be at least 2 characters'),
@@ -50,6 +51,10 @@ const payoutSetupSchema = z.object({
   payoutProvider: z.string().min(2, 'Payout provider is required'),
 });
 
+const payoutSetupConfirmSchema = payoutSetupSchema.extend({
+  otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit OTP code'),
+});
+
 async function resolveCountryMarket(countryName: string, db: typeof prisma | any = prisma) {
   const country = await db.country.findFirst({
     where: {
@@ -74,6 +79,46 @@ async function getCurrentReferrer(userId?: string) {
 
 function referrerCurrency(referrer: { pricingMarket?: { currencyCode?: string | null } | null }) {
   return String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase();
+}
+
+function payoutSetupOtpPayload(data: z.infer<typeof payoutSetupSchema>) {
+  return {
+    purpose: 'payout_setup',
+    payoutPhone: data.payoutPhone,
+    payoutProvider: data.payoutProvider,
+  };
+}
+
+function payoutSetupOtpTemplate(data: {
+  firstName: string;
+  otpCode: string;
+  provider: string;
+  phone: string;
+  expiresInMinutes: number;
+}) {
+  return `
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111827">
+      <h2 style="margin:0 0 12px">Confirm your ICIMS payout settings</h2>
+      <p>Hello ${data.firstName},</p>
+      <p>Use this OTP code to confirm your marketer payout settings.</p>
+      <div style="font-size:32px;letter-spacing:8px;font-weight:700;background:#f3f4f6;border-radius:12px;padding:18px;text-align:center;margin:20px 0">
+        ${data.otpCode}
+      </div>
+      <p>This code expires in ${data.expiresInMinutes} minutes.</p>
+      <div style="background:#f9fafb;border-radius:12px;padding:16px;margin:20px 0">
+        <p><strong>Payout provider:</strong> ${data.provider}</p>
+        <p><strong>Payout phone:</strong> ${data.phone}</p>
+      </div>
+      <p style="font-size:12px;color:#6b7280">If you did not request this change, do not share this code.</p>
+    </div>
+  `;
+}
+
+async function fetchValidPayoutProviders(referrer: { pricingMarket?: any }) {
+  if (!referrer.pricingMarket) {
+    throw new Error('Payout setup is not available for your selected country yet.');
+  }
+  return fetchPayoutProvidersForMarket(referrer.pricingMarket);
 }
 
 export async function registerReferrer(req: Request, res: Response): Promise<void> {
@@ -260,7 +305,7 @@ export async function updateMyPayoutSetup(req: Request, res: Response): Promise<
     return;
   }
 
-  const parsed = payoutSetupSchema.safeParse(req.body);
+  const parsed = payoutSetupConfirmSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   let providers: Awaited<ReturnType<typeof fetchPayoutProvidersForMarket>> = [];
@@ -279,6 +324,10 @@ export async function updateMyPayoutSetup(req: Request, res: Response): Promise<
     return;
   }
 
+  const { otp, ...payoutData } = parsed.data;
+  const otpRecord = await consumeWithdrawalOtp(referrer.id, otp, payoutSetupOtpPayload(payoutData));
+  if (!otpRecord) { res.status(400).json({ success: false, message: 'Invalid or expired OTP' }); return; }
+
   const updated = await prisma.referrer.update({
     where: { id: referrer.id },
     data: {
@@ -290,6 +339,61 @@ export async function updateMyPayoutSetup(req: Request, res: Response): Promise<
   });
 
   res.json({ success: true, data: updated });
+}
+
+export async function requestPayoutSetupOtp(req: Request, res: Response): Promise<void> {
+  const referrer = await prisma.referrer.findUnique({
+    where: { userId: req.user!.userId },
+    include: {
+      pricingMarket: true,
+      user: { select: { id: true, email: true, firstName: true } },
+    },
+  });
+  if (!referrer) { res.status(404).json({ success: false, message: 'Referrer profile not found' }); return; }
+  if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
+  if (!referrer.user?.email) { res.status(400).json({ success: false, message: 'Your account does not have an email address for OTP verification' }); return; }
+
+  const parsed = payoutSetupSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+
+  let providers: Awaited<ReturnType<typeof fetchPayoutProvidersForMarket>> = [];
+  try {
+    providers = await fetchValidPayoutProviders(referrer);
+  } catch (error: any) {
+    res.status(error.message?.includes('not available') ? 400 : 502).json({
+      success: false,
+      message: error.message || 'Failed to fetch payout providers from the payment provider.',
+      error: error.response?.data,
+    });
+    return;
+  }
+
+  const selectedProvider = providers.find(provider => provider.code === parsed.data.payoutProvider);
+  if (!selectedProvider) {
+    res.status(400).json({ success: false, message: 'Selected payout provider is not supported for your market.' });
+    return;
+  }
+
+  const { otp } = await createWithdrawalOtp(referrer.id, payoutSetupOtpPayload(parsed.data), { exposeOtp: true });
+  await queueEmail(
+    referrer.user.email,
+    'Confirm your ICIMS payout settings',
+    payoutSetupOtpTemplate({
+      firstName: referrer.user.firstName,
+      otpCode: otp!,
+      provider: selectedProvider.name || selectedProvider.code,
+      phone: parsed.data.payoutPhone,
+      expiresInMinutes: 10,
+    }),
+    'referrer_payout_setup_otp',
+  );
+
+  res.json({
+    success: true,
+    message: `OTP sent to ${referrer.user.email}`,
+    expiresInSeconds: 10 * 60,
+    data: { devOtp: process.env.NODE_ENV === 'production' ? undefined : otp },
+  });
 }
 
 export async function requestWithdrawalOtp(req: Request, res: Response): Promise<void> {

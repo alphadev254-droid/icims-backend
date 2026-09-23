@@ -155,7 +155,7 @@ export async function handleCompletedPackagePayment(paymentId: string): Promise<
   });
 }
 
-export async function createWithdrawalOtp(referrerId: string, payload: unknown) {
+export async function createWithdrawalOtp(referrerId: string, payload: unknown, options?: { exposeOtp?: boolean }) {
   const otp = crypto.randomInt(100000, 999999).toString();
   const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -169,7 +169,7 @@ export async function createWithdrawalOtp(referrerId: string, payload: unknown) 
     },
   });
 
-  return { record, otp: process.env.NODE_ENV === 'production' ? undefined : otp, payloadHash };
+  return { record, otp: options?.exposeOtp || process.env.NODE_ENV !== 'production' ? otp : undefined, payloadHash };
 }
 
 export async function consumeWithdrawalOtp(referrerId: string, otp: string, payload: unknown) {
