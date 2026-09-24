@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
   getMyReferrerDashboard,
+  getMyReferrerReferrals,
+  getMyReferrerWallet,
   getMyPayoutOptions,
   getAdminReferrer,
   listAdminReferrers,
@@ -15,6 +17,8 @@ const router = Router();
 
 router.post('/register', registerReferrer);
 router.get('/me', authenticate, authorize('referrer'), getMyReferrerDashboard);
+router.get('/me/referrals', authenticate, authorize('referrer'), getMyReferrerReferrals);
+router.get('/me/wallet', authenticate, authorize('referrer'), getMyReferrerWallet);
 router.get('/payout-options', authenticate, authorize('referrer'), getMyPayoutOptions);
 router.post('/payout-setup/otp', authenticate, authorize('referrer'), requestPayoutSetupOtp);
 router.put('/payout-setup', authenticate, authorize('referrer'), updateMyPayoutSetup);

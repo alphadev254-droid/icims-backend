@@ -83,6 +83,57 @@ function referrerCurrency(referrer: { pricingMarket?: { currencyCode?: string | 
   return String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase();
 }
 
+function referrerProfileDto(referrer: any) {
+  return {
+    id: referrer.id,
+    code: referrer.code,
+    type: referrer.type,
+    status: referrer.status,
+    displayName: referrer.displayName,
+    referralLink: referralLinkForCode(referrer.code),
+    country: referrer.country,
+    market: referrer.pricingMarket ? {
+      id: referrer.pricingMarket.id,
+      code: referrer.pricingMarket.code,
+      name: referrer.pricingMarket.name,
+      currencyCode: referrer.pricingMarket.currencyCode,
+    } : null,
+    payoutPhone: referrer.payoutPhone,
+    payoutProvider: referrer.payoutProvider,
+    payoutSetupStatus: referrer.payoutSetupStatus,
+  };
+}
+
+function referralDto(referral: any) {
+  return {
+    id: referral.id,
+    ministryName: referral.ministryAdmin?.ministryName || referral.church?.name || 'Ministry',
+    status: referral.status || 'registered',
+  };
+}
+
+function ledgerDto(entry: any) {
+  return {
+    id: entry.id,
+    direction: entry.direction,
+    category: entry.category,
+    amount: entry.amount,
+    currency: entry.currency,
+    balanceAfter: entry.balanceAfter,
+    description: entry.description,
+    createdAt: entry.createdAt,
+  };
+}
+
+function ledgerSummary(ledger: Array<{ direction: string; amount: any }>) {
+  return ledger.reduce((summary, entry) => {
+    const amount = Number(entry.amount);
+    if (entry.direction === 'credit') summary.totalCredits += amount;
+    if (entry.direction === 'debit') summary.totalWithdrawn += amount;
+    return summary;
+  }, { totalCredits: 0, totalWithdrawn: 0 });
+}
+
 function payoutSetupOtpPayload(data: z.infer<typeof payoutSetupSchema>) {
   return {
     purpose: 'payout_setup',
@@ -198,7 +249,7 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
     return;
   }
 
-  const [balance, referrals, ledger, withdrawals] = await Promise.all([
+  const [balance, recentReferrals, recentLedger, summaryLedger, referralsCount] = await Promise.all([
     getReferrerBalance(referrer.id),
     prisma.referralLink.findMany({
       where: { referrerId: referrer.id },
@@ -207,16 +258,75 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
         church: { select: { name: true } },
       },
       orderBy: { createdAt: 'desc' },
+      take: 5,
     }),
     prisma.referrerLedgerEntry.findMany({
       where: { referrerId: referrer.id },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      take: 5,
     }),
-    prisma.referrerWithdrawal.findMany({
+    prisma.referrerLedgerEntry.findMany({
+      where: { referrerId: referrer.id },
+      select: { direction: true, amount: true },
+    }),
+    prisma.referralLink.count({ where: { referrerId: referrer.id } }),
+  ]);
+  const summary = ledgerSummary(summaryLedger);
+
+  res.json({
+    success: true,
+    data: {
+      currency: referrerCurrency(referrer),
+      referrer: referrerProfileDto(referrer),
+      balance,
+      summary: {
+        ...summary,
+        referralsCount,
+      },
+      referrals: recentReferrals.map(referralDto),
+      ledger: recentLedger.map(ledgerDto),
+    },
+  });
+}
+
+export async function getMyReferrerReferrals(req: Request, res: Response): Promise<void> {
+  const referrer = await getCurrentReferrer(req.user?.userId);
+  if (!referrer) {
+    res.status(404).json({ success: false, message: 'Referrer profile not found' });
+    return;
+  }
+
+  const referrals = await prisma.referralLink.findMany({
+    where: { referrerId: referrer.id },
+    include: {
+      ministryAdmin: { select: { ministryName: true } },
+      church: { select: { name: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json({
+    success: true,
+    data: {
+      referrer: referrerProfileDto(referrer),
+      referrals: referrals.map(referralDto),
+    },
+  });
+}
+
+export async function getMyReferrerWallet(req: Request, res: Response): Promise<void> {
+  const referrer = await getCurrentReferrer(req.user?.userId);
+  if (!referrer) {
+    res.status(404).json({ success: false, message: 'Referrer profile not found' });
+    return;
+  }
+
+  const [balance, ledger] = await Promise.all([
+    getReferrerBalance(referrer.id),
+    prisma.referrerLedgerEntry.findMany({
       where: { referrerId: referrer.id },
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: 100,
     }),
   ]);
 
@@ -224,32 +334,10 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
     success: true,
     data: {
       currency: referrerCurrency(referrer),
-      referrer: {
-        id: referrer.id,
-        code: referrer.code,
-        type: referrer.type,
-        status: referrer.status,
-        displayName: referrer.displayName,
-        referralLink: referralLinkForCode(referrer.code),
-        country: referrer.country,
-        market: referrer.pricingMarket ? {
-          id: referrer.pricingMarket.id,
-          code: referrer.pricingMarket.code,
-          name: referrer.pricingMarket.name,
-          currencyCode: referrer.pricingMarket.currencyCode,
-        } : null,
-        payoutPhone: referrer.payoutPhone,
-        payoutProvider: referrer.payoutProvider,
-        payoutSetupStatus: referrer.payoutSetupStatus,
-      },
+      referrer: referrerProfileDto(referrer),
       balance,
-      referrals: referrals.map(referral => ({
-        id: referral.id,
-        ministryName: referral.ministryAdmin?.ministryName || referral.church?.name || 'Ministry',
-        status: referral.status || 'registered',
-      })),
-      ledger,
-      withdrawals,
+      summary: ledgerSummary(ledger),
+      ledger: ledger.map(ledgerDto),
     },
   });
 }
