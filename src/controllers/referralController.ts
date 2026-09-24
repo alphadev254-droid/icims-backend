@@ -17,6 +17,11 @@ import { sendEmailVerificationOtp } from '../services/emailVerificationService';
 import { fetchPayoutProvidersForMarket } from '../services/payoutProviderOptionsService';
 import { queueEmail } from '../lib/emailQueue';
 import { phoneSchema } from '../lib/inputValidation';
+import {
+  createAdminReferrerWithdrawalPayout,
+  previewAdminReferrerPayout,
+  reconcileReferrerWithdrawalPayout,
+} from '../services/referrerPayoutService';
 
 const registerReferrerSchema = z.object({
   firstName: z.string().min(2, 'First name must be at least 2 characters'),
@@ -61,6 +66,10 @@ const payoutSetupConfirmSchema = payoutSetupSchema.extend({
 
 const payoutSetupOtpVerifySchema = z.object({
   otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit OTP code'),
+});
+
+const adminReferrerPayoutSchema = z.object({
+  amount: z.coerce.number().positive('Enter a valid payout amount'),
 });
 
 async function resolveCountryMarket(countryName: string, db: typeof prisma | any = prisma) {
@@ -138,6 +147,32 @@ function ledgerSummary(ledger: Array<{ direction: string; amount: any }>) {
     if (entry.direction === 'debit') summary.totalWithdrawn += amount;
     return summary;
   }, { totalCredits: 0, totalWithdrawn: 0 });
+}
+
+async function withLedgerMinistryNames(ledgerEntries: any[]) {
+  const paymentIds = [...new Set(ledgerEntries.map(entry => entry.paymentId).filter(Boolean))];
+  if (paymentIds.length === 0) return ledgerEntries;
+
+  const payments = await prisma.payment.findMany({
+    where: { id: { in: paymentIds } },
+    select: { id: true, ministryAdminId: true },
+  });
+  const ministryAdminIds = [...new Set(payments.map(payment => payment.ministryAdminId).filter(Boolean))];
+  const ministryAdmins = await prisma.user.findMany({
+    where: { id: { in: ministryAdminIds } },
+    select: { id: true, ministryName: true },
+  });
+
+  const paymentMinistryAdminId = new Map(payments.map(payment => [payment.id, payment.ministryAdminId]));
+  const ministryNameByAdminId = new Map(ministryAdmins.map(admin => [admin.id, admin.ministryName]));
+
+  return ledgerEntries.map(entry => {
+    const ministryAdminId = entry.paymentId ? paymentMinistryAdminId.get(entry.paymentId) : null;
+    return {
+      ...entry,
+      ministryName: ministryAdminId ? ministryNameByAdminId.get(ministryAdminId) || null : null,
+    };
+  });
 }
 
 function payoutSetupOtpPayload() {
@@ -612,7 +647,8 @@ export async function getAdminReferrer(req: Request, res: Response): Promise<voi
   if (!referrer) { res.status(404).json({ success: false, message: 'Marketer not found' }); return; }
 
   const balance = await getReferrerBalance(referrer.id);
-  res.json({ success: true, data: { ...referrer, balance, currency: referrerCurrency(referrer) } });
+  const ledgerEntries = await withLedgerMinistryNames(referrer.ledgerEntries);
+  res.json({ success: true, data: { ...referrer, ledgerEntries, balance, currency: referrerCurrency(referrer) } });
 }
 
 export async function updateAdminReferrerStatus(req: Request, res: Response): Promise<void> {
@@ -629,4 +665,70 @@ export async function updateAdminReferrerStatus(req: Request, res: Response): Pr
     },
   });
   res.json({ success: true, data: updated });
+}
+
+export async function previewAdminReferrerWithdrawal(req: Request, res: Response): Promise<void> {
+  const parsed = adminReferrerPayoutSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+
+  try {
+    const preview = await previewAdminReferrerPayout(String(req.params.id), parsed.data.amount);
+    res.json({ success: true, data: preview });
+  } catch (error: any) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || 'Unable to preview marketer payout',
+    });
+  }
+}
+
+export async function initiateAdminReferrerWithdrawal(req: Request, res: Response): Promise<void> {
+  const parsed = adminReferrerPayoutSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+
+  try {
+    const result = await createAdminReferrerWithdrawalPayout(String(req.params.id), parsed.data.amount, req.user?.userId);
+    res.status(201).json({
+      success: true,
+      message: 'Marketer payout initiated',
+      data: result,
+    });
+  } catch (error: any) {
+    res.status(error.statusCode || (error.response ? 502 : 400)).json({
+      success: false,
+      message: error.response?.data?.message || error.message || 'Unable to initiate marketer payout',
+      error: error.response?.data,
+    });
+  }
+}
+
+export async function reconcileAdminReferrerWithdrawal(req: Request, res: Response): Promise<void> {
+  const withdrawalId = String(req.params.withdrawalId);
+  const withdrawal = await prisma.referrerWithdrawal.findUnique({
+    where: { id: withdrawalId },
+    select: { id: true },
+  });
+  if (!withdrawal) {
+    res.status(404).json({ success: false, message: 'Marketer payout not found' });
+    return;
+  }
+
+  try {
+    const result = await reconcileReferrerWithdrawalPayout(withdrawalId, req.user?.userId);
+    res.json({
+      success: true,
+      message: result.status === 'completed'
+        ? 'Marketer payout reconciled as paid'
+        : result.status === 'failed'
+          ? 'Marketer payout reconciled as failed'
+          : 'Marketer payout checked; final status is not available yet',
+      data: result.data,
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      message: error.response?.data?.message || error.message || 'Failed to reconcile marketer payout',
+      error: error.response?.data,
+    });
+  }
 }

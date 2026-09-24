@@ -12,6 +12,7 @@ import { startScheduledEventExecutionScanner } from './workers/scheduledEventExe
 import { startScheduledEventReminderScanner } from './workers/scheduledEventReminderScanner';
 import { startPaymentReconciliationWorker } from './workers/paymentReconciliationWorker';
 import { startSettlementReconciliationWorker } from './workers/settlementReconciliationWorker';
+import { startReferrerPayoutReviewWorker, startReferrerPayoutWorker } from './workers/referrerPayoutWorker';
 
 const PORT = process.env.PORT || 5000;
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
@@ -48,6 +49,8 @@ async function main() {
   startPaymentReconciliationWorker();
   startSettlementReconciliationWorker();
   startWithdrawalReviewCron();
+  startReferrerPayoutWorker();
+  startReferrerPayoutReviewWorker();
   console.log('⏰ Cron jobs initialized');
 
   app.listen(PORT, () => {

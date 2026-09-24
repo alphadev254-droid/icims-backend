@@ -5,7 +5,10 @@ import {
   getMyReferrerWallet,
   getMyPayoutOptions,
   getAdminReferrer,
+  initiateAdminReferrerWithdrawal,
   listAdminReferrers,
+  previewAdminReferrerWithdrawal,
+  reconcileAdminReferrerWithdrawal,
   registerReferrer,
   requestPayoutSetupOtp,
   updateMyPayoutSetup,
@@ -27,6 +30,9 @@ router.put('/payout-setup', authenticate, authorize('referrer'), updateMyPayoutS
 router.get('/admin/referrers', authenticate, authorize('ministry_admin', 'system_admin'), listAdminReferrers);
 router.get('/admin/referrers/:id', authenticate, authorize('ministry_admin', 'system_admin'), getAdminReferrer);
 router.patch('/admin/referrers/:id/status', authenticate, authorize('ministry_admin', 'system_admin'), updateAdminReferrerStatus);
+router.post('/admin/referrers/:id/withdrawals/preview', authenticate, authorize('system_admin'), previewAdminReferrerWithdrawal);
+router.post('/admin/referrers/:id/withdrawals/initiate', authenticate, authorize('system_admin'), initiateAdminReferrerWithdrawal);
+router.post('/admin/referrer-withdrawals/:withdrawalId/reconcile', authenticate, authorize('system_admin'), reconcileAdminReferrerWithdrawal);
 
 export default router;
 

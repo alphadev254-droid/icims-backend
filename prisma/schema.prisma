@@ -1350,6 +1350,16 @@ model ReferrerWithdrawal {
   accountNumber   String?
   mobileNumber    String?
   bankName        String?
+  mobileOperator  String?
+  chargeId        String?   @unique
+  feeAmount       Decimal?  @db.Decimal(18, 2)
+  gatewayFeeRate  Decimal?  @db.Decimal(10, 6)
+  payoutAmount    Decimal?  @db.Decimal(18, 2)
+  gatewayPayload  String?   @db.LongText
+  gatewayResponse String?   @db.LongText
+  failureReason   String?   @db.Text
+  processedAt     DateTime?
+  attempts         Int       @default(0)
   requestedAt     DateTime  @default(now())
   approvedAt      DateTime?
   paidAt          DateTime?

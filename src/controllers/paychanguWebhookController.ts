@@ -15,6 +15,7 @@ import { maskEmail, maskPhone } from '../utils/logger';
 import { createEventTicketWithUniqueNumber } from '../lib/eventTickets';
 import { activateSubscriptionFromInvoice, applyPackagePaymentToInvoices } from '../services/packageInvoiceService';
 import { handleCompletedPackagePayment } from '../services/referralService';
+import { markReferrerPayoutCompleted, markReferrerPayoutFailed } from '../services/referrerPayoutService';
 import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function safeJsonParse(value: string): any {
@@ -127,6 +128,18 @@ export async function processPaychanguPayment(payload: any, traceId: string): Pr
 
     // Handle payouts
     if (event_type === 'api.payout') {
+      if (String(charge_id || '').startsWith('MARKETER-PAYOUT-')) {
+        const withdrawalId = charge_id.replace('MARKETER-PAYOUT-', '');
+        if (status === 'success') {
+          await markReferrerPayoutCompleted(withdrawalId, payload);
+          recordWithdrawalEvent('mobile_money', 'completed', 'marketer', { withdrawalId, chargeId: charge_id });
+        } else {
+          await markReferrerPayoutFailed(withdrawalId, String(payload.message || payload.status || 'Marketer payout failed'), payload);
+          recordWithdrawalEvent('mobile_money', 'failed', 'marketer', { withdrawalId, chargeId: charge_id });
+        }
+        return;
+      }
+
       if (String(charge_id || '').startsWith('PLATFORM-PAYOUT-')) {
         const platformWithdrawalId = charge_id.replace('PLATFORM-PAYOUT-', '');
         const platformWithdrawal = await (prisma as any).platformWithdrawal.findUnique({ where: { id: platformWithdrawalId } });
