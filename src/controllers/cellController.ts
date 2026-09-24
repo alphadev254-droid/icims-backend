@@ -1125,7 +1125,11 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
   }
   const meetingDate = shouldSchedule
     ? exactOccurrenceStarts[0] ?? new Date(meetingData.date)
-    : todayInTimeZone(timezone);
+    : new Date(meetingData.date);
+  if (Number.isNaN(meetingDate.getTime())) {
+    res.status(400).json({ success: false, message: 'Invalid meeting date.' });
+    return;
+  }
   const scheduledStartAt = combineScheduleDateAndTime(meetingDate, meetingData.time || cell.meetingTime, timezone);
   if (shouldSchedule && (scheduledStartAt.getTime() < Date.now() || exactOccurrenceStarts.some(date => date.getTime() < Date.now()))) {
     res.status(400).json({ success: false, message: 'Scheduled meeting dates cannot be before today.' });
@@ -1161,7 +1165,7 @@ export async function createCellMeeting(req: Request, res: Response): Promise<vo
   }
   res.status(201).json({ success: true, data: meeting });
 
-  if (!shouldSchedule) {
+  if (!shouldSchedule && isSameCalendarDay(meetingDate, todayInTimeZone(timezone))) {
     const meetingTime = meeting.time || cell.meetingTime || 'the configured time';
     queueCellPush(
       cell.id,
