@@ -203,8 +203,8 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
     prisma.referralLink.findMany({
       where: { referrerId: referrer.id },
       include: {
-        ministryAdmin: { select: { id: true, firstName: true, lastName: true, email: true, ministryName: true } },
-        church: { select: { id: true, name: true } },
+        ministryAdmin: { select: { ministryName: true } },
+        church: { select: { name: true } },
       },
       orderBy: { createdAt: 'desc' },
     }),
@@ -243,7 +243,11 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
         payoutSetupStatus: referrer.payoutSetupStatus,
       },
       balance,
-      referrals,
+      referrals: referrals.map(referral => ({
+        id: referral.id,
+        ministryName: referral.ministryAdmin?.ministryName || referral.church?.name || 'Ministry',
+        status: referral.status || 'registered',
+      })),
       ledger,
       withdrawals,
     },
