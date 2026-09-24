@@ -6,6 +6,8 @@ import { hashPassword, comparePassword } from '../lib/password';
 const DEFAULT_RATE = 0.2;
 const COMMISSION_RATE_ENV = 'REFERRAL_COMMISSION_RATE';
 const OTP_RESEND_COOLDOWN_SECONDS = 40;
+const PAYOUT_SETUP_EDIT_SESSION_MINUTES = 10;
+const PAYOUT_SETUP_EDIT_SESSION_PAYLOAD = { purpose: 'payout_setup_edit_session' };
 
 type DbClient = typeof prisma | Prisma.TransactionClient;
 
@@ -202,6 +204,42 @@ export async function consumeWithdrawalOtp(referrerId: string, otp: string, payl
     await prisma.referrerWithdrawalOtp.update({ where: { id: record.id }, data: { attempts: { increment: 1 } } });
     return null;
   }
+  await prisma.referrerWithdrawalOtp.update({ where: { id: record.id }, data: { usedAt: new Date() } });
+  return record;
+}
+
+export async function createPayoutSetupEditSession(referrerId: string) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + PAYOUT_SETUP_EDIT_SESSION_MINUTES * 60 * 1000);
+
+  await prisma.referrerWithdrawalOtp.create({
+    data: {
+      referrerId,
+      otpHash: await hashPassword(token),
+      payloadHash: payloadHashFor(PAYOUT_SETUP_EDIT_SESSION_PAYLOAD),
+      expiresAt,
+    },
+  });
+
+  return {
+    editToken: token,
+    expiresInSeconds: PAYOUT_SETUP_EDIT_SESSION_MINUTES * 60,
+  };
+}
+
+export async function consumePayoutSetupEditSession(referrerId: string, editToken: string) {
+  const record = await prisma.referrerWithdrawalOtp.findFirst({
+    where: {
+      referrerId,
+      payloadHash: payloadHashFor(PAYOUT_SETUP_EDIT_SESSION_PAYLOAD),
+      usedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!record) return null;
+  if (!(await comparePassword(editToken, record.otpHash))) return null;
+
   await prisma.referrerWithdrawalOtp.update({ where: { id: record.id }, data: { usedAt: new Date() } });
   return record;
 }

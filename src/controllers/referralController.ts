@@ -4,6 +4,8 @@ import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import {
   consumeWithdrawalOtp,
+  consumePayoutSetupEditSession,
+  createPayoutSetupEditSession,
   createWithdrawalOtp,
   ensureReferrerRole,
   generateUniqueReferralCode,
@@ -54,6 +56,10 @@ const payoutSetupSchema = z.object({
 });
 
 const payoutSetupConfirmSchema = payoutSetupSchema.extend({
+  editToken: z.string().min(32, 'Payout edit session is required'),
+});
+
+const payoutSetupOtpVerifySchema = z.object({
   otp: z.string().regex(/^\d{6}$/, 'Enter the 6-digit OTP code'),
 });
 
@@ -134,34 +140,24 @@ function ledgerSummary(ledger: Array<{ direction: string; amount: any }>) {
   }, { totalCredits: 0, totalWithdrawn: 0 });
 }
 
-function payoutSetupOtpPayload(data: z.infer<typeof payoutSetupSchema>) {
-  return {
-    purpose: 'payout_setup',
-    payoutPhone: data.payoutPhone,
-    payoutProvider: data.payoutProvider,
-  };
+function payoutSetupOtpPayload() {
+  return { purpose: 'payout_setup_edit' };
 }
 
 function payoutSetupOtpTemplate(data: {
   firstName: string;
   otpCode: string;
-  provider: string;
-  phone: string;
   expiresInMinutes: number;
 }) {
   return `
     <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111827">
       <h2 style="margin:0 0 12px">Confirm your ICIMS payout settings</h2>
       <p>Hello ${data.firstName},</p>
-      <p>Use this OTP code to confirm your marketer payout settings.</p>
+      <p>Use this OTP code to unlock editing for your marketer payout settings.</p>
       <div style="font-size:32px;letter-spacing:8px;font-weight:700;background:#f3f4f6;border-radius:12px;padding:18px;text-align:center;margin:20px 0">
         ${data.otpCode}
       </div>
       <p>This code expires in ${data.expiresInMinutes} minutes.</p>
-      <div style="background:#f9fafb;border-radius:12px;padding:16px;margin:20px 0">
-        <p><strong>Payout provider:</strong> ${data.provider}</p>
-        <p><strong>Payout phone:</strong> ${data.phone}</p>
-      </div>
       <p style="font-size:12px;color:#6b7280">If you did not request this change, do not share this code.</p>
     </div>
   `;
@@ -418,9 +414,9 @@ export async function updateMyPayoutSetup(req: Request, res: Response): Promise<
     return;
   }
 
-  const { otp, ...payoutData } = parsed.data;
-  const otpRecord = await consumeWithdrawalOtp(referrer.id, otp, payoutSetupOtpPayload(payoutData));
-  if (!otpRecord) { res.status(400).json({ success: false, message: 'Invalid or expired OTP' }); return; }
+  const { editToken } = parsed.data;
+  const editSession = await consumePayoutSetupEditSession(referrer.id, editToken);
+  if (!editSession) { res.status(400).json({ success: false, message: 'Your payout edit session has expired. Request a new OTP.' }); return; }
 
   const updated = await prisma.referrer.update({
     where: { id: referrer.id },
@@ -447,12 +443,8 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
   if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
   if (!referrer.user?.email) { res.status(400).json({ success: false, message: 'Your account does not have an email address for OTP verification' }); return; }
 
-  const parsed = payoutSetupSchema.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
-
-  let providers: Awaited<ReturnType<typeof fetchPayoutProvidersForMarket>> = [];
   try {
-    providers = await fetchValidPayoutProviders(referrer);
+    await fetchValidPayoutProviders(referrer);
   } catch (error: any) {
     res.status(error.message?.includes('not available') ? 400 : 502).json({
       success: false,
@@ -462,13 +454,7 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     return;
   }
 
-  const selectedProvider = providers.find(provider => provider.code === parsed.data.payoutProvider);
-  if (!selectedProvider) {
-    res.status(400).json({ success: false, message: 'Selected payout provider is not supported for your market.' });
-    return;
-  }
-
-  const otpPayload = payoutSetupOtpPayload(parsed.data);
+  const otpPayload = payoutSetupOtpPayload();
   const resendWaitSeconds = await getWithdrawalOtpResendWaitSeconds(referrer.id, otpPayload);
   if (resendWaitSeconds > 0) {
     res.status(429).json({
@@ -486,8 +472,6 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     payoutSetupOtpTemplate({
       firstName: referrer.user.firstName,
       otpCode: otp!,
-      provider: selectedProvider.name || selectedProvider.code,
-      phone: parsed.data.payoutPhone,
       expiresInMinutes: 10,
     }),
     'referrer_payout_setup_otp',
@@ -498,6 +482,25 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     message: `OTP sent to ${referrer.user.email}`,
     expiresInSeconds: 10 * 60,
     retryAfterSeconds: 40,
+  });
+}
+
+export async function verifyPayoutSetupOtp(req: Request, res: Response): Promise<void> {
+  const referrer = await getCurrentReferrer(req.user?.userId);
+  if (!referrer) { res.status(404).json({ success: false, message: 'Referrer profile not found' }); return; }
+  if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
+
+  const parsed = payoutSetupOtpVerifySchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+
+  const otpRecord = await consumeWithdrawalOtp(referrer.id, parsed.data.otp, payoutSetupOtpPayload());
+  if (!otpRecord) { res.status(400).json({ success: false, message: 'Invalid or expired OTP' }); return; }
+
+  const session = await createPayoutSetupEditSession(referrer.id);
+  res.json({
+    success: true,
+    message: 'Payout edit session unlocked',
+    data: session,
   });
 }
 
