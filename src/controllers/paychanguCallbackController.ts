@@ -12,7 +12,10 @@ import { getEffectiveDonationDonor } from '../lib/donationMemberMatching';
 
 function buildGatewayTrace(metadata: any, callbackQuery: any, verifyResponse: any) {
   return {
-    gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
+    gatewayPayload: JSON.stringify({
+      metadata,
+      providerPayload: metadata.gatewayPayload || null,
+    }),
     gatewayResponse: JSON.stringify({
       callbackQuery,
       verifyResponse,

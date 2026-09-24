@@ -60,7 +60,10 @@ function paychanguPaymentLogMeta(traceId: string, pendingTx: any, metadata: any 
 
 function buildGatewayTrace(metadata: any, webhookPayload: any, verifyPayload?: any) {
   return {
-    gatewayPayload: metadata.gatewayPayload ? JSON.stringify(metadata.gatewayPayload) : null,
+    gatewayPayload: JSON.stringify({
+      metadata,
+      providerPayload: metadata.gatewayPayload || null,
+    }),
     gatewayResponse: JSON.stringify({
       webhookPayload,
       verifyResponse: verifyPayload ?? null,

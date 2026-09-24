@@ -201,7 +201,10 @@ async function completePackageSubscription(txData: any, traceId: string, metadat
       gatewayCharge: txData.fees ? txData.fees / 100 : 0,
       systemGatewayFeeRate,
       systemFeeRate,
-      gatewayPayload: pendingMetadata.gatewayPayload ? JSON.stringify(pendingMetadata.gatewayPayload) : null,
+      gatewayPayload: JSON.stringify({
+        metadata: pendingMetadata,
+        providerPayload: pendingMetadata.gatewayPayload || null,
+      }),
       gatewayResponse: JSON.stringify(txData),
       expiresAt,
     },
