@@ -5,6 +5,7 @@ import { recordWithdrawalEvent } from '../middleware/metrics';
 import { fetchPaychanguMobilePayoutProviders } from './payoutProviderOptionsService';
 import { getReferrerBalance } from './referralService';
 import { logger, maskPhone } from '../utils/logger';
+import { convertUSDToLocal } from '../utils/currencyConversion';
 
 const PAYCHANGU_SECRET_KEY = process.env.PAYCHANGU_SECRET_KEY || '';
 
@@ -21,9 +22,31 @@ function optionalEnv(key: string, fallback: number) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function minimumPayoutAmount() {
-  const value = Number(process.env.MARKETER_PAYOUT_MIN_AMOUNT || 1);
-  return Number.isFinite(value) && value > 0 ? value : 1;
+function positiveEnvNumber(key: string): number | null {
+  const value = Number(process.env[key]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function minimumPayoutAmountUsd() {
+  return positiveEnvNumber('MARKETER_PAYOUT_MIN_AMOUNT_USD')
+    || positiveEnvNumber('MARKETER_PAYOUT_MIN_AMOUNT')
+    || 1;
+}
+
+function minimumPayoutAmountForCurrency(currency: string) {
+  const normalizedCurrency = String(currency || 'USD').trim().toUpperCase();
+  const currencyMinimum = positiveEnvNumber(`MARKETER_PAYOUT_MIN_AMOUNT_${normalizedCurrency}`);
+  if (currencyMinimum) return currencyMinimum;
+
+  const usdMinimum = positiveEnvNumber('MARKETER_PAYOUT_MIN_AMOUNT_USD')
+    || positiveEnvNumber('MARKETER_PAYOUT_MIN_AMOUNT');
+  if (!usdMinimum) return 1;
+
+  try {
+    return convertUSDToLocal(usdMinimum, normalizedCurrency);
+  } catch {
+    return 1;
+  }
 }
 
 function ceilMoney(value: number) {
@@ -158,17 +181,19 @@ function normalizePayoutAmount(value: number) {
 
 async function buildReferrerPayoutPlan(referrerId: string, amount: number) {
   const payoutAmount = normalizePayoutAmount(amount);
-  const minimumAmount = minimumPayoutAmount();
-
-  if (payoutAmount < minimumAmount) {
-    throw new ReferrerPayoutError(`Minimum marketer payout amount is ${minimumAmount}.`);
-  }
 
   const referrer = await prisma.referrer.findUnique({
     where: { id: referrerId },
     include: { pricingMarket: true },
   });
   if (!referrer) throw new ReferrerPayoutError('Marketer not found.', 404);
+  const currency = String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase();
+  const minimumAmount = minimumPayoutAmountForCurrency(currency);
+
+  if (payoutAmount < minimumAmount) {
+    throw new ReferrerPayoutError(`Minimum marketer payout amount is ${currency} ${minimumAmount}.`);
+  }
+
   if (referrer.status !== 'approved') throw new ReferrerPayoutError('Only approved marketers can receive payouts.');
   if (referrer.payoutSetupStatus !== 'complete' || !referrer.payoutPhone || !referrer.payoutProvider) {
     throw new ReferrerPayoutError('Marketer payout settings must be complete before payout.');
@@ -198,7 +223,8 @@ async function buildReferrerPayoutPlan(referrerId: string, amount: number) {
     amount: payoutAmount,
     balance,
     minimumAmount,
-    currency: String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase(),
+    minimumAmountUsd: minimumPayoutAmountUsd(),
+    currency,
     operator,
     mobileNumber: referrer.payoutPhone,
     fees,
@@ -210,6 +236,7 @@ function referrerPayoutPlanDto(plan: Awaited<ReturnType<typeof buildReferrerPayo
     referrerId: plan.referrer.id,
     balance: plan.balance,
     minimumAmount: plan.minimumAmount,
+    minimumAmountUsd: plan.minimumAmountUsd,
     currency: plan.currency,
     amount: plan.amount,
     feeAmount: plan.fees.feeAmount,
@@ -268,7 +295,8 @@ export async function createAutomaticReferrerWithdrawal(referrer: any) {
   if (active) return null;
 
   const balance = await getReferrerBalance(referrer.id);
-  const minAmount = minimumPayoutAmount();
+  const currency = String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase();
+  const minAmount = minimumPayoutAmountForCurrency(currency);
   if (balance < minAmount) return null;
 
   const operator = normalizeOperator(referrer.payoutProvider);
@@ -281,7 +309,7 @@ export async function createAutomaticReferrerWithdrawal(referrer: any) {
     data: {
       referrerId: referrer.id,
       amount: money(balance),
-      currency: String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase(),
+      currency,
       status: 'pending',
       method: 'mobile_money',
       mobileOperator: operator,
