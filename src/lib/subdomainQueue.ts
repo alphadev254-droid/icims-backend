@@ -59,6 +59,26 @@ export const subdomainWorker = new Worker<SubdomainJobData>(
       throw new Error(`Invalid subdomain slug from: ${slugSource}`);
     }
 
+    const domain = process.env.CLOUDFLARE_DOMAIN || 'churchcentral.church';
+    const desiredSubdomain = `${slug}.${domain}`;
+    const assignedUser = await prisma.user.findFirst({
+      where: { subdomain: desiredSubdomain },
+      select: { id: true },
+    });
+
+    if (assignedUser) {
+      if (assignedUser.id === userId) {
+        console.log(`[SubdomainWorker] Subdomain already assigned to user ${userId}: ${desiredSubdomain}`);
+        return {
+          success: true,
+          subdomain: desiredSubdomain,
+          userId,
+        };
+      }
+
+      throw new Error(`Subdomain already assigned to another user: ${slug}`);
+    }
+
     // Create subdomain via Cloudflare
     const fullSubdomain = await createSubdomain(slug);
 

@@ -6,6 +6,7 @@
  */
 
 const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
+const CLOUDFLARE_IDENTICAL_RECORD_EXISTS_CODE = 81058;
 
 /** Convert any string to a DNS-safe slug: lowercase, spaces→hyphens, strip non-alphanumeric */
 export function toSlug(input: string): string {
@@ -59,6 +60,15 @@ export async function createSubdomain(slug: string): Promise<string | null> {
     const data = await res.json() as any;
 
     if (!data.success) {
+      const identicalRecordExists = Array.isArray(data.errors)
+        && data.errors.some((error: any) => error?.code === CLOUDFLARE_IDENTICAL_RECORD_EXISTS_CODE);
+      const fullSubdomain = `${safeSlug}.${domain}`;
+
+      if (identicalRecordExists) {
+        console.log(`[cloudflareDns] Subdomain already exists: ${fullSubdomain}`);
+        return fullSubdomain;
+      }
+
       console.error('[cloudflareDns] API error:', JSON.stringify(data.errors));
       return null;
     }
