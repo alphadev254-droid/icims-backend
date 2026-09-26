@@ -5,3 +5,8 @@ shulepro-8b14c-firebase-adminsdk-fbsvc-edea9a6c2a.json
 *.db 
 *.db-journal 
 uploads/
+!uploads/
+uploads/*
+!uploads/marketer-agreements/
+uploads/marketer-agreements/*
+!uploads/marketer-agreements/Midas_Marketer_Referral_Agreement.pdf

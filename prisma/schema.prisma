@@ -1274,6 +1274,14 @@ model Referrer {
   approvedAt        DateTime?
   approvedById      String?
   rejectionReason   String?   @db.Text
+  agreementTemplateUrl     String?   @default("/uploads/marketer-agreements/Midas_Marketer_Referral_Agreement.pdf")
+  signedAgreementUrl       String?
+  signedAgreementFileName  String?
+  agreementStatus          String    @default("not_submitted") // not_submitted | pending_review | approved | rejected
+  agreementSubmittedAt     DateTime?
+  agreementReviewedAt      DateTime?
+  agreementReviewedById    String?
+  agreementRejectionReason String?   @db.Text
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
@@ -1286,6 +1294,7 @@ model Referrer {
   ReferrerWithdrawalOtp ReferrerWithdrawalOtp[]
 
   @@index([status])
+  @@index([agreementStatus])
   @@index([type])
   @@index([pricingMarketId])
   @@map("referrers")

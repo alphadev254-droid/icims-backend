@@ -210,7 +210,7 @@ export async function handleCompletedPackagePayment(paymentId: string): Promise<
       where: { ministryAdminId: payment.ministryAdminId },
       include: { referrer: true },
     });
-    if (!referral || referral.referrer.status !== 'approved') return;
+    if (!referral || referral.referrer.status !== 'approved' || referral.referrer.agreementStatus !== 'approved') return;
 
     const commissionableAmount = eligibleCommissionableAmount(payment, referral.registeredAt);
     if (!Number.isFinite(commissionableAmount) || commissionableAmount <= 0) {

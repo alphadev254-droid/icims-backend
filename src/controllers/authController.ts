@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import prisma from '../lib/prisma';
 import { hashPassword, comparePassword } from '../lib/password';
 import { signToken } from '../lib/jwt';
@@ -15,6 +17,14 @@ import { linkReferralToMinistry } from '../services/referralService';
 import { sendEmailVerificationOtp, verifyEmailOtp } from '../services/emailVerificationService';
 
 const isProd = process.env.NODE_ENV === 'production';
+
+function removeUploadIfSafe(fileUrl?: string | null) {
+  if (!fileUrl?.startsWith('/uploads/')) return;
+  const uploadRoot = path.resolve(process.cwd(), 'uploads');
+  const filePath = path.resolve(process.cwd(), fileUrl.replace(/^\//, ''));
+  if (!filePath.startsWith(`${uploadRoot}${path.sep}`)) return;
+  fs.promises.unlink(filePath).catch(() => undefined);
+}
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -922,6 +932,22 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
   if (phone !== undefined) updateData.phone = phone;
   if (file) updateData.avatar = `/uploads/avatars/${file.filename}`;
 
+  let referrerProfile: { id: string; agreementStatus: string } | null = null;
+  if (Object.keys(updateData).length > 0) {
+    referrerProfile = await prisma.referrer.findUnique({
+      where: { userId: user.id },
+      select: { id: true, agreementStatus: true },
+    });
+    if (referrerProfile?.agreementStatus === 'approved') {
+      if (file) removeUploadIfSafe(`/uploads/avatars/${file.filename}`);
+      res.status(403).json({
+        success: false,
+        message: 'Your marketer agreement is approved, so profile details cannot be changed. Contact support if a correction is needed.',
+      });
+      return;
+    }
+  }
+
   if (newPassword) {
     if (!currentPassword) { res.status(400).json({ success: false, message: 'Current password required to set new password' }); return; }
     const valid = await comparePassword(currentPassword, user.password);
@@ -933,6 +959,16 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
     where: { id: user.id },
     data: updateData,
   });
+
+  if (referrerProfile && (firstName || lastName || phone !== undefined)) {
+    await prisma.referrer.update({
+      where: { id: referrerProfile.id },
+      data: {
+        ...(firstName || lastName ? { displayName: `${firstName || user.firstName} ${lastName || user.lastName}`.trim() } : {}),
+        ...(phone !== undefined ? { phone } : {}),
+      },
+    });
+  }
 
   const updated = await getUserWithPackage(user.id);
   if (!updated) { res.status(404).json({ success: false, message: 'User not found' }); return; }

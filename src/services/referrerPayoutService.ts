@@ -195,6 +195,7 @@ async function buildReferrerPayoutPlan(referrerId: string, amount: number) {
   }
 
   if (referrer.status !== 'approved') throw new ReferrerPayoutError('Only approved marketers can receive payouts.');
+  if (referrer.agreementStatus !== 'approved') throw new ReferrerPayoutError('Marketer agreement must be approved before payout.');
   if (referrer.payoutSetupStatus !== 'complete' || !referrer.payoutPhone || !referrer.payoutProvider) {
     throw new ReferrerPayoutError('Marketer payout settings must be complete before payout.');
   }

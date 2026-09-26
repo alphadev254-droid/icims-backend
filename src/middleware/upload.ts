@@ -49,3 +49,15 @@ export const uploadFiles = multer({
   limits: { fileSize: parseInt(process.env.MAX_VIDEO_SIZE_MB || '500') * 1024 * 1024 },
   fileFilter: fileFilter,
 });
+
+const agreementFileFilter = (_req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  const allowed = ['application/pdf', 'image/jpeg', 'image/png'];
+  if (allowed.includes(file.mimetype)) cb(null, true);
+  else cb(new Error('Only PDF, PNG, or JPG files are allowed'));
+};
+
+export const uploadAgreementFile = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: agreementFileFilter,
+});

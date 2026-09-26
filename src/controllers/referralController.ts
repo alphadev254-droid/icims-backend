@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
 import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import {
@@ -40,6 +42,11 @@ const registerReferrerSchema = z.object({
 const statusSchema = z.object({
   status: z.enum(['pending', 'approved', 'suspended', 'rejected']),
   reason: z.string().optional(),
+});
+
+const agreementReviewSchema = z.object({
+  status: z.enum(['approved', 'rejected']),
+  reason: z.string().trim().max(1000).optional(),
 });
 
 const withdrawalOtpSchema = z.object({
@@ -98,6 +105,16 @@ function referrerCurrency(referrer: { pricingMarket?: { currencyCode?: string | 
   return String(referrer.pricingMarket?.currencyCode || 'MWK').toUpperCase();
 }
 
+function isReferrerActive(referrer: { status?: string | null; agreementStatus?: string | null }) {
+  return referrer.status === 'approved' && referrer.agreementStatus === 'approved';
+}
+
+function inactiveReferrerMessage(referrer: { status?: string | null; agreementStatus?: string | null }) {
+  if (referrer.status !== 'approved') return 'Referrer account is not approved';
+  if (referrer.agreementStatus !== 'approved') return 'Signed marketer agreement is not approved';
+  return 'Referrer account is not active';
+}
+
 function referrerProfileDto(referrer: any) {
   return {
     id: referrer.id,
@@ -116,7 +133,37 @@ function referrerProfileDto(referrer: any) {
     payoutPhone: referrer.payoutPhone,
     payoutProvider: referrer.payoutProvider,
     payoutSetupStatus: referrer.payoutSetupStatus,
+    agreementTemplateUrl: referrer.agreementTemplateUrl || '/uploads/marketer-agreements/Midas_Marketer_Referral_Agreement.pdf',
+    signedAgreementUrl: referrer.signedAgreementUrl,
+    signedAgreementFileName: referrer.signedAgreementFileName,
+    agreementStatus: referrer.agreementStatus || 'not_submitted',
+    agreementSubmittedAt: referrer.agreementSubmittedAt,
+    agreementReviewedAt: referrer.agreementReviewedAt,
+    agreementRejectionReason: referrer.agreementRejectionReason,
   };
+}
+
+function referrerProfilePageDto(referrer: any) {
+  return {
+    referrer: referrerProfileDto(referrer),
+    user: {
+      id: referrer.user.id,
+      firstName: referrer.user.firstName,
+      lastName: referrer.user.lastName,
+      email: referrer.user.email,
+      phone: referrer.user.phone,
+      avatar: referrer.user.avatar,
+      emailVerified: referrer.user.emailVerified,
+    },
+  };
+}
+
+function removeUploadIfSafe(fileUrl?: string | null) {
+  if (!fileUrl?.startsWith('/uploads/')) return;
+  const uploadRoot = path.resolve(process.cwd(), 'uploads');
+  const filePath = path.resolve(process.cwd(), fileUrl.replace(/^\//, ''));
+  if (!filePath.startsWith(`${uploadRoot}${path.sep}`)) return;
+  fs.promises.unlink(filePath).catch(() => undefined);
 }
 
 function referralDto(referral: any) {
@@ -320,6 +367,83 @@ export async function getMyReferrerDashboard(req: Request, res: Response): Promi
   });
 }
 
+export async function getMyReferrerProfile(req: Request, res: Response): Promise<void> {
+  const referrer = await prisma.referrer.findUnique({
+    where: { userId: req.user!.userId },
+    include: {
+      pricingMarket: true,
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, emailVerified: true } },
+    },
+  });
+  if (!referrer) {
+    res.status(404).json({ success: false, message: 'Referrer profile not found' });
+    return;
+  }
+
+  res.json({ success: true, data: referrerProfilePageDto(referrer) });
+}
+
+export async function uploadMyReferrerAgreement(req: Request, res: Response): Promise<void> {
+  const file = req.file;
+  if (!file) {
+    res.status(400).json({ success: false, message: 'Signed agreement file is required' });
+    return;
+  }
+
+  const referrer = await prisma.referrer.findUnique({
+    where: { userId: req.user!.userId },
+    include: {
+      pricingMarket: true,
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, emailVerified: true } },
+    },
+  });
+  if (!referrer) {
+    removeUploadIfSafe(`/uploads/marketer-agreements/signed/${file.filename}`);
+    res.status(404).json({ success: false, message: 'Referrer profile not found' });
+    return;
+  }
+
+  const agreementStatus = referrer.agreementStatus || 'not_submitted';
+  if (!['not_submitted', 'rejected'].includes(agreementStatus)) {
+    removeUploadIfSafe(`/uploads/marketer-agreements/signed/${file.filename}`);
+    res.status(409).json({
+      success: false,
+      message: agreementStatus === 'approved'
+        ? 'Your agreement is already approved and cannot be changed.'
+        : 'Your signed agreement is already submitted and awaiting review.',
+    });
+    return;
+  }
+
+  const nextUrl = `/uploads/marketer-agreements/signed/${file.filename}`;
+  const updated = await prisma.referrer.update({
+    where: { id: referrer.id },
+    data: {
+      signedAgreementUrl: nextUrl,
+      signedAgreementFileName: file.originalname,
+      agreementStatus: 'pending_review',
+      agreementSubmittedAt: new Date(),
+      agreementReviewedAt: null,
+      agreementReviewedById: null,
+      agreementRejectionReason: null,
+    },
+    include: {
+      pricingMarket: true,
+      user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, emailVerified: true } },
+    },
+  });
+
+  if (referrer.signedAgreementUrl && referrer.signedAgreementUrl !== nextUrl) {
+    removeUploadIfSafe(referrer.signedAgreementUrl);
+  }
+
+  res.status(201).json({
+    success: true,
+    message: 'Signed agreement submitted. Please wait for admin verification.',
+    data: referrerProfilePageDto(updated),
+  });
+}
+
 export async function getMyReferrerReferrals(req: Request, res: Response): Promise<void> {
   const referrer = await getCurrentReferrer(req.user?.userId);
   if (!referrer) {
@@ -475,7 +599,7 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
     },
   });
   if (!referrer) { res.status(404).json({ success: false, message: 'Referrer profile not found' }); return; }
-  if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
+  if (!isReferrerActive(referrer)) { res.status(403).json({ success: false, message: inactiveReferrerMessage(referrer) }); return; }
   if (!referrer.user?.email) { res.status(400).json({ success: false, message: 'Your account does not have an email address for OTP verification' }); return; }
 
   try {
@@ -523,7 +647,7 @@ export async function requestPayoutSetupOtp(req: Request, res: Response): Promis
 export async function verifyPayoutSetupOtp(req: Request, res: Response): Promise<void> {
   const referrer = await getCurrentReferrer(req.user?.userId);
   if (!referrer) { res.status(404).json({ success: false, message: 'Referrer profile not found' }); return; }
-  if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
+  if (!isReferrerActive(referrer)) { res.status(403).json({ success: false, message: inactiveReferrerMessage(referrer) }); return; }
 
   const parsed = payoutSetupOtpVerifySchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
@@ -542,7 +666,7 @@ export async function verifyPayoutSetupOtp(req: Request, res: Response): Promise
 export async function requestWithdrawalOtp(req: Request, res: Response): Promise<void> {
   const referrer = await getCurrentReferrer(req.user?.userId);
   if (!referrer) { res.status(404).json({ success: false, message: 'Referrer profile not found' }); return; }
-  if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
+  if (!isReferrerActive(referrer)) { res.status(403).json({ success: false, message: inactiveReferrerMessage(referrer) }); return; }
   if (referrer.payoutSetupStatus !== 'complete' || !referrer.payoutPhone || !referrer.payoutProvider) {
     res.status(400).json({ success: false, message: 'Complete payout setup before requesting a withdrawal.' });
     return;
@@ -564,7 +688,7 @@ export async function requestWithdrawalOtp(req: Request, res: Response): Promise
 export async function confirmWithdrawal(req: Request, res: Response): Promise<void> {
   const referrer = await getCurrentReferrer(req.user?.userId);
   if (!referrer) { res.status(404).json({ success: false, message: 'Referrer profile not found' }); return; }
-  if (referrer.status !== 'approved') { res.status(403).json({ success: false, message: 'Referrer account is not approved' }); return; }
+  if (!isReferrerActive(referrer)) { res.status(403).json({ success: false, message: inactiveReferrerMessage(referrer) }); return; }
 
   const parsed = withdrawalConfirmSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
@@ -655,6 +779,18 @@ export async function updateAdminReferrerStatus(req: Request, res: Response): Pr
   const parsed = statusSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
+  if (parsed.data.status === 'approved') {
+    const referrer = await prisma.referrer.findUnique({
+      where: { id: String(req.params.id) },
+      select: { agreementStatus: true },
+    });
+    if (!referrer) { res.status(404).json({ success: false, message: 'Marketer not found' }); return; }
+    if (referrer.agreementStatus !== 'approved') {
+      res.status(400).json({ success: false, message: 'Approve the signed marketer agreement before activating this marketer.' });
+      return;
+    }
+  }
+
   const updated = await prisma.referrer.update({
     where: { id: String(req.params.id) },
     data: {
@@ -664,6 +800,37 @@ export async function updateAdminReferrerStatus(req: Request, res: Response): Pr
       rejectionReason: parsed.data.status === 'rejected' || parsed.data.status === 'suspended' ? parsed.data.reason : null,
     },
   });
+  res.json({ success: true, data: updated });
+}
+
+export async function reviewAdminReferrerAgreement(req: Request, res: Response): Promise<void> {
+  const parsed = agreementReviewSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
+  if (parsed.data.status === 'rejected' && !parsed.data.reason) {
+    res.status(400).json({ success: false, message: 'Rejection reason is required' });
+    return;
+  }
+
+  const referrer = await prisma.referrer.findUnique({
+    where: { id: String(req.params.id) },
+    select: { id: true, signedAgreementUrl: true, agreementStatus: true },
+  });
+  if (!referrer) { res.status(404).json({ success: false, message: 'Marketer not found' }); return; }
+  if (!referrer.signedAgreementUrl) {
+    res.status(400).json({ success: false, message: 'No signed agreement has been submitted' });
+    return;
+  }
+
+  const updated = await prisma.referrer.update({
+    where: { id: referrer.id },
+    data: {
+      agreementStatus: parsed.data.status,
+      agreementReviewedAt: new Date(),
+      agreementReviewedById: req.user?.userId || null,
+      agreementRejectionReason: parsed.data.status === 'rejected' ? parsed.data.reason : null,
+    },
+  });
+
   res.json({ success: true, data: updated });
 }
 
