@@ -135,6 +135,7 @@ model User {
   serviceInterest          String? // Choir, Ushering, Greeters, Security/Protocol, Missions/Outreaches, Other
   membershipType           String? // Visitor, Member
   memberType               String    @default("adult") // adult | child
+  membershipApprovalStatus String    @default("approved") // pending | approved | rejected
   loginEnabled             Boolean   @default(true)
   emailVerified            Boolean   @default(true)
   emailVerifiedAt          DateTime?
@@ -185,6 +186,7 @@ model User {
   referredMinistries            ReferralLink[]          @relation("ReferralMinistryAdmin")
 
   @@index([churchId, roleId, status, createdAt])
+  @@index([membershipApprovalStatus])
   @@index([memberType])
   @@index([loginEnabled])
   @@index([attendanceQrToken])
@@ -229,6 +231,7 @@ model Church {
   yearFounded          Int?
   branchCode           String?  @unique
   status               String   @default("active")
+  memberApprovalMode   String   @default("auto") // auto | manual
   ministryAdminId      String?
   latitude             Float?
   longitude            Float?

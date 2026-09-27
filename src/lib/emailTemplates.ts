@@ -129,6 +129,84 @@ export const registrationTemplate = (data: { firstName: string; lastName: string
 </html>
 `;
 
+export const memberPendingApprovalTemplate = (data: { firstName: string; lastName: string; churchName: string }) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>Registration Submitted</h1>
+      <p>Awaiting church activation</p>
+    </div>
+    <div class="content">
+      <h2>Hello ${escapeHtml(data.firstName)} ${escapeHtml(data.lastName)},</h2>
+      <p>Your registration for ${escapeHtml(data.churchName)} has been received.</p>
+      <p>Your church team will review and activate your account. Until then, some member features may be limited.</p>
+      <p>If you have questions, please contact your church office.</p>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${escapeHtml(data.churchName)}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const churchMemberApprovalRequestTemplate = (data: { churchName: string; memberName: string; memberEmail: string; memberPhone?: string | null }) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>New Member Registration</h1>
+      <p>Approval required</p>
+    </div>
+    <div class="content">
+      <h2>${escapeHtml(data.memberName)} is awaiting approval</h2>
+      <div class="info-box">
+        <p><strong>Name:</strong> ${escapeHtml(data.memberName)}</p>
+        <p><strong>Email:</strong> ${escapeHtml(data.memberEmail)}</p>
+        ${data.memberPhone ? `<p><strong>Phone:</strong> ${escapeHtml(data.memberPhone)}</p>` : ''}
+        <p><strong>Church:</strong> ${escapeHtml(data.churchName)}</p>
+      </div>
+      <a href="${FRONTEND_URL}/dashboard/users/registration-requests" class="button">Review Registration</a>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${escapeHtml(data.churchName)}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const memberApprovalDecisionTemplate = (data: { firstName: string; lastName: string; churchName: string; approved: boolean }) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    ${getChurchHeader(data.churchName)}
+    <div class="header">
+      <h1>${data.approved ? 'Registration Approved' : 'Registration Not Approved'}</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${escapeHtml(data.firstName)} ${escapeHtml(data.lastName)},</h2>
+      ${data.approved
+        ? `<p>Your registration for ${escapeHtml(data.churchName)} has been approved. You can now access your church member account.</p><a href="${FRONTEND_URL}/login" class="button">Login</a>`
+        : `<p>Your registration request for ${escapeHtml(data.churchName)} was not approved. Please contact the church office if you believe this was a mistake.</p>`}
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${escapeHtml(data.churchName)}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
 export const passwordResetTemplate = (data: { firstName: string; resetToken: string; expiresInMinutes?: number; churchName?: string }) => `
 <!DOCTYPE html>
 <html>

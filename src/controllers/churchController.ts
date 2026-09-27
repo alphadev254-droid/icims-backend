@@ -116,6 +116,7 @@ const churchSchema = z.object({
   website: z.string().optional(),
   pastorName: z.string().optional(),
   yearFounded: z.coerce.number().int().positive().optional(),
+  memberApprovalMode: z.enum(['auto', 'manual']).default('auto'),
   latitude: z.coerce.number().optional(),
   longitude: z.coerce.number().optional(),
   timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),
@@ -175,7 +176,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, pastorName, yearFounded, latitude, longitude } = parsed.data;
+  const { name, country, region, district, traditionalAuthority, village, address, phone, email, website, pastorName, yearFounded, memberApprovalMode, latitude, longitude } = parsed.data;
   const timezone = await resolveTimeZone({ req, explicit: parsed.data.timezone, ministryAdminId: adminUserId });
 
   // Build location string
@@ -196,6 +197,7 @@ export async function createChurch(req: Request, res: Response): Promise<void> {
           name, location, country,
           region, district, traditionalAuthority, village,
           address, phone, email: email || undefined, website, pastorName, yearFounded,
+          memberApprovalMode,
           branchCode,
           logoUrl,
           ministryAdminId: adminUserId,
@@ -258,6 +260,7 @@ const updateChurchSchema = z.object({
   website: z.string().optional(),
   pastorName: z.string().optional(),
   yearFounded: z.coerce.number().int().positive().optional(),
+  memberApprovalMode: z.enum(['auto', 'manual']).optional(),
   latitude: z.coerce.number().optional().nullable(),
   longitude: z.coerce.number().optional().nullable(),
   timezone: z.string().refine(isValidTimeZone, 'Invalid IANA timezone').optional(),

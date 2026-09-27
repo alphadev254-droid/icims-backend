@@ -531,7 +531,7 @@ export async function register(req: Request, res: Response): Promise<void> {
   if (data.inviteToken) {
     const church = await prisma.church.findFirst({
       where: { inviteToken: data.inviteToken, status: 'active' },
-      select: { id: true, ministryAdminId: true }
+      select: { id: true, ministryAdminId: true, memberApprovalMode: true }
     });
     
     if (!church) {
@@ -580,6 +580,7 @@ export async function register(req: Request, res: Response): Promise<void> {
         roleId,
         churchId,
         ministryAdminId,
+        membershipApprovalStatus: data.inviteToken && churchId ? ((await tx.church.findUnique({ where: { id: churchId }, select: { memberApprovalMode: true } }))?.memberApprovalMode === 'manual' ? 'pending' : 'approved') : 'approved',
         accountCountry: data.inviteToken ? undefined : data.accountCountry,
         phone: data.phone,
         gender: data.gender,
@@ -663,22 +664,49 @@ export async function register(req: Request, res: Response): Promise<void> {
   // ─────────────────────────────────────────────────────────────────────────
 
   const { queueEmail } = await import('../lib/emailQueue');
-  const { memberWelcomeTemplate } = await import('../lib/emailTemplates');
+  const { memberWelcomeTemplate, memberPendingApprovalTemplate, churchMemberApprovalRequestTemplate } = await import('../lib/emailTemplates');
   
   // Send different email based on role
   if (data.inviteToken && user.church) {
-    // Member registration - send welcome to church email immediately
-    queueEmail(
-      user.email,
-      `Welcome to ${user.church.name}`,
-      memberWelcomeTemplate({
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        churchName: user.church.name,
-      }),
-      'registration'
-    ).catch(err => console.error('Failed to queue member welcome email:', err));
+    if (user.membershipApprovalStatus === 'pending') {
+      queueEmail(
+        user.email,
+        `Registration received - ${user.church.name}`,
+        memberPendingApprovalTemplate({
+          firstName: user.firstName,
+          lastName: user.lastName,
+          churchName: user.church.name,
+        }),
+        'registration'
+      ).catch(err => console.error('Failed to queue pending approval email:', err));
+
+      const church = await prisma.church.findUnique({ where: { id: user.church.id }, select: { email: true, name: true } });
+      if (church?.email) {
+        queueEmail(
+          church.email,
+          `New member registration awaiting approval - ${church.name}`,
+          churchMemberApprovalRequestTemplate({
+            churchName: church.name,
+            memberName: displayName(user.firstName, user.lastName) || `${user.firstName} ${user.lastName}`.trim(),
+            memberEmail: user.email,
+            memberPhone: user.phone ?? null,
+          }),
+          'registration_approval'
+        ).catch(err => console.error('Failed to queue church approval request email:', err));
+      }
+    } else {
+      queueEmail(
+        user.email,
+        `Welcome to ${user.church.name}`,
+        memberWelcomeTemplate({
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          churchName: user.church.name,
+        }),
+        'registration'
+      ).catch(err => console.error('Failed to queue member welcome email:', err));
+    }
   }
   // Note: Ministry admin welcome email is now sent AFTER subdomain is created (in queue worker)
 
@@ -725,7 +753,7 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   }
 
   const [church, memberRole] = await Promise.all([
-    prisma.church.findFirst({ where: { inviteToken: data.inviteToken, status: 'active' }, select: { id: true, name: true } }),
+    prisma.church.findFirst({ where: { inviteToken: data.inviteToken, status: 'active' }, select: { id: true, name: true, email: true, memberApprovalMode: true } }),
     prisma.role.findFirst({ where: { name: 'member' } }),
   ]);
 
@@ -755,6 +783,7 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   }
 
   const hashed = await hashPassword(data.password);
+  const membershipApprovalStatus = church.memberApprovalMode === 'manual' ? 'pending' : 'approved';
 
   const user = await prisma.user.create({
     data: {
@@ -765,6 +794,7 @@ export async function registerMember(req: Request, res: Response): Promise<void>
       roleId: memberRole.id,
       churchId: church.id,
       ministryAdminId: null,
+      membershipApprovalStatus,
       phone: data.phone,
       gender: data.gender,
       emailVerified: true,
@@ -799,18 +829,45 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   const permissions = await getUserPermissions(userWithPackage);
 
   const { queueEmail } = await import('../lib/emailQueue');
-  const { memberWelcomeTemplate } = await import('../lib/emailTemplates');
-  queueEmail(
-    user.email,
-    `Welcome to ${church.name}`,
-    memberWelcomeTemplate({
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      churchName: church.name,
-    }),
-    'registration'
-  ).catch(err => console.error('Failed to queue member welcome email:', err));
+  const { memberWelcomeTemplate, memberPendingApprovalTemplate, churchMemberApprovalRequestTemplate } = await import('../lib/emailTemplates');
+  if (membershipApprovalStatus === 'pending') {
+    queueEmail(
+      user.email,
+      `Registration received - ${church.name}`,
+      memberPendingApprovalTemplate({
+        firstName: user.firstName,
+        lastName: user.lastName,
+        churchName: church.name,
+      }),
+      'registration'
+    ).catch(err => console.error('Failed to queue pending approval email:', err));
+
+    if (church.email) {
+      queueEmail(
+        church.email,
+        `New member registration awaiting approval - ${church.name}`,
+        churchMemberApprovalRequestTemplate({
+          churchName: church.name,
+          memberName: displayName(user.firstName, user.lastName) || `${user.firstName} ${user.lastName}`.trim(),
+          memberEmail: user.email,
+          memberPhone: user.phone ?? null,
+        }),
+        'registration_approval'
+      ).catch(err => console.error('Failed to queue church approval request email:', err));
+    }
+  } else {
+    queueEmail(
+      user.email,
+      `Welcome to ${church.name}`,
+      memberWelcomeTemplate({
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        churchName: church.name,
+      }),
+      'registration'
+    ).catch(err => console.error('Failed to queue member welcome email:', err));
+  }
 
   const token = signToken({
     userId: user.id,
@@ -825,7 +882,13 @@ export async function registerMember(req: Request, res: Response): Promise<void>
   });
 
   res.cookie('icims_token', token, COOKIE_OPTIONS);
-  res.status(201).json({ success: true, user: safeUser(userWithPackage, permissions) });
+  res.status(201).json({
+    success: true,
+    message: membershipApprovalStatus === 'pending'
+      ? 'Your registration has been submitted and is awaiting activation by your church.'
+      : undefined,
+    user: safeUser(userWithPackage, permissions),
+  });
 }
 
 export async function acceptTerms(req: Request, res: Response): Promise<void> {

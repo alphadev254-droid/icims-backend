@@ -6,6 +6,8 @@ import { getAccessibleChurchIds } from '../lib/churchScope';
 import { buildPersonSearchWhere } from '../lib/personSearch';
 import { cancelUserAccount } from '../lib/userCancellation';
 import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
+import { queueEmail } from '../lib/emailQueue';
+import { memberApprovalDecisionTemplate } from '../lib/emailTemplates';
 
 const USER_INCLUDE = {
   role: true,
@@ -141,12 +143,26 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     ? requestedStatus
     : 'active';
   const filterTeamId  = req.query.teamId    as string | undefined;
+  const filterMembershipApprovalStatus = req.query.membershipApprovalStatus as string | undefined;
   const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
-  const emptyUsersSummary = () => ({ total: 0, gender: { male: 0, female: 0, other: 0, unknown: 0 } });
-  const buildUsersSummary = (total: number, genderCounts: Array<{ gender: string | null; _count: { _all: number } }>) => {
+  const emptyUsersSummary = () => ({
+    total: 0,
+    gender: { male: 0, female: 0, other: 0, unknown: 0 },
+    membersNotInCells: 0,
+    childrenTotal: 0,
+    adultMembers: 0,
+  });
+  const buildUsersSummary = (
+    total: number,
+    genderCounts: Array<{ gender: string | null; _count: { _all: number } }>,
+    extraCounts: { membersNotInCells: number; childrenTotal: number; adultMembers: number },
+  ) => {
     const summary = emptyUsersSummary();
     summary.total = total;
+    summary.membersNotInCells = extraCounts.membersNotInCells;
+    summary.childrenTotal = extraCounts.childrenTotal;
+    summary.adultMembers = extraCounts.adultMembers;
     for (const row of genderCounts) {
       const count = row._count._all;
       if (row.gender === 'male') summary.gender.male = count;
@@ -256,7 +272,14 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   }
 
   if (filterStatus !== 'all') andConditions.push({ status: filterStatus });
-  if (filterTeamId) andConditions.push({ teams: { some: { teamId: filterTeamId } } });
+  if (filterMembershipApprovalStatus && ['pending', 'approved', 'rejected'].includes(filterMembershipApprovalStatus)) {
+    andConditions.push({ membershipApprovalStatus: filterMembershipApprovalStatus });
+  }
+  if (filterTeamId === 'none') {
+    andConditions.push({ teams: { none: {} } });
+  } else if (filterTeamId) {
+    andConditions.push({ teams: { some: { teamId: filterTeamId } } });
+  }
 
   // Search: scoped with AND so it narrows within the ministry, never widens
   if (search) {
@@ -282,8 +305,13 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     whereClause.AND = andConditions;
   }
 
+  const withAdditionalAnd = (baseWhere: any, extraConditions: any[]) => ({
+    ...baseWhere,
+    AND: [...(Array.isArray(baseWhere.AND) ? baseWhere.AND : []), ...extraConditions],
+  });
+
   // ── Query ───────────────────────────────────────────────────────────────────
-  const [users, total, genderCounts] = await Promise.all([
+  const [users, total, genderCounts, membersNotInCells, childrenTotal, adultMembers] = await Promise.all([
     prisma.user.findMany({
       where: whereClause,
       include: {
@@ -317,6 +345,22 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       by: ['gender'],
       where: whereClause,
       _count: { _all: true },
+    }),
+    prisma.user.count({
+      where: withAdditionalAnd(whereClause, [
+        { memberType: { not: 'child' } },
+        { role: { name: 'member' } },
+        { cellMemberships: { none: { status: { not: 'inactive' } } } },
+      ]),
+    }),
+    prisma.user.count({
+      where: withAdditionalAnd(whereClause, [{ memberType: 'child' }]),
+    }),
+    prisma.user.count({
+      where: withAdditionalAnd(whereClause, [
+        { memberType: { not: 'child' } },
+        { role: { name: 'member' } },
+      ]),
     }),
   ]);
 
@@ -367,7 +411,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       };
     }),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    summary: buildUsersSummary(total, genderCounts),
+    summary: buildUsersSummary(total, genderCounts, { membersNotInCells, childrenTotal, adultMembers }),
   });
 }
 
@@ -812,4 +856,108 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
   }
 
   res.json(results);
+}
+
+async function getRegistrationRequestScope(req: Request) {
+  const userId = req.user?.userId;
+  if (!userId) return [];
+  return getAccessibleChurchIds(
+    req.user?.role ?? 'member',
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    userId,
+  );
+}
+
+export async function getRegistrationRequests(req: Request, res: Response): Promise<void> {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(Math.max(1, parseInt(req.query.limit as string) || 50), 200);
+  const skip = (page - 1) * limit;
+  const churchId = req.query.churchId as string | undefined;
+  const search = (req.query.search as string | undefined)?.trim();
+
+  const accessibleChurchIds = await getRegistrationRequestScope(req);
+  const scopedChurchIds = churchId ? accessibleChurchIds.filter(id => id === churchId) : accessibleChurchIds;
+  if (scopedChurchIds.length === 0) {
+    res.json({ success: true, data: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    return;
+  }
+
+  const where: any = {
+    churchId: { in: scopedChurchIds },
+    membershipApprovalStatus: 'pending',
+    role: { name: 'member' },
+    memberType: { not: 'child' },
+  };
+  if (search) {
+    where.AND = [buildPersonSearchWhere(search, ['firstName', 'lastName', 'email', 'phone'])];
+  }
+
+  const [requests, total] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      include: { role: { select: { id: true, name: true, displayName: true } }, church: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  res.json({
+    success: true,
+    data: requests.map(safeUser),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+}
+
+async function decideRegistrationRequest(req: Request, res: Response, status: 'approved' | 'rejected'): Promise<void> {
+  const userId = String(req.params.id);
+  const accessibleChurchIds = await getRegistrationRequestScope(req);
+  const target = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { role: { select: { name: true, displayName: true } }, church: { select: { id: true, name: true } } },
+  });
+
+  if (!target || !target.churchId || !target.church || !accessibleChurchIds.includes(target.churchId)) {
+    res.status(404).json({ success: false, message: 'Registration request not found' });
+    return;
+  }
+
+  if (target.role?.name !== 'member' || target.membershipApprovalStatus !== 'pending') {
+    res.status(400).json({ success: false, message: 'This user does not have a pending registration request' });
+    return;
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: target.id },
+    data: { membershipApprovalStatus: status },
+    include: { role: { select: { id: true, name: true, displayName: true } }, church: { select: { id: true, name: true } } },
+  });
+
+  if (updated.email) {
+    queueEmail(
+      updated.email,
+      status === 'approved' ? `Registration approved - ${updated.church?.name ?? 'Your church'}` : `Registration update - ${updated.church?.name ?? 'Your church'}`,
+      memberApprovalDecisionTemplate({
+        firstName: updated.firstName,
+        lastName: updated.lastName,
+        churchName: updated.church?.name ?? 'your church',
+        approved: status === 'approved',
+      }),
+      'registration_approval'
+    ).catch(err => console.error('Failed to queue registration decision email:', err));
+  }
+
+  res.json({ success: true, data: safeUser(updated) });
+}
+
+export async function approveRegistrationRequest(req: Request, res: Response): Promise<void> {
+  await decideRegistrationRequest(req, res, 'approved');
+}
+
+export async function rejectRegistrationRequest(req: Request, res: Response): Promise<void> {
+  await decideRegistrationRequest(req, res, 'rejected');
 }
