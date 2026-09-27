@@ -11,7 +11,7 @@ export const getTeams = async (req: Request, res: Response) => {
     const { churchId } = req.query;
     
     if (!prisma.team) {
-      return res.status(500).json({ error: 'Team model not found. Please run: npx prisma generate && npx prisma migrate dev' });
+      return res.status(500).json({ success: false, message: 'Team model not found. Please run: npx prisma generate && npx prisma migrate dev' });
     }
     
     let teams;
@@ -106,7 +106,7 @@ export const getTeams = async (req: Request, res: Response) => {
 
     res.json(formatted);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -124,7 +124,7 @@ export const createTeam = async (req: Request, res: Response) => {
     );
 
     if (!churchIds.includes(churchId)) {
-      return res.status(403).json({ error: 'No access to this church' });
+      return res.status(403).json({ success: false, message: 'No access to this church' });
     }
 
     const team = await prisma.team.create({
@@ -137,7 +137,7 @@ export const createTeam = async (req: Request, res: Response) => {
 
     res.status(201).json(team);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -157,7 +157,7 @@ export const updateTeam = async (req: Request, res: Response) => {
 
     const team = await prisma.team.findUnique({ where: { id: String(id) } });
     if (!team || !churchIds.includes(team.churchId)) {
-      return res.status(404).json({ error: 'Team not found' });
+      return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
     const updated = await prisma.team.update({
@@ -175,7 +175,7 @@ export const updateTeam = async (req: Request, res: Response) => {
 
     res.json(updated);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -194,13 +194,13 @@ export const deleteTeam = async (req: Request, res: Response) => {
 
     const team = await prisma.team.findUnique({ where: { id: String(id) } });
     if (!team || !churchIds.includes(team.churchId)) {
-      return res.status(404).json({ error: 'Team not found' });
+      return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
     await prisma.team.delete({ where: { id: String(id) } });
     res.json({ message: 'Team deleted' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -220,7 +220,7 @@ export const getTeamMembers = async (req: Request, res: Response) => {
 
     const team = await prisma.team.findUnique({ where: { id: String(id) } });
     if (!team || !churchIds.includes(team.churchId)) {
-      return res.status(404).json({ error: 'Team not found' });
+      return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
     const limitNum = parseInt(limit as string) || 100;
@@ -328,7 +328,7 @@ export const getTeamMembers = async (req: Request, res: Response) => {
 
     res.json({ data: formatted, total, limit: limitNum, offset: offsetNum, teamMembersCount });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -351,7 +351,7 @@ export const addTeamMember = async (req: Request, res: Response) => {
       include: { church: { select: { name: true } } } 
     });
     if (!team || !churchIds.includes(team.churchId)) {
-      return res.status(404).json({ error: 'Team not found' });
+      return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
     await prisma.userTeam.upsert({
@@ -378,7 +378,7 @@ export const addTeamMember = async (req: Request, res: Response) => {
 
     res.json({ message: 'Member added to team' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -397,7 +397,7 @@ export const removeTeamMember = async (req: Request, res: Response) => {
 
     const team = await prisma.team.findUnique({ where: { id: String(id) } });
     if (!team || !churchIds.includes(team.churchId)) {
-      return res.status(404).json({ error: 'Team not found' });
+      return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
     await prisma.userTeam.delete({
@@ -406,7 +406,7 @@ export const removeTeamMember = async (req: Request, res: Response) => {
 
     res.json({ message: 'Member removed from team' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -429,7 +429,7 @@ export const updateTeamLeader = async (req: Request, res: Response) => {
       include: { church: { select: { name: true } } } 
     });
     if (!team || !churchIds.includes(team.churchId)) {
-      return res.status(404).json({ error: 'Team not found' });
+      return res.status(404).json({ success: false, message: 'Team not found' });
     }
 
     await prisma.userTeam.update({
@@ -457,6 +457,6 @@ export const updateTeamLeader = async (req: Request, res: Response) => {
 
     res.json({ message: 'Leader status updated' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };

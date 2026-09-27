@@ -56,7 +56,7 @@ export const kpiController = {
 
       // Verify user has access to the selected church
       if (!accessibleChurchIds.includes(data.churchId)) {
-        res.status(403).json({ error: 'Access denied to this church' });
+        res.status(403).json({ success: false, message: 'Access denied to this church' });
         return;
       }
 
@@ -67,7 +67,7 @@ export const kpiController = {
       });
 
       if (!church?.ministryAdminId) {
-        res.status(400).json({ error: 'Church has no national admin' });
+        res.status(400).json({ success: false, message: 'Church has no national admin' });
         return;
       }
 
@@ -83,7 +83,7 @@ export const kpiController = {
 
       res.json(kpi);
     } catch (error: any) {
-      res.status(400).json({ error: error.message });
+      res.status(400).json({ success: false, message: error.message });
     }
   },
 
@@ -118,7 +118,7 @@ export const kpiController = {
 
       res.json(kpis);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ success: false, message: error.message });
     }
   },
 
@@ -144,10 +144,10 @@ export const kpiController = {
         include: { church: { select: { id: true, name: true } } },
       });
 
-      if (!kpi) return res.status(404).json({ error: 'KPI not found' });
+      if (!kpi) return res.status(404).json({ success: false, message: 'KPI not found' });
       res.json(kpi);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ success: false, message: error.message });
     }
   },
 
@@ -173,23 +173,23 @@ export const kpiController = {
         where: { id, churchId: { in: accessibleChurchIds } },
       });
 
-      if (!kpi) return res.status(404).json({ error: 'KPI not found' });
+      if (!kpi) return res.status(404).json({ success: false, message: 'KPI not found' });
 
       // PROTECTION: Prevent editing completed KPIs
       if (kpi.status === 'completed') {
-        res.status(400).json({ error: 'Cannot edit completed KPI. This KPI period has ended.' });
+        res.status(400).json({ success: false, message: 'Cannot edit completed KPI. This KPI period has ended.' });
         return;
       }
 
       // PROTECTION: Prevent editing if end date has passed
       if (new Date(kpi.endDate) < new Date()) {
-        res.status(400).json({ error: 'Cannot edit KPI. The end date has passed.' });
+        res.status(400).json({ success: false, message: 'Cannot edit KPI. The end date has passed.' });
         return;
       }
 
       // If churchId is being updated, verify access
       if (data.churchId && !accessibleChurchIds.includes(data.churchId)) {
-        res.status(403).json({ error: 'Access denied to target church' });
+        res.status(403).json({ success: false, message: 'Access denied to target church' });
         return;
       }
 
@@ -205,7 +205,7 @@ export const kpiController = {
 
       res.json(updated);
     } catch (error: any) {
-      res.status(400).json({ error: error.message });
+      res.status(400).json({ success: false, message: error.message });
     }
   },
 
@@ -230,12 +230,12 @@ export const kpiController = {
         where: { id, churchId: { in: accessibleChurchIds } },
       });
 
-      if (!kpi) return res.status(404).json({ error: 'KPI not found' });
+      if (!kpi) return res.status(404).json({ success: false, message: 'KPI not found' });
 
       await prisma.kPI.delete({ where: { id } });
       res.json({ message: 'KPI deleted' });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ success: false, message: error.message });
     }
   },
 
@@ -371,7 +371,7 @@ export const kpiController = {
 
       res.json({ message: 'KPIs calculated successfully' });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ success: false, message: error.message });
     }
   },
 };

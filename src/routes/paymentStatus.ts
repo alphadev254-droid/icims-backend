@@ -72,7 +72,7 @@ router.get('/:reference', async (req, res) => {
 
   } catch (error) {
     console.error('[PaymentStatus] Error:', error);
-    res.status(500).json({ error: 'Failed to check status' });
+    res.status(500).json({ success: false, message: 'Failed to check status' });
   }
 });
 

@@ -124,7 +124,7 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      return res.status(401).json({ error: 'User not authenticated' });
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
     }
 
     const isAdmin = !!user.role && user.role.name !== 'member';
@@ -177,7 +177,7 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
 
     // If specific team requested, validate access
     if (teamId && !teamIds.includes(teamId as string)) {
-      return res.status(403).json({ error: 'Access denied to this team' });
+      return res.status(403).json({ success: false, message: 'Access denied to this team' });
     }
 
     const communications = await prisma.teamCommunication.findMany({
@@ -252,7 +252,7 @@ export const getTeamCommunications = async (req: Request, res: Response) => {
     res.json(grouped);
   } catch (error: any) {
     console.error('Get team communications error:', error);
-    res.status(500).json({ error: 'Failed to fetch communications' });
+    res.status(500).json({ success: false, message: 'Failed to fetch communications' });
   }
 };
 
@@ -264,37 +264,37 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
     const schedulePattern = req.body.schedulePattern === 'custom_dates' ? 'custom_dates' : 'repeat';
     const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(parseOccurrenceTimes(req.body.occurrenceTimes)) : undefined;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
-    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ error: 'Invalid IANA timezone' });
+    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ success: false, message: 'Invalid IANA timezone' });
     const mode = ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : 'now';
     const files = req.files as Express.Multer.File[];
 
     if (!title || !content || !teamId) {
-      return res.status(400).json({ error: 'Title, content, and teamId are required' });
+      return res.status(400).json({ success: false, message: 'Title, content, and teamId are required' });
     }
 
     // Check if user can post to this team
     const canPost = await canUserPostToTeam(userId!, teamId);
     if (!canPost) {
-      return res.status(403).json({ error: 'You do not have permission to post to this team' });
+      return res.status(403).json({ success: false, message: 'You do not have permission to post to this team' });
     }
 
     if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
-      return res.status(400).json({ error: 'Recurrence is only available when delivery mode is Schedule.' });
+      return res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
     }
 
     if (mode === 'scheduled') {
       if (schedulePattern === 'custom_dates' && exactOccurrences?.length === 0) {
-        return res.status(400).json({ error: 'Add at least one send date and time' });
+        return res.status(400).json({ success: false, message: 'Add at least one send date and time' });
       }
       if (schedulePattern !== 'custom_dates' && !scheduledAt) {
-        return res.status(400).json({ error: 'Scheduled date and time required' });
+        return res.status(400).json({ success: false, message: 'Scheduled date and time required' });
       }
       if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
-        return res.status(400).json({ error: 'Send date and time must be in the future' });
+        return res.status(400).json({ success: false, message: 'Send date and time must be in the future' });
       }
       const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, 'create', schedulePattern === 'custom_dates');
       if (!scheduleAccess.allowed) {
-        return res.status(403).json({ error: scheduleAccess.message });
+        return res.status(403).json({ success: false, message: scheduleAccess.message });
       }
     }
 
@@ -361,7 +361,7 @@ export const createTeamCommunication = async (req: Request, res: Response) => {
     res.status(201).json(communicationWithSchedule);
   } catch (error: any) {
     console.error('Create team communication error:', error);
-    res.status(500).json({ error: 'Failed to create communication' });
+    res.status(500).json({ success: false, message: 'Failed to create communication' });
   }
 };
 
@@ -374,7 +374,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     const schedulePattern = req.body.schedulePattern === 'custom_dates' ? 'custom_dates' : 'repeat';
     const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(parseOccurrenceTimes(req.body.occurrenceTimes)) : undefined;
     const recurrenceRule = parseRecurrenceRuleBody(req.body.recurrenceRule);
-    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ error: 'Invalid IANA timezone' });
+    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) return res.status(400).json({ success: false, message: 'Invalid IANA timezone' });
     const mode = deliveryMode && ['now', 'scheduled'].includes(String(deliveryMode)) ? String(deliveryMode) : undefined;
     const files = req.files as Express.Multer.File[];
     let existingMediaUrls = req.body.existingMediaUrls;
@@ -393,17 +393,17 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     });
 
     if (!existing) {
-      return res.status(404).json({ error: 'Communication not found' });
+      return res.status(404).json({ success: false, message: 'Communication not found' });
     }
 
     // Check if user can update (team leader or admin with scope)
     const canUpdate = await canUserEditOrDelete(userId!, existing.teamId, existing.authorId);
     if (!canUpdate) {
-      return res.status(403).json({ error: 'Permission denied' });
+      return res.status(403).json({ success: false, message: 'Permission denied' });
     }
 
     if (mode !== 'scheduled' && hasRecurringRule(recurrenceRule)) {
-      return res.status(400).json({ error: 'Recurrence is only available when delivery mode is Schedule.' });
+      return res.status(400).json({ success: false, message: 'Recurrence is only available when delivery mode is Schedule.' });
     }
 
     let removedUrls: string[] = [];
@@ -456,18 +456,18 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
 
     if (mode === 'scheduled') {
       if (schedulePattern === 'custom_dates' && exactOccurrences?.length === 0) {
-        return res.status(400).json({ error: 'Add at least one send date and time' });
+        return res.status(400).json({ success: false, message: 'Add at least one send date and time' });
       }
       if (schedulePattern !== 'custom_dates' && !scheduledAt) {
-        return res.status(400).json({ error: 'Scheduled date and time required' });
+        return res.status(400).json({ success: false, message: 'Scheduled date and time required' });
       }
       if ((schedulePattern === 'custom_dates' ? exactOccurrences! : [new Date(scheduledAt)]).some(value => Number.isNaN(value.getTime()) || value.getTime() <= Date.now())) {
-        return res.status(400).json({ error: 'Send date and time must be in the future' });
+        return res.status(400).json({ success: false, message: 'Send date and time must be in the future' });
       }
       const scheduleAction = existingSchedule.length > 0 ? 'update' : 'create';
       const scheduleAccess = await assertScheduleAccess(req, schedulePattern === 'custom_dates' ? null : recurrenceRule, scheduleAction, schedulePattern === 'custom_dates');
       if (!scheduleAccess.allowed) {
-        return res.status(403).json({ error: scheduleAccess.message });
+        return res.status(403).json({ success: false, message: scheduleAccess.message });
       }
 
       const startAt = exactOccurrences?.[0] ?? new Date(scheduledAt);
@@ -485,7 +485,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
       if (existingSchedule.length > 0) {
         const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
         if (!scheduleAccess.allowed) {
-          return res.status(403).json({ error: scheduleAccess.message });
+          return res.status(403).json({ success: false, message: scheduleAccess.message });
         }
       }
       await syncTeamCommunicationToSchedule({
@@ -506,7 +506,7 @@ export const updateTeamCommunication = async (req: Request, res: Response) => {
     res.json(communicationWithSchedule);
   } catch (error: any) {
     console.error('Update team communication error:', error);
-    res.status(500).json({ error: 'Failed to update communication' });
+    res.status(500).json({ success: false, message: 'Failed to update communication' });
   }
 };
 
@@ -521,13 +521,13 @@ export const deleteTeamCommunication = async (req: Request, res: Response) => {
     });
 
     if (!existing) {
-      return res.status(404).json({ error: 'Communication not found' });
+      return res.status(404).json({ success: false, message: 'Communication not found' });
     }
 
     // Check if user can delete (team leader or admin with scope)
     const canDelete = await canUserEditOrDelete(userId!, existing.teamId, existing.authorId);
     if (!canDelete) {
-      return res.status(403).json({ error: 'Permission denied' });
+      return res.status(403).json({ success: false, message: 'Permission denied' });
     }
 
     // Delete media files from server
@@ -548,7 +548,7 @@ export const deleteTeamCommunication = async (req: Request, res: Response) => {
     res.json({ message: 'Communication deleted' });
   } catch (error: any) {
     console.error('Delete team communication error:', error);
-    res.status(500).json({ error: 'Failed to delete communication' });
+    res.status(500).json({ success: false, message: 'Failed to delete communication' });
   }
 };
 
@@ -558,7 +558,7 @@ export const getPostableTeams = async (req: Request, res: Response) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-      return res.status(401).json({ error: 'User not authenticated' });
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
     }
 
     const user = await prisma.user.findUnique({
@@ -577,7 +577,7 @@ export const getPostableTeams = async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
     let teams: any[] = [];
@@ -631,7 +631,7 @@ export const getPostableTeams = async (req: Request, res: Response) => {
     res.json(teams);
   } catch (error: any) {
     console.error('Get postable teams error:', error);
-    res.status(500).json({ error: 'Failed to fetch teams' });
+    res.status(500).json({ success: false, message: 'Failed to fetch teams' });
   }
 };
 
