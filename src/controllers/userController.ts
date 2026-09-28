@@ -144,6 +144,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     : 'active';
   const filterTeamId  = req.query.teamId    as string | undefined;
   const filterMembershipApprovalStatus = req.query.membershipApprovalStatus as string | undefined;
+  const filterMemberType = req.query.memberType as string | undefined;
   const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
   const emptyUsersSummary = () => ({
@@ -277,6 +278,11 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   if (filterStatus !== 'all') andConditions.push({ status: filterStatus });
   if (filterMembershipApprovalStatus && ['pending', 'approved', 'rejected'].includes(filterMembershipApprovalStatus)) {
     andConditions.push({ membershipApprovalStatus: filterMembershipApprovalStatus });
+  }
+  if (filterMemberType === 'child') {
+    andConditions.push({ memberType: 'child' });
+  } else if (filterMemberType === 'adult') {
+    andConditions.push({ memberType: { not: 'child' } });
   }
   if (filterTeamId === 'none') {
     andConditions.push({ teams: { none: {} } });
