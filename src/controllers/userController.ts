@@ -266,7 +266,10 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   }
 
   if (filterCellId === 'none') {
-    andConditions.push({ cellMemberships: { none: { status: { not: 'inactive' } } } });
+    andConditions.push(
+      { memberType: { not: 'child' } },
+      { cellMemberships: { none: { status: { not: 'inactive' } } } },
+    );
   } else if (filterCellId) {
     andConditions.push({ cellMemberships: { some: { cellId: filterCellId, status: { not: 'inactive' } } } });
   }
