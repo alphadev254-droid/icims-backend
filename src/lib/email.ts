@@ -57,7 +57,7 @@ function prepareBrandedEmail(html: string, attachments?: EmailAttachment[]) {
       /<div class="container">/,
       `<div class="container">
     <div class="email-brand">
-      <img src="cid:${ICIMS_LOGO_CID}" alt="ICIMS" class="email-logo" />
+      <img src="cid:${ICIMS_LOGO_CID}" alt="ICIMS" class="email-logo" width="62" height="62" style="width:62px;height:62px;max-width:62px;max-height:62px;object-fit:contain;border-radius:14px;display:block;margin:0 auto 10px auto;" />
       <h1>${process.env.SYSTEM || 'ICIMS'}</h1>
     </div>`
     );

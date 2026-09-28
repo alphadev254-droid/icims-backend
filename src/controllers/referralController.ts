@@ -18,6 +18,7 @@ import {
 import { sendEmailVerificationOtp } from '../services/emailVerificationService';
 import { fetchPayoutProvidersForMarket } from '../services/payoutProviderOptionsService';
 import { queueEmail } from '../lib/emailQueue';
+import { marketerStatusTemplate } from '../lib/emailTemplates';
 import { phoneSchema } from '../lib/inputValidation';
 import {
   createAdminReferrerWithdrawalPayout,
@@ -799,7 +800,22 @@ export async function updateAdminReferrerStatus(req: Request, res: Response): Pr
       approvedById: parsed.data.status === 'approved' ? req.user?.userId : undefined,
       rejectionReason: parsed.data.status === 'rejected' || parsed.data.status === 'suspended' ? parsed.data.reason : null,
     },
+    include: { user: { select: { firstName: true, email: true } } },
   });
+
+  if (updated.user.email && ['approved', 'rejected', 'suspended'].includes(updated.status)) {
+    queueEmail(
+      updated.user.email,
+      updated.status === 'approved' ? 'Your marketer account has been approved' : 'Your marketer account status has been updated',
+      marketerStatusTemplate({
+        firstName: updated.user.firstName,
+        status: updated.status as 'approved' | 'rejected' | 'suspended',
+        reason: updated.rejectionReason,
+      }),
+      'notification',
+    ).catch(err => console.error('Failed to queue marketer status email:', err));
+  }
+
   res.json({ success: true, data: updated });
 }
 

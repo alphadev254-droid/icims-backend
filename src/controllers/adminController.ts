@@ -5,6 +5,8 @@ import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { cancelUserAccount } from '../lib/userCancellation';
 import { optionalPhoneSchema } from '../lib/inputValidation';
+import { queueEmail } from '../lib/emailQueue';
+import { marketerStatusTemplate } from '../lib/emailTemplates';
 import { reconcilePendingTransactionById } from '../services/paymentReconciliationService';
 import { buildPersonSearchWhere } from '../lib/personSearch';
 import {
@@ -900,6 +902,23 @@ export async function updateAdminUser(req: Request, res: Response): Promise<void
       where: { userId: id },
       data: referrerUpdateData,
     });
+
+    if (
+      parsed.data.referrerStatus !== undefined &&
+      target.email &&
+      ['approved', 'rejected', 'suspended'].includes(parsed.data.referrerStatus)
+    ) {
+      queueEmail(
+        target.email,
+        parsed.data.referrerStatus === 'approved' ? 'Your marketer account has been approved' : 'Your marketer account status has been updated',
+        marketerStatusTemplate({
+          firstName: target.firstName,
+          status: parsed.data.referrerStatus,
+          reason: referrerUpdateData.rejectionReason,
+        }),
+        'notification',
+      ).catch(err => console.error('Failed to queue marketer status email:', err));
+    }
   }
 
   res.json({ success: true, data: { ...safeUser(updated), referrer: safeReferrerProfile(referrerProfile) } });

@@ -453,7 +453,7 @@ ${getBaseStyle()}
 <body>
   <div class="container">
     <div class="invoice-brand">
-      ${data.logoCid ? `<img src="cid:${escapeHtml(data.logoCid)}" alt="ICIMS" class="invoice-logo" />` : ''}
+      ${data.logoCid ? `<img src="cid:${escapeHtml(data.logoCid)}" alt="ICIMS" class="invoice-logo" width="64" height="64" style="width:64px;height:64px;max-width:64px;max-height:64px;object-fit:contain;border-radius:14px;display:block;margin:0 auto 10px auto;" />` : ''}
       <h1>ICIMS</h1>
     </div>
     <div class="invoice-hero">
@@ -971,6 +971,47 @@ export const adminDirectEmailTemplate = (data: { firstName: string; subject: str
     </div>
     <div class="footer">
       <p>This message was sent to you by the ${SYSTEM_NAME} system administrator.</p>
+      <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+export const marketerStatusTemplate = (data: {
+  firstName: string;
+  status: 'approved' | 'rejected' | 'suspended' | 'pending';
+  reason?: string | null;
+}) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Marketer Account ${data.status === 'approved' ? 'Approved' : data.status === 'rejected' ? 'Rejected' : data.status === 'suspended' ? 'Suspended' : 'Updated'}</h1>
+    </div>
+    <div class="content">
+      <h2>Hello ${escapeHtml(data.firstName)},</h2>
+      ${data.status === 'approved' ? `
+        <p>Your marketer account has been approved. You can now access your marketer dashboard and referral tools.</p>
+        <a href="${FRONTEND_URL}/referrer/dashboard" class="button">Open Marketer Dashboard</a>
+      ` : data.status === 'rejected' ? `
+        <p>Your marketer account was not approved at this time.</p>
+      ` : data.status === 'suspended' ? `
+        <p>Your marketer account has been suspended. Please contact support if you need more details.</p>
+      ` : `
+        <p>Your marketer account status has been updated.</p>
+      `}
+      ${data.reason ? `
+        <div class="info-box">
+          <h3>Reason</h3>
+          <p>${escapeHtml(data.reason)}</p>
+        </div>
+      ` : ''}
+      <p>If you have questions, please contact the ${SYSTEM_NAME} support team.</p>
+    </div>
+    <div class="footer">
       <p>&copy; ${new Date().getFullYear()} ${SYSTEM_NAME}. All rights reserved.</p>
     </div>
   </div>
