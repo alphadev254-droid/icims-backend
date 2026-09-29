@@ -358,6 +358,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     prisma.user.count({
       where: withAdditionalAnd(whereClause, [
         { memberType: { not: 'child' } },
+        { role: { name: 'member' } },
         { cellMemberships: { none: { status: { not: 'inactive' } } } },
       ]),
     }),
@@ -367,6 +368,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     prisma.user.count({
       where: withAdditionalAnd(whereClause, [
         { memberType: { not: 'child' } },
+        { role: { name: 'member' } },
       ]),
     }),
   ]);
