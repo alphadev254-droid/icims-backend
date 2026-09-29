@@ -104,11 +104,11 @@ export async function getStats(req: Request, res: Response): Promise<void> {
     totalCells,
     totalTeams,
   ] = await Promise.all([
-    // Member counts — aggregates instead of fetching all rows
-    prisma.user.count({ where: { churchId: { in: churchIds } } }),
+    // Member counts exclude inactive and cancelled users.
     prisma.user.count({ where: { churchId: { in: churchIds }, status: 'active' } }),
-    prisma.user.count({ where: { churchId: { in: churchIds }, createdAt: { gte: lastMonth, lt: now } } }),
-    prisma.user.count({ where: { churchId: { in: churchIds }, createdAt: { gte: twoMonthsAgo, lt: lastMonth } } }),
+    prisma.user.count({ where: { churchId: { in: churchIds }, status: 'active' } }),
+    prisma.user.count({ where: { churchId: { in: churchIds }, status: 'active', createdAt: { gte: lastMonth, lt: now } } }),
+    prisma.user.count({ where: { churchId: { in: churchIds }, status: 'active', createdAt: { gte: twoMonthsAgo, lt: lastMonth } } }),
     // Events — only need status + count, use select
     prisma.event.findMany({
       where: { churchId: { in: churchIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
