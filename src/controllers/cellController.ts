@@ -2116,6 +2116,8 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
       end.setUTCDate(0);
     } else if (givingPeriod === 'last_3_months') {
       start.setUTCMonth(start.getUTCMonth() - 3);
+    } else if (givingPeriod === 'last_6_months') {
+      start.setUTCMonth(start.getUTCMonth() - 6);
     } else {
       start.setUTCDate(1);
     }
@@ -2141,6 +2143,14 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   const givingDateFilter: any = {};
   if (givingDateRange.startDate) givingDateFilter.gte = givingDateRange.startDate;
   if (givingDateRange.endDate) givingDateFilter.lt = givingDateRange.endDate;
+  const periodDateFilter = Object.keys(givingDateFilter).length > 0 ? givingDateFilter : undefined;
+  const periodMembershipWhere: any = {
+    cellId: { in: cellIds },
+    ...(givingDateRange.endDate ? { joinedAt: { lt: givingDateRange.endDate } } : {}),
+    ...(givingDateRange.startDate
+      ? { OR: [{ status: 'active' }, { leftAt: { gte: givingDateRange.startDate } }] }
+      : { status: 'active' }),
+  };
 
   if (cellIds.length === 0) {
     res.json({ success: true, data: { totalCells: 0, activeCells: 0, totalMembers: 0, totalMeetings: 0, totalVisitors: 0, attendanceRate: 0, recentMeetingsCount: 0, topByMembers: [], topByMeetings: [], topByVisitors: [], topByInviters: [], topByGiving: [], topByAttendanceRate: [], cellGivingSummary: { currency: 'MWK', totalRaised: 0, startDate: givingDateRange.startDate?.toISOString() ?? null, endDate: givingDateRange.endDate?.toISOString() ?? null, topCampaigns: [] } } });
@@ -2179,57 +2189,57 @@ export async function getCellsOverviewStats(req: Request, res: Response): Promis
   ] = await Promise.all([
     prisma.cell.count({ where: { id: { in: cellIds } } }),
     prisma.cell.count({ where: { id: { in: cellIds }, status: 'active' } }),
-    prisma.cellMember.count({ where: { cellId: { in: cellIds }, status: 'active' } }),
-    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } } }),
-    prisma.cellAttendance.count({ where: { cellId: { in: cellIds }, isVisitor: true } }),
+    prisma.cellMember.count({ where: periodMembershipWhere }),
+    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, ...(periodDateFilter ? { date: periodDateFilter } : {}) } }),
+    prisma.cellAttendance.count({ where: { cellId: { in: cellIds }, isVisitor: true, ...(periodDateFilter ? { meeting: { date: periodDateFilter } } : {}) } }),
     prisma.cellAttendance.findMany({
-      where: { cellId: { in: cellIds }, isVisitor: false, userId: { not: null } },
+      where: { cellId: { in: cellIds }, isVisitor: false, userId: { not: null }, ...(periodDateFilter ? { meeting: { date: periodDateFilter } } : {}) },
       select: { cellId: true, meetingId: true, userId: true, status: true },
     }),
     prisma.cellAttendance.findMany({
-      where: { cellId: { in: cellIds }, isVisitor: true },
+      where: { cellId: { in: cellIds }, isVisitor: true, ...(periodDateFilter ? { meeting: { date: periodDateFilter } } : {}) },
       select: { visitorPhone: true, visitorEmail: true, visitorName: true },
     }),
     prisma.cellMember.findMany({
-      where: { cellId: { in: cellIds }, status: 'active' },
+      where: periodMembershipWhere,
       select: { cellId: true, userId: true, joinedAt: true, user: { select: { firstName: true, lastName: true, phone: true, email: true } } },
     }),
-    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, date: { gte: thirtyDaysAgo } } }),
+    prisma.cellMeeting.count({ where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, date: periodDateFilter ?? { gte: thirtyDaysAgo } } }),
     prisma.cellMember.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds }, status: 'active' },
+      where: periodMembershipWhere,
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
+      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, ...(periodDateFilter ? { date: periodDateFilter } : {}) },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
     prisma.cellMeeting.findMany({
-      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } },
+      where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, ...(periodDateFilter ? { date: periodDateFilter } : {}) },
       select: { id: true, cellId: true, date: true },
     }),
     prisma.cellAttendance.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds }, isVisitor: true },
+      where: { cellId: { in: cellIds }, isVisitor: true, ...(periodDateFilter ? { meeting: { date: periodDateFilter } } : {}) },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
     prisma.cellAttendance.groupBy({
       by: ['invitedByUserId'],
-      where: { cellId: { in: cellIds }, isVisitor: true, invitedByUserId: { not: null } },
+      where: { cellId: { in: cellIds }, isVisitor: true, invitedByUserId: { not: null }, ...(periodDateFilter ? { meeting: { date: periodDateFilter } } : {}) },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 5,
     }),
     prisma.donationTransaction.groupBy({
       by: ['cellId'],
-      where: { cellId: { in: cellIds }, status: 'completed' },
+      where: { cellId: { in: cellIds }, status: 'completed', ...(periodDateFilter ? { createdAt: periodDateFilter } : {}) },
       _sum: { amount: true },
       orderBy: { _sum: { amount: 'desc' } },
       take: 5,

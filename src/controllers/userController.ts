@@ -145,6 +145,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const filterTeamId  = req.query.teamId    as string | undefined;
   const filterMembershipApprovalStatus = req.query.membershipApprovalStatus as string | undefined;
   const filterMemberType = req.query.memberType as string | undefined;
+  const filterLeadership = req.query.leadership as string | undefined;
   const minAge        = req.query.minAge ? parseInt(req.query.minAge as string) : undefined;
   const maxAge        = req.query.maxAge ? parseInt(req.query.maxAge as string) : undefined;
   const emptyUsersSummary = () => ({
@@ -288,6 +289,11 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     andConditions.push({ teams: { none: {} } });
   } else if (filterTeamId) {
     andConditions.push({ teams: { some: { teamId: filterTeamId } } });
+  }
+  if (filterLeadership === 'cell_leader') {
+    andConditions.push({ cellMemberships: { some: { status: { not: 'inactive' }, isLeader: true } } });
+  } else if (filterLeadership === 'team_leader') {
+    andConditions.push({ teams: { some: { isLeader: true } } });
   }
 
   // Search: scoped with AND so it narrows within the ministry, never widens
