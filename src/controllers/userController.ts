@@ -9,6 +9,8 @@ import { optionalPhoneSchema, phoneSchema } from '../lib/inputValidation';
 import { queueEmail } from '../lib/emailQueue';
 import { memberApprovalDecisionTemplate } from '../lib/emailTemplates';
 
+const MAX_BULK_IMPORT_ROWS = 100;
+
 const USER_INCLUDE = {
   role: true,
   church: true,
@@ -797,10 +799,16 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
     res.status(400).json({ success: false, message: 'Users array required' });
     return;
   }
+  const usersToImport = users.slice(0, MAX_BULK_IMPORT_ROWS);
 
-  const results = { success: 0, failed: 0, errors: [] as any[] };
+  const results = {
+    success: 0,
+    failed: 0,
+    dropped: Math.max(users.length - usersToImport.length, 0),
+    errors: [] as any[],
+  };
 
-  for (const userData of users) {
+  for (const userData of usersToImport) {
     try {
       if (isBulkUserTemplateInstructionRow(userData)) {
         continue;

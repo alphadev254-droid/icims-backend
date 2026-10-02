@@ -6,6 +6,8 @@ import { hashPassword } from '../lib/password';
 import { optionalPhoneSchema } from '../lib/inputValidation';
 import { buildPersonSearchWhere } from '../lib/personSearch';
 
+const MAX_BULK_IMPORT_ROWS = 100;
+
 const childSchema = z.object({
   churchId: z.string().min(1),
   firstName: z.string().min(1, 'First name required'),
@@ -24,6 +26,11 @@ const childSchema = z.object({
 });
 
 const childUpdateSchema = childSchema.omit({ guardianId: true }).partial();
+
+const childBulkSchema = childSchema.extend({
+  guardianEmail: z.string().email('Invalid guardian email').optional().or(z.literal('')),
+  guardianPhone: optionalPhoneSchema.nullable(),
+});
 
 const guardianSchema = z.object({
   guardianId: z.string().min(1),
@@ -158,6 +165,44 @@ async function ensureChildInScope(childId: string, churchIds: string[], req?: Re
 async function ensureGuardianInChurch(guardianId: string, churchId: string): Promise<boolean> {
   const guardian = await prisma.user.findUnique({ where: { id: guardianId }, select: { id: true, churchId: true } });
   return !!guardian && guardian.churchId === churchId;
+}
+
+function normalizeBoolean(value: unknown, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['true', 'yes', 'y', '1'].includes(normalized)) return true;
+  if (['false', 'no', 'n', '0'].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizeNullableString(value: unknown) {
+  const normalized = String(value ?? '').trim();
+  return normalized || undefined;
+}
+
+function rowLabel(row: any) {
+  return `${row?.firstName ?? ''} ${row?.lastName ?? ''}`.trim() || 'Child';
+}
+
+async function findBulkGuardian(churchId: string, guardianEmail?: string | null, guardianPhone?: string | null) {
+  const OR: any[] = [];
+  if (guardianEmail) OR.push({ email: guardianEmail.trim().toLowerCase() });
+  if (guardianPhone) OR.push({ phone: guardianPhone.trim() });
+  if (OR.length === 0) return { guardianId: undefined, warning: undefined };
+
+  const guardians = await prisma.user.findMany({
+    where: {
+      churchId,
+      memberType: { not: 'child' },
+      OR,
+    },
+    select: { id: true },
+    take: 2,
+  });
+
+  if (guardians.length === 1) return { guardianId: guardians[0].id, warning: undefined };
+  if (guardians.length > 1) return { guardianId: undefined, warning: 'Multiple guardians matched; link guardian manually' };
+  return { guardianId: undefined, warning: 'Guardian not found; child imported without guardian link' };
 }
 
 async function setPrimaryIfNeeded(childId: string, guardianId: string, isPrimary?: boolean) {
@@ -303,6 +348,110 @@ export async function createChild(req: Request, res: Response): Promise<void> {
   }
 
   res.status(201).json({ success: true, data: withComputedAge(child) });
+}
+
+export async function bulkCreateChildren(req: Request, res: Response): Promise<void> {
+  const scope = await getScope(req);
+  const requestedChildren = Array.isArray(req.body?.children) ? req.body.children : [];
+  if (requestedChildren.length === 0) {
+    res.status(400).json({ success: false, message: 'Children array required' });
+    return;
+  }
+
+  const childrenToImport = requestedChildren.slice(0, MAX_BULK_IMPORT_ROWS);
+  const results = {
+    success: 0,
+    failed: 0,
+    dropped: Math.max(requestedChildren.length - childrenToImport.length, 0),
+    warnings: [] as Array<{ row: number; childName: string; warning: string }>,
+    errors: [] as Array<{ row: number; childName: string; field?: string; error: string }>,
+  };
+
+  for (const [index, rawChild] of childrenToImport.entries()) {
+    const row = index + 1;
+    const normalized = {
+      ...rawChild,
+      firstName: normalizeNullableString(rawChild?.firstName),
+      lastName: normalizeNullableString(rawChild?.lastName),
+      churchId: normalizeNullableString(rawChild?.churchId),
+      dateOfBirth: normalizeNullableString(rawChild?.dateOfBirth) ?? null,
+      age: rawChild?.age === '' || rawChild?.age == null ? null : Number(rawChild.age),
+      gender: normalizeNullableString(rawChild?.gender)?.toLowerCase() ?? null,
+      phone: normalizeNullableString(rawChild?.phone) ?? null,
+      status: normalizeNullableString(rawChild?.status)?.toLowerCase() || 'active',
+      notes: normalizeNullableString(rawChild?.notes) ?? null,
+      relationship: normalizeNullableString(rawChild?.relationship) || 'guardian',
+      guardianEmail: normalizeNullableString(rawChild?.guardianEmail)?.toLowerCase() || '',
+      guardianPhone: normalizeNullableString(rawChild?.guardianPhone) || '',
+      isPrimary: normalizeBoolean(rawChild?.isPrimary, true),
+      canPickup: normalizeBoolean(rawChild?.canPickup, true),
+      emergencyContact: normalizeBoolean(rawChild?.emergencyContact, false),
+    };
+    const parsed = childBulkSchema.safeParse(normalized);
+    if (!parsed.success) {
+      results.failed++;
+      const issue = parsed.error.errors[0];
+      results.errors.push({
+        row,
+        childName: rowLabel(rawChild),
+        field: issue.path.join('.') || undefined,
+        error: issue.message,
+      });
+      continue;
+    }
+
+    const churchId = isMemberRequest(req) ? req.user?.churchId : parsed.data.churchId;
+    if (!churchId || !scope.includes(churchId)) {
+      results.failed++;
+      results.errors.push({ row, childName: rowLabel(rawChild), field: 'churchId', error: 'Access denied to this church' });
+      continue;
+    }
+
+    const guardianLookup = await findBulkGuardian(churchId, parsed.data.guardianEmail, parsed.data.guardianPhone);
+    if (guardianLookup.warning) {
+      results.warnings.push({ row, childName: rowLabel(parsed.data), warning: guardianLookup.warning });
+    }
+
+    try {
+      const child = await prisma.child.create({
+        data: {
+          churchId,
+          firstName: parsed.data.firstName,
+          lastName: parsed.data.lastName,
+          dateOfBirth: parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : null,
+          age: parsed.data.dateOfBirth ? calculateAgeFromDate(parsed.data.dateOfBirth) : parsed.data.age ?? null,
+          gender: parsed.data.gender ?? null,
+          phone: parsed.data.phone || null,
+          status: parsed.data.status ?? 'active',
+          notes: parsed.data.notes || null,
+          createdById: req.user?.userId,
+          ...(guardianLookup.guardianId ? {
+            guardians: {
+              create: {
+                guardianId: guardianLookup.guardianId,
+                relationship: parsed.data.relationship || 'guardian',
+                isPrimary: parsed.data.isPrimary ?? true,
+                canPickup: parsed.data.canPickup ?? true,
+                emergencyContact: parsed.data.emergencyContact ?? false,
+              },
+            },
+          } : {}),
+        },
+      });
+
+      const identity = await createChildIdentityUser(child);
+      await prisma.child.update({
+        where: { id: child.id },
+        data: { userId: identity.id },
+      });
+      results.success++;
+    } catch (error: any) {
+      results.failed++;
+      results.errors.push({ row, childName: rowLabel(parsed.data), error: error.message || 'Failed to import child' });
+    }
+  }
+
+  res.json(results);
 }
 
 export async function updateChild(req: Request, res: Response): Promise<void> {
