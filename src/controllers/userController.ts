@@ -468,6 +468,13 @@ const createUserSchema = z.object({
   path: ['churchId'],
 });
 
+function isBulkUserTemplateInstructionRow(userData: any) {
+  const firstName = String(userData?.firstName ?? '').trim().toLowerCase();
+  const lastName = String(userData?.lastName ?? '').trim().toLowerCase();
+  const email = String(userData?.email ?? '').trim().toLowerCase();
+  return firstName === 'first name' && lastName === 'last name' && email === 'email';
+}
+
 export async function createUser(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const role = req.user?.role ?? 'member';
@@ -795,6 +802,10 @@ export async function bulkCreateUsers(req: Request, res: Response): Promise<void
 
   for (const userData of users) {
     try {
+      if (isBulkUserTemplateInstructionRow(userData)) {
+        continue;
+      }
+
       // Pre-fill password if missing — will be auto-generated after parsing
       const dataWithPassword = {
         ...userData,
