@@ -57,6 +57,15 @@ function parseTypes(value: unknown): CalendarActivityType[] {
     .filter((type): type is CalendarActivityType => validTypes.has(type));
 }
 
+function parseStatuses(value: unknown): Set<string> | null {
+  if (typeof value !== 'string' || value.trim() === '' || value === 'all') return null;
+  const statuses = value
+    .split(',')
+    .map(status => status.trim().toLowerCase())
+    .filter(Boolean);
+  return statuses.length ? new Set(statuses) : null;
+}
+
 function canSeeType(req: Request, type: CalendarActivityType) {
   return req.user?.permissions?.includes(TYPE_PERMISSIONS[type]) ?? false;
 }
@@ -95,6 +104,7 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
   }
 
   const requestedTypes = parseTypes(req.query.types).filter(type => canSeeType(req, type));
+  const requestedStatuses = parseStatuses(req.query.statuses);
   const activities: CalendarActivity[] = [];
 
   await Promise.all([
@@ -156,6 +166,7 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             startsAt: record.date,
             churchId: record.churchId,
             churchName: record.church.name,
+            status: 'recorded',
             meta: { totalAttendees: record.totalAttendees },
           })));
         })
@@ -186,6 +197,7 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             churchId: meeting.cell.churchId,
             churchName: meeting.cell.church.name,
             description: meeting.notes,
+            status: 'scheduled',
             meta: { time: meeting.time, cellId: meeting.cell.id, cellName: meeting.cell.name },
           })));
         })
@@ -218,6 +230,7 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             startsAt: reminder.upcomingDate,
             churchId: reminder.churchId,
             churchName: reminder.church.name,
+            status: 'scheduled',
             meta: { reminderType: reminder.type, age: reminder.age, years: reminder.years },
           })));
         })
@@ -249,6 +262,7 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             startsAt: campaign.endDate,
             churchId: campaign.churchId,
             churchName: campaign.church.name,
+            status: 'active',
             meta: { category: campaign.category, targetAmount: campaign.targetAmount, currency: campaign.currency },
           }] : []));
         })
@@ -295,6 +309,10 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
       : Promise.resolve(),
   ]);
 
-  activities.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime() || a.title.localeCompare(b.title));
-  res.json({ success: true, data: activities });
+  const filteredActivities = requestedStatuses
+    ? activities.filter(activity => activity.status && requestedStatuses.has(activity.status.toLowerCase()))
+    : activities;
+
+  filteredActivities.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime() || a.title.localeCompare(b.title));
+  res.json({ success: true, data: filteredActivities });
 }
