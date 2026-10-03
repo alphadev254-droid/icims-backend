@@ -30,6 +30,7 @@ import teamCommunicationRoutes from './routes/teamCommunication';
 import reminderRoutes from './routes/reminderRoutes';
 import adminRoutes from './routes/adminRoutes';
 import cellRoutes from './routes/cells';
+import calendarRoutes from './routes/calendar';
 import contactRoutes from './routes/contact';
 import churchProfileRoutes from './routes/churchProfile';
 import pushRoutes from './routes/pushRoutes';
@@ -143,6 +144,7 @@ app.use('/api/team-communications', teamCommunicationRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cells', cellRoutes);
+app.use('/api/calendar', calendarRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api', churchProfileRoutes);  // mounts /api/church-profile and /api/p/:slug
 app.use('/api/push', pushRoutes);

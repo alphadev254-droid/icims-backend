@@ -486,6 +486,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
   const countryFilter = req.query.country as string | undefined;
   const statusFilter = req.query.status as string | undefined;
   const ministryFilter = req.query.ministry as string | undefined; // ministry_admin user id
+  const memberTypeFilter = req.query.memberType as string | undefined;
 
   const where: any = {};
 
@@ -504,6 +505,11 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     where.id = { in: await getUserIdsByCountry(countryFilter) };
   }
   if (statusFilter) where.status = statusFilter;
+  if (memberTypeFilter === 'child') {
+    where.memberType = 'child';
+  } else if (memberTypeFilter === 'adult') {
+    where.memberType = { not: 'child' };
+  }
   if (ministryFilter) {
     // Include the ministry_admin themselves + all users under them
     const underMinistry = await getUserIdsByMinistry(ministryFilter);
@@ -516,7 +522,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
     }
   }
 
-  const [users, total] = await Promise.all([
+  const [users, total, genderCounts, memberTypeCounts] = await Promise.all([
     prisma.user.findMany({
       where,
       select: {
@@ -525,6 +531,8 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
         lastName: true,
         email: true,
         phone: true,
+        gender: true,
+        memberType: true,
         status: true,
         accountCountry: true,
         ministryAdminId: true,
@@ -561,7 +569,34 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
       take: limit,
     }),
     prisma.user.count({ where }),
+    prisma.user.groupBy({
+      by: ['gender'],
+      where,
+      _count: { _all: true },
+    }),
+    prisma.user.groupBy({
+      by: ['memberType'],
+      where,
+      _count: { _all: true },
+    }),
   ]);
+
+  const summary = {
+    gender: { male: 0, female: 0, other: 0, unknown: 0 },
+    memberType: { adult: 0, child: 0 },
+  };
+  for (const row of genderCounts) {
+    const count = row._count._all;
+    if (row.gender === 'male') summary.gender.male = count;
+    else if (row.gender === 'female') summary.gender.female = count;
+    else if (row.gender === 'other') summary.gender.other = count;
+    else summary.gender.unknown += count;
+  }
+  for (const row of memberTypeCounts) {
+    const count = row._count._all;
+    if (row.memberType === 'child') summary.memberType.child += count;
+    else summary.memberType.adult += count;
+  }
 
   // Batch resolve country + ministryName via a single admin lookup
   const allAdminIds = new Set<string>();
@@ -617,6 +652,8 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
       lastName: u.lastName,
       email: u.email,
       phone: u.phone ?? null,
+      gender: u.gender ?? null,
+      memberType: u.memberType ?? null,
       status: u.status,
       createdAt: u.createdAt,
       role: u.role,
@@ -628,6 +665,7 @@ export async function getAdminUsers(req: Request, res: Response): Promise<void> 
       resolvedMinistryName: resolveMinistryName(u),
     })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    summary,
   });
 }
 
@@ -693,8 +731,27 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
 
   let subscriptions: any[] = [];
   let payments: any[] = [];
+  let usageMetrics: any = null;
   if (user.role?.name === 'ministry_admin') {
-    [subscriptions, payments] = await Promise.all([
+    const now = new Date();
+    const thisMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    const ministryChurchIds = user.ownedChurches.map(church => church.id);
+    const completedWhere = { status: 'completed', churchId: { in: ministryChurchIds } };
+
+    const [
+      subscriptionsResult,
+      paymentsResult,
+      givingThisMonth,
+      givingLastMonth,
+      givingAllTime,
+      eventThisMonth,
+      eventLastMonth,
+      eventAllTime,
+      activeGivingCampaigns,
+      publishedEvents,
+    ] = await Promise.all([
       prisma.subscription.findMany({
         where: { ministryAdminId: id },
         include: { package: { select: { id: true, name: true, displayName: true } } },
@@ -706,7 +763,73 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
         orderBy: { createdAt: 'desc' },
         take: 50,
       }),
+      prisma.donationTransaction.aggregate({
+        where: { ...completedWhere, createdAt: { gte: thisMonthStart, lt: nextMonthStart } },
+        _count: { id: true },
+        _sum: { amount: true },
+      }),
+      prisma.donationTransaction.aggregate({
+        where: { ...completedWhere, createdAt: { gte: lastMonthStart, lt: thisMonthStart } },
+        _count: { id: true },
+        _sum: { amount: true },
+      }),
+      prisma.donationTransaction.aggregate({
+        where: completedWhere,
+        _count: { id: true },
+        _sum: { amount: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { ...completedWhere, type: 'event_ticket', createdAt: { gte: thisMonthStart, lt: nextMonthStart } },
+        _count: { id: true },
+        _sum: { amount: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { ...completedWhere, type: 'event_ticket', createdAt: { gte: lastMonthStart, lt: thisMonthStart } },
+        _count: { id: true },
+        _sum: { amount: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { ...completedWhere, type: 'event_ticket' },
+        _count: { id: true },
+        _sum: { amount: true },
+      }),
+      ministryChurchIds.length
+        ? prisma.givingCampaign.count({ where: { churchId: { in: ministryChurchIds }, status: 'active' } })
+        : Promise.resolve(0),
+      ministryChurchIds.length
+        ? prisma.event.count({ where: { churchId: { in: ministryChurchIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' } } })
+        : Promise.resolve(0),
     ]);
+    subscriptions = subscriptionsResult;
+    payments = paymentsResult;
+    const percentChange = (current: number, previous: number) => previous > 0 ? Math.round(((current - previous) / previous) * 100) : current > 0 ? 100 : 0;
+    usageMetrics = {
+      period: {
+        thisMonthStart: thisMonthStart.toISOString(),
+        lastMonthStart: lastMonthStart.toISOString(),
+        nextMonthStart: nextMonthStart.toISOString(),
+      },
+      giving: {
+        thisMonthTransactions: givingThisMonth._count.id,
+        thisMonthAmount: givingThisMonth._sum.amount ?? 0,
+        lastMonthTransactions: givingLastMonth._count.id,
+        lastMonthAmount: givingLastMonth._sum.amount ?? 0,
+        allTimeTransactions: givingAllTime._count.id,
+        allTimeAmount: givingAllTime._sum.amount ?? 0,
+        transactionChangePercent: percentChange(givingThisMonth._count.id, givingLastMonth._count.id),
+      },
+      events: {
+        thisMonthTransactions: eventThisMonth._count.id,
+        thisMonthAmount: eventThisMonth._sum.amount ?? 0,
+        lastMonthTransactions: eventLastMonth._count.id,
+        lastMonthAmount: eventLastMonth._sum.amount ?? 0,
+        allTimeTransactions: eventAllTime._count.id,
+        allTimeAmount: eventAllTime._sum.amount ?? 0,
+        transactionChangePercent: percentChange(eventThisMonth._count.id, eventLastMonth._count.id),
+      },
+      activeGivingCampaigns,
+      publishedEvents,
+    };
   }
 
   const activeSubscription = subscriptions.find((s: any) => s.status === 'active') ?? null;
@@ -720,6 +843,7 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
       subscription: activeSubscription,
       subscriptions,
       payments,
+      usageMetrics,
     },
   });
 }

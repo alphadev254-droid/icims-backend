@@ -47,6 +47,7 @@ const FEATURES = [
   { name: 'event_reports', displayName: 'Event Reports', description: 'View event ticket lists, attendance summaries, and event exports.', category: 'events', sortOrder: 39 },
 
   // Scheduling Features
+  { name: 'calendar', displayName: 'Calendar', description: 'View church activities, services, meetings, reminders, giving deadlines, and pledge due dates in one calendar.', category: 'scheduling', sortOrder: 40 },
   { name: 'scheduler_calendar_view', displayName: 'Calendar View', description: 'View scheduled church activities, meetings, events, and deadlines in one calendar.', category: 'scheduling', sortOrder: 40 },
   { name: 'scheduler_event_creation', displayName: 'Schedule Creation', description: 'Create scheduled activities that can be linked to ICIMS modules.', category: 'scheduling', sortOrder: 41 },
   { name: 'scheduler_recurring_events', displayName: 'Recurring Schedules', description: 'Create daily, weekly, monthly, annual, and custom recurring schedules.', category: 'scheduling', sortOrder: 42 },
@@ -168,6 +169,7 @@ const MODULE_BUNDLES = [
     category: 'scheduling',
     sortOrder: 9,
     features: [
+      'calendar',
       'scheduler_calendar_view',
       'scheduler_event_creation',
       'scheduler_recurring_events',

@@ -45,6 +45,7 @@ const FEATURES = [
   { name: 'giving_wallets', displayName: 'Wallets', description: 'Track ministry and church wallet balances from giving, event, and other collection flows.', category: 'giving', sortOrder: 29 },
   { name: 'giving_withdrawals', displayName: 'Withdrawals', description: 'Request withdrawals from ministry and church wallet balances.', category: 'giving', sortOrder: 30 },
   { name: 'giving_cell_offering', displayName: 'Cell/Fellowship Offering', description: 'Track giving connected to cell and fellowship offerings.', category: 'giving', sortOrder: 31 },
+  { name: 'calendar', displayName: 'Calendar', description: 'View church activities, services, meetings, reminders, giving deadlines, and pledge due dates in one calendar.', category: 'scheduling', sortOrder: 40 },
   { name: 'scheduler_calendar_view', displayName: 'Calendar View', description: 'View scheduled church activities, meetings, events, and deadlines in one calendar.', category: 'scheduling', sortOrder: 40 },
   { name: 'scheduler_event_creation', displayName: 'Schedule Creation', description: 'Create scheduled activities that can be linked to ICIMS modules.', category: 'scheduling', sortOrder: 41 },
   { name: 'scheduler_recurring_events', displayName: 'Recurring Schedules', description: 'Create daily, weekly, monthly, annual, and custom recurring schedules.', category: 'scheduling', sortOrder: 42 },
@@ -144,6 +145,7 @@ const MODULE_BUNDLES = [
     category: 'scheduling',
     sortOrder: 8,
     features: [
+      'calendar',
       'scheduler_calendar_view',
       'scheduler_event_creation',
       'scheduler_recurring_events',
@@ -227,11 +229,12 @@ const BUNDLE_TRIGGERS: Record<string, string[]> = {
   communication_full: ['communication', 'teams_management', 'reminders_management'],
   reports_full: ['reports_analytics', 'performance_dashboard', 'advanced_reports'],
   operations_full: ['resources_library', 'users_management', 'roles_permissions', 'church_website', 'cell_management'],
-  scheduling_full: ['scheduler_calendar_view', 'scheduler_event_creation', 'scheduler_recurring_events'],
+  scheduling_full: ['calendar', 'scheduler_calendar_view', 'scheduler_event_creation', 'scheduler_recurring_events'],
 };
 
 function shouldEnableFeature(featureName: string, packageFeatureNames: Set<string>) {
   if (packageFeatureNames.has(featureName)) return true;
+  if (featureName === 'calendar') return packageFeatureNames.has('scheduler_calendar_view');
   if (NEW_GIVING_FEATURES.has(featureName)) return packageFeatureNames.has('giving_tracking');
   if (!NEW_EVENT_FEATURES.has(featureName)) return false;
   if (['event_public_links', 'event_member_booking', 'event_guest_booking'].includes(featureName)) {
