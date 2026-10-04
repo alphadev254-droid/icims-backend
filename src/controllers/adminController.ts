@@ -14,6 +14,7 @@ import {
   getPricingMarketContext,
   serializePricingMarket,
 } from '../utils/adminPricingMarketContext';
+import { resolvePricingMarket } from '../utils/pricingMarkets';
 
 function groupDonationDetails(rows: any[]) {
   const grouped = new Map<string, any[]>();
@@ -279,11 +280,12 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
   const [
     totalUsers, totalChurches, totalMinistryAdmins, totalMembers,
     malawiUsers, kenyaUsers, activeUsers, suspendedUsers,
+    activeMinistryAdmins, malawiMinistryAdmins, kenyaMinistryAdmins,
     activeSubscriptions, expiredSubscriptions,
     expiringSoonSubscriptions, totalPackages, pendingPayments, failedPayments,
     revenueResult, malawiRevenueResult, kenyaRevenueResult,
     systemRevenueResult, malawiSystemRevenueResult, kenyaSystemRevenueResult,
-    withdrawalRevenueResult,
+    withdrawalRevenueResult, malawiWithdrawalRevenueResult, kenyaWithdrawalRevenueResult,
     packageSubscriptionCounts,
     recentRegistrations, recentPayments,
   ] = await Promise.all([
@@ -295,6 +297,9 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
     prisma.user.count({ where: { accountCountry: 'Kenya' } }),
     prisma.user.count({ where: { status: 'active' } }),
     prisma.user.count({ where: { status: 'suspended' } }),
+    prisma.user.count({ where: { roleId: ministryAdminRole?.id, status: 'active' } }),
+    prisma.user.count({ where: { roleId: ministryAdminRole?.id, accountCountry: 'Malawi' } }),
+    prisma.user.count({ where: { roleId: ministryAdminRole?.id, accountCountry: 'Kenya' } }),
     prisma.subscription.count({ where: { status: 'active' } }),
     prisma.subscription.count({ where: { status: 'expired' } }),
     prisma.subscription.count({
@@ -329,6 +334,16 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
     }),
     prisma.withdrawal.aggregate({
       where: { status: 'completed' },
+      _sum: { systemFeeAmount: true } as any,
+      _count: true,
+    }),
+    prisma.withdrawal.aggregate({
+      where: { status: 'completed', wallet: { currency: 'MWK' } } as any,
+      _sum: { systemFeeAmount: true } as any,
+      _count: true,
+    }),
+    prisma.withdrawal.aggregate({
+      where: { status: 'completed', wallet: { currency: 'KES' } } as any,
       _sum: { systemFeeAmount: true } as any,
       _count: true,
     }),
@@ -391,6 +406,7 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
     data: {
       totalUsers, totalChurches, totalMinistryAdmins, totalMembers,
       malawiUsers, kenyaUsers, activeUsers, suspendedUsers,
+      activeMinistryAdmins, malawiMinistryAdmins, kenyaMinistryAdmins,
       activeSubscriptions, expiredSubscriptions, expiringSoonSubscriptions,
       totalPackages, pendingPayments, failedPayments,
       totalRevenue: revenueResult._sum.amount ?? 0,
@@ -401,10 +417,10 @@ export async function getAdminStats(_req: Request, res: Response): Promise<void>
       kenyaPayments: kenyaRevenueResult._count,
       mainRevenue: ((systemRevenueResult._sum as any)?.systemFeeAmount ?? 0) + ((systemRevenueResult._sum as any)?.ceilRoundingAmount ?? 0) + ((withdrawalRevenueResult._sum as any)?.systemFeeAmount ?? 0),
       mainRevenueTransactions: systemRevenueResult._count + withdrawalRevenueResult._count,
-      malawiMainRevenue: ((malawiSystemRevenueResult._sum as any)?.systemFeeAmount ?? 0) + ((malawiSystemRevenueResult._sum as any)?.ceilRoundingAmount ?? 0) + ((withdrawalRevenueResult._sum as any)?.systemFeeAmount ?? 0),
-      malawiMainRevenueTransactions: malawiSystemRevenueResult._count + withdrawalRevenueResult._count,
-      kenyaMainRevenue: ((kenyaSystemRevenueResult._sum as any)?.systemFeeAmount ?? 0) + ((kenyaSystemRevenueResult._sum as any)?.ceilRoundingAmount ?? 0),
-      kenyaMainRevenueTransactions: kenyaSystemRevenueResult._count,
+      malawiMainRevenue: ((malawiSystemRevenueResult._sum as any)?.systemFeeAmount ?? 0) + ((malawiSystemRevenueResult._sum as any)?.ceilRoundingAmount ?? 0) + ((malawiWithdrawalRevenueResult._sum as any)?.systemFeeAmount ?? 0),
+      malawiMainRevenueTransactions: malawiSystemRevenueResult._count + malawiWithdrawalRevenueResult._count,
+      kenyaMainRevenue: ((kenyaSystemRevenueResult._sum as any)?.systemFeeAmount ?? 0) + ((kenyaSystemRevenueResult._sum as any)?.ceilRoundingAmount ?? 0) + ((kenyaWithdrawalRevenueResult._sum as any)?.systemFeeAmount ?? 0),
+      kenyaMainRevenueTransactions: kenyaSystemRevenueResult._count + kenyaWithdrawalRevenueResult._count,
       withdrawalSystemRevenue: (withdrawalRevenueResult._sum as any)?.systemFeeAmount ?? 0,
       withdrawalSystemRevenueCount: withdrawalRevenueResult._count,
       packageBreakdown,
@@ -739,6 +755,7 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
     const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
     const ministryChurchIds = user.ownedChurches.map(church => church.id);
     const completedWhere = { status: 'completed', churchId: { in: ministryChurchIds } };
+    const pricingMarket = await resolvePricingMarket(user.accountCountry);
 
     const [
       subscriptionsResult,
@@ -804,6 +821,12 @@ export async function getAdminUser(req: Request, res: Response): Promise<void> {
     payments = paymentsResult;
     const percentChange = (current: number, previous: number) => previous > 0 ? Math.round(((current - previous) / previous) * 100) : current > 0 ? 100 : 0;
     usageMetrics = {
+      currencyCode: pricingMarket.currencyCode,
+      market: {
+        code: pricingMarket.code,
+        name: pricingMarket.name,
+        country: pricingMarket.country,
+      },
       period: {
         thisMonthStart: thisMonthStart.toISOString(),
         lastMonthStart: lastMonthStart.toISOString(),
