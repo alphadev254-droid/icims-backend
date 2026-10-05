@@ -316,6 +316,7 @@ export async function updateAdminPackageInvoice(req: Request, res: Response): Pr
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.errors[0].message }); return; }
 
   const data: any = { ...parsed.data };
+  delete data.months;
   if (parsed.data.packageId) {
     const pkg = await prisma.package.findUnique({ where: { id: parsed.data.packageId } });
     if (!pkg) { res.status(404).json({ success: false, message: 'Package not found' }); return; }
