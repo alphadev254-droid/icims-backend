@@ -158,6 +158,7 @@ model User {
   ownedChurches                 Church[]                @relation("MinistryAdminChurches")
   createdSubaccounts            Subaccount[]            @relation("SubaccountCreator")
   tickets                       EventTicket[]
+  programAssignments            ProgramItem[]
   transactions                  Transaction[]
   donationTransactions          DonationTransaction[]
   passwordResetTokens           PasswordResetToken[]
@@ -244,6 +245,7 @@ model Church {
   users                  User[]
   referralLinks          ReferralLink[]
   events                 Event[]
+  services               Service[]
   eventLinks             EventChurch[]
   eventTickets           EventTicket[]
   givingCampaigns        GivingCampaign[]
@@ -383,6 +385,7 @@ model Event {
   scheduledOccurrenceId String?   @unique
 
   church         Church          @relation(fields: [churchId], references: [id])
+  program        Program?
   linkedChurches EventChurch[]
   tickets        EventTicket[]
   reminders      ReminderCache[]
@@ -394,6 +397,64 @@ model Event {
   @@index([recordType])
   @@index([sourceEventId])
   @@map("events")
+}
+
+model Service {
+  id          String     @id @default(cuid())
+  churchId    String
+  title       String
+  type        String?
+  startsAt    DateTime
+  endsAt      DateTime?
+  location    String?
+  description String?    @db.Text
+  status      String     @default("scheduled")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  church      Church     @relation(fields: [churchId], references: [id])
+  attendance  Attendance?
+  program     Program?
+
+  @@index([churchId, startsAt])
+  @@map("services")
+}
+
+model Program {
+  id          String        @id @default(cuid())
+  serviceId   String?       @unique
+  eventId     String?       @unique
+  title       String
+  description String?       @db.Text
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  service     Service?      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  event       Event?        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  items       ProgramItem[]
+
+  @@map("programs")
+}
+
+model ProgramItem {
+  id          String   @id @default(cuid())
+  programId   String
+  position    Int
+  title       String
+  description String?  @db.Text
+  startsAt    DateTime
+  endsAt      DateTime
+  userId      String?
+  guestName   String?
+  guestEmail  String?
+  guestPhone  String?
+
+  program     Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([programId, position])
+  @@index([userId])
+  @@map("program_items")
 }
 
 model ScheduleRecurrenceRule {
@@ -763,6 +824,7 @@ model Pledge {
 model Attendance {
   id                    String    @id @default(cuid())
   eventId               String?
+  serviceId             String?   @unique
   churchId              String
   date                  DateTime
   totalAttendees        Int
@@ -787,6 +849,7 @@ model Attendance {
   qrRegeneratedAt       DateTime?
 
   church           Church                  @relation(fields: [churchId], references: [id])
+  service          Service?                @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   sharedAccessLink SharedAccessLink?       @relation(fields: [sharedAccessLinkId], references: [id], onDelete: SetNull)
   participants     AttendanceParticipant[]
 

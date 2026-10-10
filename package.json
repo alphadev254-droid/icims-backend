@@ -16,6 +16,8 @@
     "backfill:child-users": "ts-node scripts/backfill-child-user-identities.ts",
     "recalculate:attendance": "ts-node scripts/recalculate-attendance-summaries.ts",
     "recalculate:attendance:apply": "ts-node scripts/recalculate-attendance-summaries.ts --apply",
+    "backfill:attendance-services": "ts-node scripts/backfill-attendance-services.ts",
+    "backfill:attendance-services:apply": "ts-node scripts/backfill-attendance-services.ts --apply",
     "users:archive-cancelled-emails": "ts-node scripts/archive-cancelled-user-emails.ts",
     "users:archive-cancelled-emails:apply": "ts-node scripts/archive-cancelled-user-emails.ts --apply",
     "roles:cleanup-legacy": "ts-node scripts/cleanup-legacy-system-roles.ts",

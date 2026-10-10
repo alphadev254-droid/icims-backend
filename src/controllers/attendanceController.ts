@@ -33,6 +33,7 @@ const schema = z.object({
   serviceType: z.string().default('Sunday Service'),
   notes: z.string().optional(),
   eventId: z.string().optional(),
+  serviceId: z.string().optional(),
   churchId: z.string().optional(),
   visitors: z.array(visitorSchema).optional(),
 });
@@ -49,6 +50,7 @@ const startQrAttendanceSchema = z.object({
   date: z.string().min(1, 'Date required'),
   serviceType: z.string().default('Sunday Service'),
   eventId: z.string().optional(),
+  serviceId: z.string().optional(),
   notes: z.string().optional(),
   qrActiveFrom: z.string().optional().nullable(),
   qrActiveUntil: z.string().optional().nullable(),
@@ -94,6 +96,8 @@ const attendanceListSelect: any = {
   serviceType: true,
   notes: true,
   eventId: true,
+  serviceId: true,
+  service: { select: { id: true, title: true, type: true, startsAt: true } },
   createdAt: true,
   digitalCheckInEnabled: true,
   qrToken: true,
@@ -783,7 +787,15 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { churchId: requestedChurchId, eventId, visitors, ...data } = parsed.data;
+  const { churchId: requestedChurchId, eventId, serviceId, visitors, ...data } = parsed.data;
+  if (serviceId && eventId) {
+    res.status(400).json({ success: false, message: 'Choose a service or an event' });
+    return;
+  }
+  if (!serviceId && !eventId) {
+    res.status(400).json({ success: false, message: 'Select a service or event for attendance' });
+    return;
+  }
   if (eventId && !(await hasFeature(userId!, 'event_attendance'))) {
     res.status(403).json({ success: false, message: 'Your package does not include Event Attendance. Please upgrade to access this feature.' });
     return;
@@ -799,7 +811,25 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     userId
   );
 
-  const target = await resolveAttendanceTargetChurch(eventId, requestedChurchId, accessibleChurchIds);
+  const service = serviceId ? await prisma.service.findUnique({ where: { id: serviceId } }) : null;
+  if (serviceId && !service) {
+    res.status(404).json({ success: false, message: 'Service not found' });
+    return;
+  }
+  if (service && !accessibleChurchIds.includes(service.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to this service' });
+    return;
+  }
+  if (service?.status === 'cancelled') {
+    res.status(400).json({ success: false, message: 'Cannot start attendance for a cancelled service' });
+    return;
+  }
+  if (service && (await prisma.attendance.findUnique({ where: { serviceId: service.id } }))) {
+    res.status(409).json({ success: false, message: 'Attendance already exists for this service' });
+    return;
+  }
+
+  const target = await resolveAttendanceTargetChurch(eventId, service?.churchId || requestedChurchId, accessibleChurchIds);
   if (!target.ok) {
     res.status(target.status).json({ success: false, message: target.message });
     return;
@@ -811,7 +841,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
     res.status(400).json({ success: false, message: parsedAttendanceDate.message });
     return;
   }
-  const attendanceDate = parsedAttendanceDate.date;
+  const attendanceDate = service?.startsAt || parsedAttendanceDate.date;
   const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
 
   // Auto-set newVisitors count from visitors array if provided
@@ -855,7 +885,7 @@ export async function createAttendance(req: Request, res: Response): Promise<voi
   // Create new record with visitors in a transaction
   const record = await prisma.$transaction(async (tx) => {
     const attendance = await tx.attendance.create({
-      data: { ...data, newVisitors: newVisitorsCount, newConverts: newConvertsCount, churchId: targetChurchId, eventId, date: attendanceDate },
+      data: { ...data, serviceType: service?.type || service?.title || data.serviceType, serviceId, newVisitors: newVisitorsCount, newConverts: newConvertsCount, churchId: targetChurchId, eventId, date: attendanceDate },
     });
     if (visitors?.length) {
       await (tx as any).attendanceParticipant.createMany({
@@ -888,6 +918,14 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     res.status(403).json({ success: false, message: 'Your package does not include Event Attendance. Please upgrade to access this feature.' });
     return;
   }
+  if (parsed.data.serviceId && parsed.data.eventId) {
+    res.status(400).json({ success: false, message: 'Choose a service or an event' });
+    return;
+  }
+  if (!parsed.data.serviceId && !parsed.data.eventId) {
+    res.status(400).json({ success: false, message: 'Select a service or event for attendance' });
+    return;
+  }
 
   const accessibleChurchIds = await getAccessibleChurchIds(
     roleName!,
@@ -898,7 +936,20 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     userId
   );
 
-  const target = await resolveAttendanceTargetChurch(parsed.data.eventId, parsed.data.churchId, accessibleChurchIds);
+  const service = parsed.data.serviceId ? await prisma.service.findUnique({ where: { id: parsed.data.serviceId } }) : null;
+  if (parsed.data.serviceId && !service) {
+    res.status(404).json({ success: false, message: 'Service not found' });
+    return;
+  }
+  if (service && !accessibleChurchIds.includes(service.churchId)) {
+    res.status(403).json({ success: false, message: 'Access denied to this service' });
+    return;
+  }
+  if (service?.status === 'cancelled') {
+    res.status(400).json({ success: false, message: 'Cannot start attendance for a cancelled service' });
+    return;
+  }
+  const target = await resolveAttendanceTargetChurch(parsed.data.eventId, service?.churchId || parsed.data.churchId, accessibleChurchIds);
   if (!target.ok) {
     res.status(target.status).json({ success: false, message: target.message });
     return;
@@ -910,7 +961,7 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     res.status(400).json({ success: false, message: parsedAttendanceDate.message });
     return;
   }
-  const attendanceDate = parsedAttendanceDate.date;
+  const attendanceDate = service?.startsAt || parsedAttendanceDate.date;
   const qrActiveFrom = validateOptionalDate(parsed.data.qrActiveFrom, 'QR active from');
   const qrActiveUntil = validateOptionalDate(parsed.data.qrActiveUntil, 'QR active until');
   if (!qrActiveFrom.ok) {
@@ -927,7 +978,9 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     return;
   }
   const dateOnly = new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate());
-  const existingWhere: any = parsed.data.eventId
+  const existingWhere: any = service
+    ? { serviceId: service.id }
+    : parsed.data.eventId
     ? { eventId: parsed.data.eventId }
     : {
         churchId: targetChurchId,
@@ -959,6 +1012,7 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
     data: {
       churchId: targetChurchId,
       eventId: parsed.data.eventId,
+      serviceId: service?.id,
       date: attendanceDate,
       totalAttendees: 0,
       maleCount: 0,
@@ -969,7 +1023,7 @@ export async function startQrAttendance(req: Request, res: Response): Promise<vo
       adults: 0,
       seniors: 0,
       newVisitors: 0,
-      serviceType: parsed.data.serviceType,
+      serviceType: service?.type || service?.title || parsed.data.serviceType,
       notes: parsed.data.notes,
       digitalCheckInEnabled: true,
       qrStatus: 'active',
@@ -1011,7 +1065,7 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const { churchId: targetChurchId, eventId, visitors, ...data } = parsed.data;
+  const { churchId: targetChurchId, eventId, serviceId, visitors, ...data } = parsed.data;
 
   const record = await prisma.attendance.findUnique({
     where: { id },
@@ -1019,6 +1073,14 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
   });
   if (!record) {
     res.status(404).json({ success: false, message: 'Record not found' });
+    return;
+  }
+  if (serviceId && serviceId !== record.serviceId) {
+    res.status(400).json({ success: false, message: 'Service link cannot be changed here' });
+    return;
+  }
+  if (record.serviceId && targetChurchId && targetChurchId !== record.churchId) {
+    res.status(400).json({ success: false, message: 'Edit the service to change its church' });
     return;
   }
 
@@ -1058,10 +1120,11 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
     const updated = await prisma.attendance.update({
       where: { id },
       data: {
-        churchId: targetChurchId,
-        date: parsedAttendanceDate.date,
-        serviceType: data.serviceType,
-        eventId,
+        churchId: record.serviceId ? record.churchId : targetChurchId,
+        date: record.serviceId ? record.date : parsedAttendanceDate.date,
+        serviceType: record.serviceId ? record.serviceType : data.serviceType,
+        eventId: record.serviceId ? record.eventId : eventId,
+        notes: data.notes,
       },
       select: attendanceListSelect,
     } as any);
@@ -1075,7 +1138,7 @@ export async function updateAttendance(req: Request, res: Response): Promise<voi
   const updated = await prisma.$transaction(async (tx) => {
     const attendance = await tx.attendance.update({
       where: { id },
-      data: { ...data, newVisitors: newVisitorsCount, newConverts: newConvertsCount, date: parsedAttendanceDate.date, churchId: targetChurchId, eventId },
+      data: { ...data, newVisitors: newVisitorsCount, newConverts: newConvertsCount, date: record.serviceId ? record.date : parsedAttendanceDate.date, churchId: record.serviceId ? record.churchId : targetChurchId, serviceType: record.serviceId ? record.serviceType : data.serviceType, eventId: record.serviceId ? record.eventId : eventId },
     });
     if (visitors !== undefined) {
       await (tx as any).attendanceParticipant.deleteMany({

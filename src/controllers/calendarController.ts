@@ -172,6 +172,41 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
         })
       : Promise.resolve(),
 
+    requestedTypes.includes('attendance')
+      ? prisma.service.findMany({
+          where: {
+            churchId: { in: churchIds },
+            startsAt: { gte: startDate, lte: endDate },
+            status: { not: 'cancelled' },
+            attendance: null,
+          },
+          select: {
+            id: true,
+            title: true,
+            startsAt: true,
+            endsAt: true,
+            description: true,
+            status: true,
+            churchId: true,
+            church: { select: { name: true } },
+          },
+        }).then(services => {
+          activities.push(...services.map(service => ({
+            id: `service:${service.id}`,
+            sourceId: service.id,
+            type: 'attendance' as const,
+            title: service.title,
+            startsAt: service.startsAt,
+            endsAt: service.endsAt,
+            churchId: service.churchId,
+            churchName: service.church.name,
+            description: service.description,
+            status: service.status,
+            meta: { serviceId: service.id },
+          })));
+        })
+      : Promise.resolve(),
+
     requestedTypes.includes('cell_meeting')
       ? prisma.cellMeeting.findMany({
           where: {

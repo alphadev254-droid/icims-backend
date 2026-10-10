@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getEvents, getEvent, getEventSelect, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, cancelTicket, getPublicEvent } from '../controllers/eventController';
 import { authenticate, authorizeAnyPermission, authorizePermission } from '../middleware/auth';
 import { requireFeature } from '../middleware/packageCheck';
+import { getProgram, saveProgram, deleteProgram, searchProgramPeople } from '../controllers/programController';
 
 const router = Router();
 
@@ -28,6 +29,11 @@ router.get('/select', authorizeAnyPermission([
   'transactions:read',
   'reports:read',
 ]), getEventSelect);
+
+router.get('/:id/program', requireFeature('events_management'), authorizePermission('events:read'), getProgram);
+router.put('/:id/program', requireFeature('events_management'), authorizePermission('events:update'), saveProgram);
+router.delete('/:id/program', requireFeature('events_management'), authorizePermission('events:update'), deleteProgram);
+router.get('/:id/program/people', requireFeature('events_management'), authorizePermission('events:read'), searchProgramPeople);
 
 // General CRUD routes
 router.get('/',       requireFeature('events_management'), authorizePermission('events:read'),   getEvents);
