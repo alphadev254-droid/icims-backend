@@ -1,3 +1,9 @@
+-- A failed first attempt may have created the parent tables before MySQL
+-- rejected a later identifier. Make Prisma's rolled-back retry safe.
+DROP TABLE IF EXISTS `system_campaign_delivery_attempts`;
+DROP TABLE IF EXISTS `system_campaign_recipients`;
+DROP TABLE IF EXISTS `system_campaigns`;
+
 CREATE TABLE `system_campaigns` (
   `id` VARCHAR(191) NOT NULL,
   `title` VARCHAR(191) NOT NULL,
@@ -63,7 +69,7 @@ CREATE TABLE `system_campaign_delivery_attempts` (
   `attemptedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `completedAt` DATETIME(3) NULL,
   PRIMARY KEY (`id`),
-  INDEX `system_campaign_delivery_attempts_campaignRecipientId_channel_idx` (`campaignRecipientId`, `channel`),
+  INDEX `sys_campaign_attempt_recipient_channel_idx` (`campaignRecipientId`, `channel`),
   CONSTRAINT `system_campaign_delivery_attempts_campaignRecipientId_fkey` FOREIGN KEY (`campaignRecipientId`) REFERENCES `system_campaign_recipients` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
