@@ -14,7 +14,11 @@ const storage = multer.diskStorage({
   },
   filename: (_req, file, cb) => {
     const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
+    const imageExtension: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
+    const extension = (_req as any).uploadSubDir === 'bookable-resources'
+      ? imageExtension[file.mimetype] || ''
+      : path.extname(file.originalname);
+    cb(null, `${unique}${extension}`);
   },
 });
 

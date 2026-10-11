@@ -1051,6 +1051,7 @@ model BookableResource {
   description          String?  @db.Text
   location             String?
   custodianName        String?
+  imageUrls            String?  @db.Text
   scope                String   @default("own_church")
   status               String   @default("active")
   approvalRequired     Boolean  @default(false)

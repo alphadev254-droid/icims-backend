@@ -1,13 +1,16 @@
 import { Router } from 'express';
 import { authenticate, authorizeAnyPermission, authorizePermission } from '../middleware/auth';
 import { requireFeature } from '../middleware/packageCheck';
-import { blockResource, cancelResourceBooking, checkResourceAvailability, createBookableResource, decideResourceBooking, getBookingActivityWindow, listBookableResources, listResourceBookings, requestResourceBooking, updateBookableResource } from '../controllers/resourceBookingController';
+import { uploadImage } from '../middleware/upload';
+import { authorizeResourceImageUpload, blockResource, cancelResourceBooking, checkResourceAvailability, createBookableResource, decideResourceBooking, getBookingActivityWindow, listBookableResources, listResourceBookings, removeBookableResourceImage, requestResourceBooking, updateBookableResource, uploadBookableResourceImage } from '../controllers/resourceBookingController';
 
 const router = Router();
 router.use(authenticate, requireFeature('scheduler_resource_booking'));
 router.get('/resources', authorizeAnyPermission(['resource_booking:read', 'resource_booking:request', 'resource_booking:manage']), listBookableResources);
 router.post('/resources', authorizePermission('resource_booking:manage'), createBookableResource);
 router.put('/resources/:id', authorizePermission('resource_booking:manage'), updateBookableResource);
+router.post('/resources/:id/images', authorizePermission('resource_booking:manage'), authorizeResourceImageUpload, uploadImage.single('image'), uploadBookableResourceImage);
+router.delete('/resources/:id/images', authorizePermission('resource_booking:manage'), removeBookableResourceImage);
 router.post('/resources/:id/block', authorizePermission('resource_booking:manage'), blockResource);
 router.post('/availability', authorizeAnyPermission(['resource_booking:read', 'resource_booking:request', 'resource_booking:manage']), checkResourceAvailability);
 router.get('/activity-window', authorizeAnyPermission(['resource_booking:read', 'resource_booking:request']), getBookingActivityWindow);

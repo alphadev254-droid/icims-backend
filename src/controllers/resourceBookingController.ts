@@ -1,5 +1,7 @@
-import { Request, Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { BookingError, blockedInterval, findConflict, lockResources, newBookingGroupId, resolveActivity, resolveBookingMinistry } from '../services/resourceBookingService';
@@ -34,6 +36,25 @@ const includeBooking = {
   decidedBy: { select: { id: true, firstName: true, lastName: true } },
 } as const;
 
+function resourceImages(value: string | null): string[] {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch { return []; }
+}
+
+function withImages<T extends { imageUrls: string | null }>(resource: T) {
+  const { imageUrls, ...fields } = resource;
+  return { ...fields, images: resourceImages(imageUrls) };
+}
+
+async function deleteResourceImageFile(url: string) {
+  if (!/^\/uploads\/bookable-resources\/[A-Za-z0-9._-]+$/.test(url)) return;
+  await fs.promises.unlink(path.join(process.cwd(), 'uploads', 'bookable-resources', path.basename(url))).catch(error => {
+    if (error?.code !== 'ENOENT') console.error('[Resource Booking] Could not remove image:', error);
+  });
+}
+
 async function context(req: Request) {
   const userId = req.user!.userId;
   const [ministryAdminId, churchIds] = await Promise.all([
@@ -60,7 +81,7 @@ export async function listBookableResources(req: Request, res: Response) {
     },
     orderBy: [{ category: 'asc' }, { name: 'asc' }],
   });
-  return res.json({ success: true, data: resources });
+  return res.json({ success: true, data: resources.map(withImages) });
 }
 
 export async function createBookableResource(req: Request, res: Response) {
@@ -69,7 +90,7 @@ export async function createBookableResource(req: Request, res: Response) {
   const { userId, ministryAdminId, churchIds } = await context(req);
   if (!churchIds.includes(parsed.data.churchId)) return res.status(403).json({ success: false, message: 'Branch access denied' });
   const asset = await prisma.bookableResource.create({ data: { ...parsed.data, ministryAdminId, createdById: userId } });
-  return res.status(201).json({ success: true, data: asset });
+  return res.status(201).json({ success: true, data: withImages(asset) });
 }
 
 export async function updateBookableResource(req: Request, res: Response) {
@@ -82,7 +103,52 @@ export async function updateBookableResource(req: Request, res: Response) {
   if (parsed.data.churchId && parsed.data.churchId !== asset.churchId && await prisma.resourceBooking.count({ where: { resourceId: asset.id, status: { in: ['pending', 'approved'] } } })) return res.status(409).json({ success: false, message: 'Cancel active bookings before moving this resource to another branch' });
   if (parsed.data.status && parsed.data.status !== 'active' && asset.status === 'active' && await prisma.resourceBooking.count({ where: { resourceId: asset.id, status: { in: ['pending', 'approved'] }, endsAt: { gt: new Date() } } })) return res.status(409).json({ success: false, message: 'Cancel upcoming bookings before making this resource unavailable' });
   const updated = await prisma.bookableResource.update({ where: { id: asset.id }, data: parsed.data });
-  return res.json({ success: true, data: updated });
+  return res.json({ success: true, data: withImages(updated) });
+}
+
+export async function authorizeResourceImageUpload(req: Request, res: Response, next: NextFunction) {
+  const { ministryAdminId, churchIds } = await context(req);
+  const asset = await prisma.bookableResource.findFirst({ where: { id: String(req.params.id), ministryAdminId, churchId: { in: churchIds } }, select: { id: true } });
+  if (!asset) return res.status(404).json({ success: false, message: 'Resource not found' });
+  (req as any).uploadSubDir = 'bookable-resources';
+  next();
+}
+
+export async function uploadBookableResourceImage(req: Request, res: Response) {
+  if (!req.file) return res.status(400).json({ success: false, message: 'Choose an image' });
+  const url = `/uploads/bookable-resources/${req.file.filename}`;
+  try {
+    const asset = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM bookable_resources WHERE id = ${String(req.params.id)} FOR UPDATE`;
+      const current = await tx.bookableResource.findUniqueOrThrow({ where: { id: String(req.params.id) } });
+      const images = resourceImages(current.imageUrls);
+      if (images.length >= 3) throw new BookingError('A resource can have at most 3 images', 409);
+      return tx.bookableResource.update({ where: { id: current.id }, data: { imageUrls: JSON.stringify([...images, url]) } });
+    });
+    return res.status(201).json({ success: true, data: withImages(asset) });
+  } catch (error) {
+    await deleteResourceImageFile(url);
+    return respondError(res, error);
+  }
+}
+
+export async function removeBookableResourceImage(req: Request, res: Response) {
+  const parsed = z.object({ url: z.string() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ success: false, message: 'Image URL is required' });
+  const { ministryAdminId, churchIds } = await context(req);
+  const asset = await prisma.bookableResource.findFirst({ where: { id: String(req.params.id), ministryAdminId, churchId: { in: churchIds } }, select: { id: true } });
+  if (!asset) return res.status(404).json({ success: false, message: 'Resource not found' });
+  try {
+    const updated = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM bookable_resources WHERE id = ${asset.id} FOR UPDATE`;
+      const current = await tx.bookableResource.findUniqueOrThrow({ where: { id: asset.id } });
+      const images = resourceImages(current.imageUrls);
+      if (!images.includes(parsed.data.url)) throw new BookingError('Image not found on this resource', 404);
+      return tx.bookableResource.update({ where: { id: asset.id }, data: { imageUrls: JSON.stringify(images.filter(url => url !== parsed.data.url)) } });
+    });
+    await deleteResourceImageFile(parsed.data.url);
+    return res.json({ success: true, data: withImages(updated) });
+  } catch (error) { return respondError(res, error); }
 }
 
 export async function listResourceBookings(req: Request, res: Response) {
