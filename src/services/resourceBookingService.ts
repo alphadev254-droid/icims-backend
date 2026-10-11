@@ -28,9 +28,14 @@ export async function resolveActivity(input: {
   ministryAdminId: string; churchId: string; activityType: 'manual' | 'service' | 'event'; activityId?: string | null;
   activityTitle?: string; startsAt?: string; endsAt?: string;
 }) {
+  const providedStart = input.startsAt ? new Date(input.startsAt) : undefined;
+  const providedEnd = input.endsAt ? new Date(input.endsAt) : undefined;
+  if (Boolean(input.startsAt) !== Boolean(input.endsAt) || (providedStart && (!Number.isFinite(providedStart.getTime()) || !Number.isFinite(providedEnd!.getTime()) || providedStart >= providedEnd!))) {
+    throw new BookingError('Enter a valid booking start and end time');
+  }
   if (input.activityType === 'manual') {
-    const startsAt = new Date(input.startsAt || '');
-    const endsAt = new Date(input.endsAt || '');
+    const startsAt = providedStart || new Date('');
+    const endsAt = providedEnd || new Date('');
     if (!input.activityTitle?.trim() || !Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || startsAt >= endsAt) {
       throw new BookingError('Enter an activity title and a valid start and end time');
     }
@@ -40,15 +45,17 @@ export async function resolveActivity(input: {
   if (input.activityType === 'service') {
     const service = await prisma.service.findFirst({ where: { id: input.activityId, churchId: input.churchId, church: { ministryAdminId: input.ministryAdminId } } });
     if (!service || service.status === 'cancelled') throw new BookingError('Service is unavailable', 404);
-    if (!service.endsAt) throw new BookingError('Add an end time to the service before booking resources');
-    return { activityTitle: service.title, startsAt: service.startsAt, endsAt: service.endsAt, activityId: service.id };
+    const startsAt = providedStart || service.startsAt;
+    const endsAt = providedEnd || service.endsAt;
+    if (!endsAt) throw new BookingError('Set a booking end time before requesting resources');
+    return { activityTitle: service.title, startsAt, endsAt, activityId: service.id };
   }
   const event = await prisma.event.findFirst({ where: { id: input.activityId, churchId: input.churchId, church: { ministryAdminId: input.ministryAdminId } }, include: { church: { select: { timezone: true } } } });
   if (!event || event.status === 'cancelled' || event.recordType === 'scheduled_source') throw new BookingError('Choose an individual active event occurrence', 404);
-  if (!event.endTime) throw new BookingError('Add an end time to the event before booking resources');
   const timezone = event.church.timezone || 'UTC';
-  const startsAt = zonedDateTimeToUtc(event.date.toISOString().slice(0, 10), event.time, timezone);
-  const endsAt = zonedDateTimeToUtc(event.endDate.toISOString().slice(0, 10), event.endTime, timezone);
+  const startsAt = providedStart || zonedDateTimeToUtc(event.date.toISOString().slice(0, 10), event.time, timezone);
+  const endsAt = providedEnd || (event.endTime ? zonedDateTimeToUtc(event.endDate.toISOString().slice(0, 10), event.endTime, timezone) : null);
+  if (!endsAt) throw new BookingError('Set a booking end time before requesting resources');
   if (startsAt >= endsAt) throw new BookingError('Event end time must be after its start time');
   return { activityTitle: event.title, startsAt, endsAt, activityId: event.id };
 }

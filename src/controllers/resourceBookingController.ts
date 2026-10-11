@@ -77,7 +77,7 @@ export async function listBookableResources(req: Request, res: Response) {
     where: {
       ministryAdminId,
       ...(churchId ? { OR: [{ churchId }, { scope: 'all_ministry' }] } : { OR: [{ churchId: { in: churchIds } }, { scope: 'all_ministry' }] }),
-      ...(req.query.status ? { status: String(req.query.status) } : {}),
+      ...(req.query.status ? { status: String(req.query.status) } : { status: { not: 'deleted' } }),
     },
     orderBy: [{ category: 'asc' }, { name: 'asc' }],
   });
@@ -104,6 +104,32 @@ export async function updateBookableResource(req: Request, res: Response) {
   if (parsed.data.status && parsed.data.status !== 'active' && asset.status === 'active' && await prisma.resourceBooking.count({ where: { resourceId: asset.id, status: { in: ['pending', 'approved'] }, endsAt: { gt: new Date() } } })) return res.status(409).json({ success: false, message: 'Cancel upcoming bookings before making this resource unavailable' });
   const updated = await prisma.bookableResource.update({ where: { id: asset.id }, data: parsed.data });
   return res.json({ success: true, data: withImages(updated) });
+}
+
+export async function deleteBookableResource(req: Request, res: Response) {
+  const { ministryAdminId, churchIds } = await context(req);
+  const existing = await prisma.bookableResource.findFirst({ where: { id: String(req.params.id), ministryAdminId, churchId: { in: churchIds } } });
+  if (!existing || existing.status === 'deleted') return res.status(404).json({ success: false, message: 'Resource not found' });
+  try {
+    const result = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM bookable_resources WHERE id = ${existing.id} FOR UPDATE`;
+      const current = await tx.bookableResource.findUniqueOrThrow({ where: { id: existing.id } });
+      const now = new Date();
+      const cancelled = await tx.resourceBooking.updateMany({
+        where: { resourceId: current.id, status: { in: ['pending', 'approved'] }, startsAt: { gt: now } },
+        data: { status: 'cancelled', decidedById: req.user!.userId, decidedAt: now, decisionNote: 'Cancelled because this resource was removed from the booking catalogue.' },
+      });
+      const historyCount = await tx.resourceBooking.count({ where: { resourceId: current.id } });
+      if (historyCount) {
+        await tx.bookableResource.update({ where: { id: current.id }, data: { status: 'deleted' } });
+      } else {
+        await tx.bookableResource.delete({ where: { id: current.id } });
+      }
+      return { cancelled: cancelled.count, images: resourceImages(current.imageUrls), keptForHistory: historyCount > 0 };
+    });
+    await Promise.all(result.images.map(deleteResourceImageFile));
+    return res.json({ success: true, data: result });
+  } catch (error) { return respondError(res, error); }
 }
 
 export async function authorizeResourceImageUpload(req: Request, res: Response, next: NextFunction) {
@@ -171,6 +197,29 @@ export async function listResourceBookings(req: Request, res: Response) {
     prisma.resourceBooking.count({ where }),
   ]);
   return res.json({ success: true, data: items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+}
+
+export async function listBookableActivities(req: Request, res: Response) {
+  const { ministryAdminId, churchIds } = await context(req);
+  const branchId = typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
+  if (branchId && !churchIds.includes(branchId)) return res.status(403).json({ success: false, message: 'Branch access denied' });
+  const branches = branchId ? [branchId] : churchIds;
+  const now = new Date();
+  const [services, events] = await Promise.all([
+    prisma.service.findMany({ where: { churchId: { in: branches }, church: { ministryAdminId }, status: { not: 'cancelled' }, startsAt: { gt: now } }, select: { id: true, churchId: true, title: true, startsAt: true, endsAt: true, church: { select: { name: true } } }, orderBy: { startsAt: 'asc' }, take: 200 }),
+    prisma.event.findMany({ where: { churchId: { in: branches }, church: { ministryAdminId }, status: { not: 'cancelled' }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, date: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } }, include: { church: { select: { name: true, timezone: true } } }, orderBy: [{ date: 'asc' }, { time: 'asc' }], take: 200 }),
+  ]);
+  const futureServices = services.filter(item => !item.endsAt || item.startsAt < item.endsAt);
+  const futureEvents = events.map(item => {
+    const timezone = item.church.timezone || 'UTC';
+    const startsAt = zonedDateTimeToUtc(item.date.toISOString().slice(0, 10), item.time, timezone);
+    const endsAt = item.endTime ? zonedDateTimeToUtc(item.endDate.toISOString().slice(0, 10), item.endTime, timezone) : null;
+    return { id: item.id, churchId: item.churchId, churchName: item.church.name, title: item.title, startsAt, endsAt };
+  }).filter(item => item.startsAt > now && (!item.endsAt || item.startsAt < item.endsAt));
+  return res.json({ success: true, data: {
+    services: futureServices.map(item => ({ id: item.id, churchId: item.churchId, churchName: item.church.name, title: item.title, startsAt: item.startsAt, endsAt: item.endsAt })),
+    events: futureEvents,
+  } });
 }
 
 export async function getBookingActivityWindow(req: Request, res: Response) {
