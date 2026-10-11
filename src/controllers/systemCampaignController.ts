@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { emailQueue } from '../lib/bullQueue';
+import { systemCampaignEmailTemplate } from '../lib/emailTemplates';
 
 const campaignSchema = z.object({
   title: z.string().trim().min(2).max(191),
@@ -32,18 +33,6 @@ function serializeCampaign(campaign: any) {
     audienceFilters: parseJson(campaign.audienceFilters, {}),
     channels: parseJson(campaign.channels, { inApp: true, email: false, push: false }),
   };
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] as string));
-}
-
-function campaignEmailHtml(firstName: string, title: string, message: string, actionLabel?: string | null, actionUrl?: string | null) {
-  const frontend = (process.env.FRONTEND_URL || 'http://localhost:8080').replace(/\/$/, '');
-  const button = actionLabel && actionUrl
-    ? `<p style="margin-top:24px"><a href="${frontend}${escapeHtml(actionUrl)}" style="background:#c58b18;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">${escapeHtml(actionLabel)}</a></p>`
-    : '';
-  return `<div class="container" style="font-family:Arial,sans-serif;max-width:640px;margin:auto;padding:24px"><p>Hello ${escapeHtml(firstName)},</p><h2>${escapeHtml(title)}</h2><div style="white-space:pre-wrap;line-height:1.6">${escapeHtml(message)}</div>${button}<p style="margin-top:28px;color:#666;font-size:12px">This is an official ICIMS system notification.</p></div>`;
 }
 
 async function ministryAudience(filters: z.infer<typeof campaignSchema>['audienceFilters'], audienceType: string) {
@@ -129,7 +118,22 @@ export async function sendCampaign(req: Request, res: Response) {
     await Promise.all(recipients.map(async recipient => {
       const user = byId.get(recipient.userId)!;
       try {
-        await emailQueue.add('send-email', { to: recipient.recipientEmail, subject: campaign.title, html: campaignEmailHtml(user.firstName, campaign.title, campaign.message, campaign.actionLabel, campaign.actionUrl), emailType: 'system_campaign', campaignRecipientId: recipient.id }, { jobId: `campaign-${id}-${recipient.id}-email` });
+        await emailQueue.add('send-email', {
+          to: recipient.recipientEmail,
+          subject: campaign.title,
+          html: systemCampaignEmailTemplate({
+            firstName: user.firstName,
+            title: campaign.title,
+            summary: campaign.summary,
+            message: campaign.message,
+            category: campaign.category,
+            priority: campaign.priority,
+            actionLabel: campaign.actionLabel,
+            actionUrl: campaign.actionUrl,
+          }),
+          emailType: 'system_campaign',
+          campaignRecipientId: recipient.id,
+        }, { jobId: `campaign-${id}-${recipient.id}-email` });
       } catch (error: any) {
         await prisma.systemCampaignRecipient.update({ where: { id: recipient.id }, data: { emailStatus: 'failed', lastError: error.message } });
       }

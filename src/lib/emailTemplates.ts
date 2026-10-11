@@ -1012,6 +1012,57 @@ export const adminDirectEmailTemplate = (data: { firstName: string; subject: str
 </html>
 `;
 
+export const systemCampaignEmailTemplate = (data: {
+  firstName: string;
+  title: string;
+  summary?: string | null;
+  message: string;
+  category: string;
+  priority: string;
+  actionLabel?: string | null;
+  actionUrl?: string | null;
+}) => {
+  const category = data.category.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+  const priority = data.priority.charAt(0).toUpperCase() + data.priority.slice(1);
+  const isUrgent = data.priority === 'urgent';
+  const isImportant = data.priority === 'important';
+  const accentColor = isUrgent ? '#dc2626' : isImportant ? '#d97706' : '#d4a574';
+  const actionHref = data.actionUrl?.startsWith('/') ? `${FRONTEND_URL}${data.actionUrl}` : null;
+  const paragraphs = escapeHtml(data.message)
+    .split(/\r?\n/)
+    .filter(line => line.trim().length > 0)
+    .map(line => `<p style="margin:0 0 14px 0;color:#374151;line-height:1.75;">${line}</p>`)
+    .join('');
+
+  return `<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="header" style="border-top: 4px solid ${accentColor};">
+      <h1>${escapeHtml(data.title)}</h1>
+      <p>Official ${escapeHtml(SYSTEM_NAME)} notification</p>
+    </div>
+    <div class="content">
+      <div style="margin-bottom:20px;">
+        <span style="display:inline-block;background:#f3f4f6;color:#374151;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700;margin-right:6px;">${escapeHtml(category)}</span>
+        <span style="display:inline-block;background:${isUrgent ? '#fee2e2' : isImportant ? '#fef3c7' : '#f3f4f6'};color:${isUrgent ? '#991b1b' : isImportant ? '#92400e' : '#374151'};border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700;">${escapeHtml(priority)}</span>
+      </div>
+      <h2>Hello ${escapeHtml(data.firstName)},</h2>
+      ${data.summary ? `<div class="info-box" style="border-left-color:${accentColor};"><p style="margin:0;font-weight:600;color:#111827;">${escapeHtml(data.summary)}</p></div>` : ''}
+      <div>${paragraphs}</div>
+      ${data.actionLabel && actionHref ? `<a href="${escapeHtml(actionHref)}" class="button">${escapeHtml(data.actionLabel)}</a>` : ''}
+      <p style="margin-top:24px;font-size:13px;color:#6b7280;">You can also view this notice from the notification bell in your ${escapeHtml(SYSTEM_NAME)} dashboard.</p>
+    </div>
+    <div class="footer">
+      <p>This is an official service message from ${escapeHtml(SYSTEM_NAME)}.</p>
+      <p>&copy; ${new Date().getFullYear()} ${escapeHtml(SYSTEM_NAME)}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+};
+
 export const marketerStatusTemplate = (data: {
   firstName: string;
   status: 'approved' | 'rejected' | 'suspended' | 'pending';
