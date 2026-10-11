@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { zonedDateTimeToUtc } from '../lib/timezone';
 import { BookingError, blockedInterval, findConflict, lockResources, newBookingGroupId, resolveActivity, resolveBookingMinistry } from '../services/resourceBookingService';
 
 const resourceSchema = z.object({
@@ -316,13 +317,15 @@ export async function decideResourceBooking(req: Request, res: Response) {
 }
 
 export async function cancelResourceBooking(req: Request, res: Response) {
+  const parsed = z.object({ note: z.string().trim().max(2000).optional() }).safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ success: false, message: parsed.error.errors[0].message });
   const { ministryAdminId, churchIds, userId } = await context(req);
   const existing = await prisma.resourceBooking.findFirst({ where: { id: String(req.params.id), ministryAdminId, churchId: { in: churchIds } } });
   if (!existing) return res.status(404).json({ success: false, message: 'Booking not found' });
   if (existing.requesterId !== userId && !req.user?.permissions?.includes('resource_booking:manage') && !req.user?.permissions?.includes('resource_booking:approve')) return res.status(403).json({ success: false, message: 'You cannot cancel this booking' });
   const allowedStatuses = req.user?.permissions?.includes('resource_booking:manage') ? ['pending', 'approved', 'blocked'] : ['pending', 'approved'];
   if (!allowedStatuses.includes(existing.status)) return res.status(409).json({ success: false, message: 'Booking is already closed' });
-  const result = await prisma.resourceBooking.updateMany({ where: { id: existing.id, status: { in: allowedStatuses } }, data: { status: 'cancelled', decidedById: userId, decidedAt: new Date() } });
+  const result = await prisma.resourceBooking.updateMany({ where: { id: existing.id, status: { in: allowedStatuses } }, data: { status: 'cancelled', decidedById: userId, decidedAt: new Date(), decisionNote: parsed.data.note || null } });
   if (!result.count) return res.status(409).json({ success: false, message: 'Booking was changed by someone else' });
   return res.json({ success: true });
 }
