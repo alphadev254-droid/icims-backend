@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getEvents, getEvent, getEventSelect, createEvent, updateEvent, deleteEvent, bookTicket, getMyTickets, getEventTickets, createManualTicket, getUnallocatedTransactions, getTicketTransaction, markAttendance, downloadTicket, cancelTicket, getPublicEvent } from '../controllers/eventController';
 import { authenticate, authorizeAnyPermission, authorizePermission } from '../middleware/auth';
 import { requireFeature } from '../middleware/packageCheck';
-import { getProgram, saveProgram, deleteProgram, searchProgramPeople } from '../controllers/programController';
+import { getProgram, saveProgram, deleteProgram, searchProgramPeople, sendProgramAssignment } from '../controllers/programController';
 
 const router = Router();
 
@@ -30,10 +30,11 @@ router.get('/select', authorizeAnyPermission([
   'reports:read',
 ]), getEventSelect);
 
-router.get('/:id/program', requireFeature('events_management'), authorizePermission('events:read'), getProgram);
-router.put('/:id/program', requireFeature('events_management'), authorizePermission('events:update'), saveProgram);
-router.delete('/:id/program', requireFeature('events_management'), authorizePermission('events:update'), deleteProgram);
-router.get('/:id/program/people', requireFeature('events_management'), authorizePermission('events:read'), searchProgramPeople);
+router.get('/:id/program', requireFeature('events_management'), authorizePermission('events:read'), authorizePermission('programs:read'), getProgram);
+router.put('/:id/program', requireFeature('events_management'), authorizePermission('events:read'), authorizePermission('programs:manage'), saveProgram);
+router.delete('/:id/program', requireFeature('events_management'), authorizePermission('events:read'), authorizePermission('programs:manage'), deleteProgram);
+router.get('/:id/program/people', requireFeature('events_management'), authorizePermission('events:read'), authorizePermission('programs:read'), searchProgramPeople);
+router.post('/:id/program/items/:itemId/email', requireFeature('events_management'), authorizePermission('events:read'), authorizePermission('programs:read'), authorizePermission('programs:send'), sendProgramAssignment);
 
 // General CRUD routes
 router.get('/',       requireFeature('events_management'), authorizePermission('events:read'),   getEvents);

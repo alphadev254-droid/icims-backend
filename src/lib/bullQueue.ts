@@ -5,6 +5,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { sendEmail } from './email';
+import prisma from './prisma';
 
 // Redis connection options (plain object to avoid type conflicts)
 const redisConnection = {
@@ -35,6 +36,7 @@ export interface EmailJobData {
     contentDisposition?: 'attachment' | 'inline';
   }>;
   emailType: string;
+  programNotificationId?: string;
 }
 
 // Create queue
@@ -75,6 +77,17 @@ export const emailWorker = new Worker<EmailJobData>(
     // Send email
     await sendEmail(to, subject, html, decodedAttachments);
 
+    if (job.data.programNotificationId) {
+      try {
+        await prisma.programNotification.update({
+          where: { id: job.data.programNotificationId },
+          data: { status: 'sent', sentAt: new Date(), error: null },
+        });
+      } catch (error) {
+        console.error('[BullMQ] Email sent but program notification status could not be recorded:', error);
+      }
+    }
+
     console.log(`[BullMQ] ✅ Job ${job.id} completed`);
     return { sent: true, to, subject };
   },
@@ -89,8 +102,18 @@ emailWorker.on('completed', (job) => {
   console.log(`[BullMQ] Job ${job.id} completed successfully`);
 });
 
-emailWorker.on('failed', (job, err) => {
+emailWorker.on('failed', async (job, err) => {
   console.error(`[BullMQ] Job ${job?.id} failed:`, err.message);
+  if (job?.data.programNotificationId && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+    try {
+      await prisma.programNotification.update({
+        where: { id: job.data.programNotificationId },
+        data: { status: 'failed', error: err.message },
+      });
+    } catch (updateError) {
+      console.error('[BullMQ] Could not record program email failure:', updateError);
+    }
+  }
 });
 
 emailWorker.on('error', (err) => {
@@ -144,6 +167,16 @@ export async function queueEmailBull(
   );
 
   console.log(`[BullMQ] 📧 Queued email job ${job.id} - ${subject} to ${to} (priority: ${type === 'password_reset' || type === 'email_verification' ? 1 : type === 'registration' ? 2 : 5})`);
+}
+
+export async function queueProgramEmail(notificationId: string, to: string, subject: string, html: string): Promise<void> {
+  await emailQueue.add('send-email', {
+    to,
+    subject,
+    html,
+    emailType: 'program_assignment',
+    programNotificationId: notificationId,
+  });
 }
 
 /**

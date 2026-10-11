@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
+import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
 
 const serviceSchema = z
   .object({
@@ -42,17 +43,43 @@ export async function listServices(req: Request, res: Response) {
     typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
   if (churchId && !ids.includes(churchId))
     return res.status(403).json({ success: false, message: 'Access denied' });
+  const filters = z.object({
+    startDate: z.string().date().optional(),
+    endDate: z.string().date().optional(),
+    search: z.string().trim().max(100).optional(),
+    page: z.coerce.number().int().min(1).optional(),
+  }).safeParse(req.query);
+  if (!filters.success || (filters.data.startDate && filters.data.endDate && filters.data.startDate > filters.data.endDate))
+    return res.status(400).json({ success: false, message: 'Invalid service date range' });
+  const { startDate, endDate, search, page } = filters.data;
+  const timeZone = await resolveTimeZone({ req, churchId });
+  const dateRange = dateRangeInTimeZone(startDate, endDate, timeZone);
+  const limit = page ? 50 : 500;
+  const where = {
+    churchId: { in: churchId ? [churchId] : ids },
+    ...(startDate || endDate ? { startsAt: dateRange } : {}),
+    ...(search ? { OR: [
+      { title: { contains: search } },
+      { type: { contains: search } },
+      { church: { name: { contains: search } } },
+    ] } : {}),
+  };
   const services = await prisma.service.findMany({
-    where: { churchId: { in: churchId ? [churchId] : ids } },
+    where,
     include: {
       church: { select: { id: true, name: true } },
       attendance: { select: { id: true } },
       program: { select: { id: true } },
     },
-    orderBy: { startsAt: 'desc' },
-    take: 500,
+    orderBy: [{ startsAt: 'desc' }, { id: 'desc' }],
+    skip: page ? (page - 1) * limit : 0,
+    take: page ? limit + 1 : limit,
   });
-  return res.json({ success: true, data: services });
+  return res.json({
+    success: true,
+    data: page ? services.slice(0, limit) : services,
+    ...(page ? { hasMore: services.length > limit, total: await prisma.service.count({ where }) } : {}),
+  });
 }
 
 export async function getService(req: Request, res: Response) {

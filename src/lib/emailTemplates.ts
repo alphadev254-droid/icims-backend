@@ -50,6 +50,40 @@ const formatEmailDate = (value: Date | string | null | undefined) => value
 const formatEmailMoney = (currency: string, amount: number) =>
   `${currency} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+export function programAssignmentTemplate(data: {
+  kind: 'assignment' | 'removal';
+  recipientName: string;
+  targetTitle: string;
+  churchName: string;
+  location?: string | null;
+  itemTitle: string;
+  itemDescription?: string | null;
+  startsAt: Date;
+  endsAt: Date;
+  timeZone: string;
+}) {
+  const dateFormat = new Intl.DateTimeFormat('en-GB', {
+    timeZone: data.timeZone, dateStyle: 'full', timeStyle: 'short',
+  });
+  const removed = data.kind === 'removal';
+  return `<!DOCTYPE html><html><head>${getBaseStyle()}</head><body>
+    <div class="container">${getChurchHeader(escapeHtml(data.churchName))}
+      <div class="header"><h1>${removed ? 'Assignment update' : 'Your program assignment'}</h1>
+        <p>${escapeHtml(data.targetTitle)}</p></div>
+      <div class="content"><h2>Hello ${escapeHtml(data.recipientName)},</h2>
+        <p>${removed
+          ? 'You are no longer assigned to the item below. Please disregard the earlier assignment email.'
+          : 'You have been assigned to the following program item.'}</p>
+        <div class="info-box"><h3>${escapeHtml(data.itemTitle)}</h3>
+          <p><strong>When:</strong> ${escapeHtml(dateFormat.format(data.startsAt))} to ${escapeHtml(dateFormat.format(data.endsAt))} (${escapeHtml(data.timeZone)})</p>
+          ${data.location ? `<p><strong>Location:</strong> ${escapeHtml(data.location)}</p>` : ''}
+          ${!removed && data.itemDescription ? `<p>${escapeHtml(data.itemDescription)}</p>` : ''}
+        </div>
+        <p>If you have questions, please contact ${escapeHtml(data.churchName)}.</p>
+      </div><div class="footer"><p>${escapeHtml(data.churchName)}</p></div>
+    </div></body></html>`;
+}
+
 export const userCreatedTemplate = (data: { firstName: string; lastName: string; email: string; password: string; churchName?: string; roleName?: string }) => `
 <!DOCTYPE html>
 <html>

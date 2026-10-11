@@ -483,6 +483,7 @@ export async function getEvents(req: Request, res: Response): Promise<void> {
         requiresTicket: true,
         linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
         church: { select: { id: true, name: true } },
+        program: { select: { id: true } },
       },
       orderBy: { date: 'desc' },
       take: 500,

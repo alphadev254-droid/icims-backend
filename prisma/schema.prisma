@@ -457,6 +457,29 @@ model ProgramItem {
   @@map("program_items")
 }
 
+model ProgramNotification {
+  id          String    @id @default(cuid())
+  programId   String
+  itemId      String
+  targetType  String
+  targetId    String
+  kind        String
+  recipient   String
+  name        String
+  itemTitle   String
+  startsAt    DateTime
+  endsAt      DateTime
+  fingerprint String
+  status      String    @default("queued")
+  error       String?   @db.Text
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([programId, createdAt])
+  @@index([itemId, createdAt])
+  @@map("program_notifications")
+}
+
 model ScheduleRecurrenceRule {
   id          String    @id @default(cuid())
   frequency   String
