@@ -37,6 +37,7 @@ export interface EmailJobData {
   }>;
   emailType: string;
   programNotificationId?: string;
+  campaignRecipientId?: string;
 }
 
 // Create queue
@@ -88,6 +89,22 @@ export const emailWorker = new Worker<EmailJobData>(
       }
     }
 
+    if (job.data.campaignRecipientId) {
+      await prisma.systemCampaignRecipient.update({
+        where: { id: job.data.campaignRecipientId },
+        data: { emailStatus: 'sent', lastError: null },
+      });
+      await prisma.systemCampaignDeliveryAttempt.create({
+        data: {
+          campaignRecipientId: job.data.campaignRecipientId,
+          channel: 'email',
+          attemptNumber: job.attemptsMade + 1,
+          status: 'sent',
+          completedAt: new Date(),
+        },
+      });
+    }
+
     console.log(`[BullMQ] ✅ Job ${job.id} completed`);
     return { sent: true, to, subject };
   },
@@ -112,6 +129,26 @@ emailWorker.on('failed', async (job, err) => {
       });
     } catch (updateError) {
       console.error('[BullMQ] Could not record program email failure:', updateError);
+    }
+  }
+  if (job?.data.campaignRecipientId && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+    try {
+      await prisma.systemCampaignRecipient.update({
+        where: { id: job.data.campaignRecipientId },
+        data: { emailStatus: 'failed', lastError: err.message },
+      });
+      await prisma.systemCampaignDeliveryAttempt.create({
+        data: {
+          campaignRecipientId: job.data.campaignRecipientId,
+          channel: 'email',
+          attemptNumber: job.attemptsMade,
+          status: 'failed',
+          errorMessage: err.message,
+          completedAt: new Date(),
+        },
+      });
+    } catch (updateError) {
+      console.error('[BullMQ] Could not record campaign email failure:', updateError);
     }
   }
 });

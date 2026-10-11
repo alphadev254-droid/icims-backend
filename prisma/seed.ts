@@ -93,6 +93,8 @@ const PERMISSIONS = [
   { name: 'pledges:read',   resource: 'pledges', action: 'read' },
   { name: 'pledges:create', resource: 'pledges', action: 'create' },
   { name: 'church_website:manage', resource: 'church_website', action: 'manage' },
+  { name: 'system_notifications:read', resource: 'system_notifications', action: 'read' },
+  { name: 'system_notifications:acknowledge', resource: 'system_notifications', action: 'acknowledge' },
 ];
 
 const ROLES = [

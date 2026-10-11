@@ -57,11 +57,19 @@ import {
   updateAdminPackageInvoice,
 } from '../controllers/packageInvoiceController';
 import { getAdminPayouts, reconcileMinistryPayouts, reconcilePaystackPayouts } from '../controllers/payoutController';
+import { createCampaign, deleteCampaign, getCampaign, listCampaigns, previewCampaignAudience, sendCampaign, updateCampaign } from '../controllers/systemCampaignController';
 
 const router = Router();
 router.use(authenticate, authorizeSystemAdmin);
 
 router.get('/stats', getAdminStats);
+router.get('/campaigns', listCampaigns);
+router.post('/campaigns', createCampaign);
+router.post('/campaigns/audience-preview', previewCampaignAudience);
+router.get('/campaigns/:id', getCampaign);
+router.put('/campaigns/:id', updateCampaign);
+router.delete('/campaigns/:id', deleteCampaign);
+router.post('/campaigns/:id/send', sendCampaign);
 
 router.get('/ministries', getAdminMinistries);
 
