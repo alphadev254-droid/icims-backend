@@ -187,6 +187,8 @@ model User {
   packageInvoicePayments        Payment[]               @relation("PackageInvoicePaymentCreator")
   referrerProfile               Referrer?
   referredMinistries            ReferralLink[]          @relation("ReferralMinistryAdmin")
+  requestedResourceBookings     ResourceBooking[]       @relation("ResourceBookingRequester")
+  decidedResourceBookings       ResourceBooking[]       @relation("ResourceBookingDecider")
 
   @@index([churchId, roleId, status, createdAt])
   @@index([membershipApprovalStatus])
@@ -1036,6 +1038,68 @@ model Resource {
   views  ResourceView[]
 
   @@map("resources")
+}
+
+// Physical ministry assets. The existing Resource model is the digital content library.
+model BookableResource {
+  id                   String   @id @default(cuid())
+  ministryAdminId      String
+  churchId             String
+  name                 String
+  code                 String?
+  category             String
+  description          String?  @db.Text
+  location             String?
+  custodianName        String?
+  scope                String   @default("own_church")
+  status               String   @default("active")
+  approvalRequired     Boolean  @default(false)
+  bufferBeforeMinutes  Int      @default(0)
+  bufferAfterMinutes   Int      @default(0)
+  createdById          String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  bookings ResourceBooking[]
+
+  @@index([ministryAdminId, status], map: "bookable_resources_ministry_status_idx")
+  @@index([churchId, status], map: "bookable_resources_church_status_idx")
+  @@map("bookable_resources")
+}
+
+model ResourceBooking {
+  id                String    @id @default(cuid())
+  groupId           String
+  resourceId        String
+  ministryAdminId   String
+  churchId          String
+  requesterId       String
+  activityType      String    @default("manual")
+  activityId        String?
+  activityTitle     String
+  purpose           String?   @db.Text
+  startsAt          DateTime
+  endsAt            DateTime
+  blockedFrom       DateTime
+  blockedUntil      DateTime
+  status            String    @default("pending")
+  decidedById       String?
+  decidedAt         DateTime?
+  decisionNote      String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  resource    BookableResource @relation(fields: [resourceId], references: [id], onDelete: Restrict, map: "resource_bookings_resource_fkey")
+  requester   User             @relation("ResourceBookingRequester", fields: [requesterId], references: [id], map: "resource_bookings_requester_fkey")
+  decidedBy   User?            @relation("ResourceBookingDecider", fields: [decidedById], references: [id], map: "resource_bookings_decider_fkey")
+
+  @@index([resourceId, status, blockedFrom, blockedUntil], map: "resource_bookings_resource_interval_idx")
+  @@index([ministryAdminId, startsAt], map: "resource_bookings_ministry_start_idx")
+  @@index([churchId, startsAt], map: "resource_bookings_church_start_idx")
+  @@index([requesterId, startsAt], map: "resource_bookings_requester_start_idx")
+  @@index([activityType, activityId], map: "resource_bookings_activity_idx")
+  @@index([groupId], map: "resource_bookings_group_idx")
+  @@map("resource_bookings")
 }
 
 // ─── Packages & Payments ───────────────────────────────────────────────────────

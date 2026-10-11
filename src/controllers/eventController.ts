@@ -17,6 +17,7 @@ import { materializeUpcomingEventDrafts } from '../workers/scheduledEventWorker'
 import { buildExactScheduleOccurrenceRanges, cancelScheduledEventForSource, deleteScheduledEventForSource, getRecurrenceRulesById, parseRecurrenceRuleForApi, saveRecurrenceRule, syncEventToSchedule, type ExactScheduleOccurrenceRangeInput } from '../services/schedulerService';
 import { dateRangeInTimeZone, isValidTimeZone, resolveTimeZone, zonedDateTimeToUtc } from '../lib/timezone';
 import { publicationForStart } from '../lib/publication';
+import { assertNoLinkedBookingChange, cancelLinkedBookings, BookingError } from '../services/resourceBookingService';
 
 const TICKET_NUMBER_RETRY_LIMIT = 5;
 const scheduleDateSchema = z.string()
@@ -985,6 +986,20 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
     res.status(400).json({ success: false, message: 'Event start date must match the first selected schedule date.' });
     return;
   }
+  const bookingRelevantChange = (
+    (eventData.date !== undefined && eventData.date !== oldEvent.date.toISOString().slice(0, 10)) ||
+    (eventData.endDate !== undefined && eventData.endDate !== oldEvent.endDate.toISOString().slice(0, 10)) ||
+    (eventData.time !== undefined && eventData.time !== oldEvent.time) ||
+    (eventData.endTime !== undefined && eventData.endTime !== oldEvent.endTime) ||
+    (nextPrimaryChurchId !== undefined && nextPrimaryChurchId !== oldEvent.churchId)
+  );
+  if (eventData.status !== 'cancelled') {
+    try { await assertNoLinkedBookingChange('event', eventId, bookingRelevantChange); }
+    catch (error) {
+      if (error instanceof BookingError) { res.status(error.statusCode).json({ success: false, message: error.message }); return; }
+      throw error;
+    }
+  }
   
   // Delete old image if exists and new imageUrl is different
   if (oldEvent.imageUrl && eventData.imageUrl !== undefined && eventData.imageUrl !== oldEvent.imageUrl) {
@@ -1053,6 +1068,7 @@ export async function updateEvent(req: Request, res: Response): Promise<void> {
         .catch(err => console.error('[Scheduler] Failed to delete orphaned event recurrence:', err));
     }
   }
+  if (event.status === 'cancelled') await cancelLinkedBookings('event', event.id);
   res.json({ success: true, data: decorateEventAvailability(event) });
 
   // Refresh reminder cache if date changed so reminders stay accurate
@@ -1106,6 +1122,7 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
       }
       await tx.event.delete({ where: { id: event.id } });
     });
+    await cancelLinkedBookings('event', event.id);
     res.json({ success: true, message: 'Cancelled event permanently deleted' });
     return;
   }
@@ -1123,6 +1140,7 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
       await tx.event.delete({ where: { id: event.id } });
     });
     await deleteScheduledEventForSource('events', event.id);
+    await cancelLinkedBookings('event', event.id);
     res.json({ success: true, message: 'Event schedule and remaining drafts deleted' });
     return;
   }
@@ -1136,6 +1154,7 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
       `;
     }
     await prisma.event.delete({ where: { id: event.id } });
+    await cancelLinkedBookings('event', event.id);
     res.json({ success: true, message: 'Draft event deleted' });
     return;
   }
@@ -1144,6 +1163,7 @@ export async function deleteEvent(req: Request, res: Response): Promise<void> {
     where: { id: event.id },
     data: { status: 'cancelled' },
   });
+  await cancelLinkedBookings('event', event.id);
   cancelScheduledEventForSource('events', event.id).catch(err => console.error('[Scheduler] Failed to cancel event schedule:', err));
   res.json({ success: true, message: 'Event cancelled' });
 }

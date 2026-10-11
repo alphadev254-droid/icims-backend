@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { dateRangeInTimeZone, resolveTimeZone } from '../lib/timezone';
+import { assertNoLinkedBookingChange, cancelLinkedBookings } from '../services/resourceBookingService';
 
 const serviceSchema = z
   .object({
@@ -146,6 +147,8 @@ export async function updateService(req: Request, res: Response) {
         message: 'A service with attendance cannot move to another church',
       });
   const { startsAt, endsAt, ...fields } = parsed.data;
+  const timeOrBranchChanged = existing.churchId !== fields.churchId || existing.startsAt.getTime() !== new Date(startsAt).getTime() || existing.endsAt?.getTime() !== (endsAt ? new Date(endsAt).getTime() : undefined);
+  if (fields.status !== 'cancelled') await assertNoLinkedBookingChange('service', existing.id, timeOrBranchChanged);
   const service = await prisma.$transaction(async (tx) => {
     const updated = await tx.service.update({
       where: { id: existing.id },
@@ -165,6 +168,7 @@ export async function updateService(req: Request, res: Response) {
       });
     return updated;
   });
+  if (service.status === 'cancelled') await cancelLinkedBookings('service', service.id);
   return res.json({ success: true, data: service });
 }
 
@@ -187,5 +191,6 @@ export async function deleteService(req: Request, res: Response) {
         message: 'This service has attendance and cannot be deleted',
       });
   await prisma.service.delete({ where: { id: service.id } });
+  await cancelLinkedBookings('service', service.id);
   return res.json({ success: true });
 }
