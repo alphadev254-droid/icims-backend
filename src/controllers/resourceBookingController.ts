@@ -74,15 +74,22 @@ export async function listBookableResources(req: Request, res: Response) {
   const { ministryAdminId, churchIds } = await context(req);
   const churchId = typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
   if (churchId && !churchIds.includes(churchId)) return res.status(403).json({ success: false, message: 'Branch access denied' });
-  const resources = await prisma.bookableResource.findMany({
-    where: {
-      ministryAdminId,
-      ...(churchId ? { OR: [{ churchId }, { scope: 'all_ministry' }] } : { OR: [{ churchId: { in: churchIds } }, { scope: 'all_ministry' }] }),
-      ...(req.query.status ? { status: String(req.query.status) } : { status: { not: 'deleted' } }),
-    },
-    orderBy: [{ category: 'asc' }, { name: 'asc' }],
-  });
-  return res.json({ success: true, data: resources.map(withImages) });
+  const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+  if (category && !['room', 'hall', 'vehicle', 'instrument', 'media', 'projector', 'equipment', 'other'].includes(category)) return res.status(400).json({ success: false, message: 'Invalid resource type' });
+  const paginated = req.query.page !== undefined || req.query.limit !== undefined;
+  const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(req.query.limit) || 12)));
+  const where: any = {
+    ministryAdminId,
+    ...(churchId ? { OR: [{ churchId }, { scope: 'all_ministry' }] } : { OR: [{ churchId: { in: churchIds } }, { scope: 'all_ministry' }] }),
+    ...(req.query.status ? { status: String(req.query.status) } : { status: { not: 'deleted' } }),
+    ...(category ? { category } : {}),
+  };
+  const [resources, total] = await Promise.all([
+    prisma.bookableResource.findMany({ where, orderBy: [{ category: 'asc' }, { name: 'asc' }], ...(paginated ? { skip: (page - 1) * limit, take: limit } : {}) }),
+    paginated ? prisma.bookableResource.count({ where }) : Promise.resolve(0),
+  ]);
+  return res.json({ success: true, data: resources.map(withImages), ...(paginated ? { pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } } : {}) });
 }
 
 export async function createBookableResource(req: Request, res: Response) {
