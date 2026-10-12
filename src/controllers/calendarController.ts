@@ -220,7 +220,19 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             time: true,
             topic: true,
             notes: true,
-            cell: { select: { id: true, name: true, churchId: true, church: { select: { name: true } } } },
+            cell: {
+              select: {
+                id: true,
+                name: true,
+                churchId: true,
+                church: { select: { name: true } },
+                members: {
+                  where: { isLeader: true, status: 'active', leftAt: null },
+                  select: { user: { select: { firstName: true, lastName: true } } },
+                  take: 1,
+                },
+              },
+            },
           },
         }).then(meetings => {
           activities.push(...meetings.map(meeting => ({
@@ -233,7 +245,14 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             churchName: meeting.cell.church.name,
             description: meeting.notes,
             status: 'scheduled',
-            meta: { time: meeting.time, cellId: meeting.cell.id, cellName: meeting.cell.name },
+            meta: {
+              time: meeting.time,
+              cellId: meeting.cell.id,
+              cellName: meeting.cell.name,
+              cellLeader: meeting.cell.members[0]
+                ? `${meeting.cell.members[0].user.firstName} ${meeting.cell.members[0].user.lastName}`.trim()
+                : null,
+            },
           })));
         })
       : Promise.resolve(),
