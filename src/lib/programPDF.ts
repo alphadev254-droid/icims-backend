@@ -97,9 +97,6 @@ export async function generateProgramPDF(data: {
     const person = item.user
       ? `${item.user.firstName} ${item.user.lastName}`.trim()
       : item.guestName || '-';
-    const contact = item.user
-      ? item.user.email || item.user.phone || ''
-      : item.guestEmail || item.guestPhone || '';
     return `
       <tr>
         <td class="index">${index + 1}</td>
@@ -110,7 +107,6 @@ export async function generateProgramPDF(data: {
         </td>
         <td>
           <strong>${escapeHtml(person)}</strong>
-          ${contact ? `<p>${escapeHtml(contact)}</p>` : ''}
         </td>
       </tr>
     `;
@@ -127,7 +123,7 @@ export async function generateProgramPDF(data: {
     .sheet { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; }
     .header { padding: 32px 36px; border-top: 8px solid ${color}; border-bottom: 1px solid #e5e7eb; }
     .brand { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
-    .logo { width: 62px; height: 62px; object-fit: contain; border-radius: 10px; border: 1px solid #e5e7eb; padding: 6px; }
+    .logo { width: 78px; height: 78px; object-fit: contain; }
     .fallback-logo { width: 62px; height: 62px; border-radius: 10px; background: ${color}; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; }
     .eyebrow { color: ${color}; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
     h1 { margin: 6px 0 0; font-size: 28px; line-height: 1.15; }
