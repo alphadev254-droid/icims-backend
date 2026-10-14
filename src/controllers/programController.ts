@@ -95,6 +95,7 @@ async function target(req: Request) {
       { id: service.church.id, name: service.church.name, logoUrl: service.church.logoUrl },
       ...service.linkedChurches.map((link) => ({ id: link.church.id, name: link.church.name, logoUrl: link.church.logoUrl })),
     ].filter((church, index, all) => all.findIndex((item) => item.id === church.id) === index);
+    const timeZone = await resolveTimeZone({ req, churchId: service.churchId });
     return {
       personChurchIds: serviceChurchIds.filter((churchId) => ids.includes(churchId)),
       serviceId: service.id,
@@ -107,12 +108,13 @@ async function target(req: Request) {
         endsAt: service.endsAt,
         churches,
         ministryAdminId: service.church.ministryAdminId,
+        timeZone,
       },
       context: {
         targetType: 'services' as const, targetId: service.id, targetTitle: service.title,
         churchId: service.churchId, churchName: service.church.name,
         location: service.location, startsAt: service.startsAt,
-        timeZone: await resolveTimeZone({ req, churchId: service.churchId }),
+        timeZone,
       },
     };
   }
@@ -130,6 +132,7 @@ async function target(req: Request) {
   ) {
     return { error: 403, message: 'Access denied' };
   }
+  const timeZone = await resolveTimeZone({ req, churchId: event.churchId });
   return {
     personChurchIds: [
       event.churchId,
@@ -148,12 +151,13 @@ async function target(req: Request) {
         ...event.linkedChurches.map((link) => ({ id: link.church.id, name: link.church.name, logoUrl: link.church.logoUrl })),
       ].filter((church, index, all) => all.findIndex((item) => item.id === church.id) === index),
       ministryAdminId: event.church.ministryAdminId,
+      timeZone,
     },
     context: {
       targetType: 'events' as const, targetId: event.id, targetTitle: event.title,
       churchId: event.churchId, churchName: event.church.name,
       location: event.location, startsAt: event.date,
-      timeZone: await resolveTimeZone({ req, churchId: event.churchId }),
+      timeZone,
     },
   };
 }

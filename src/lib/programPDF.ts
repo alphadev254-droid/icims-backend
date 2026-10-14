@@ -34,9 +34,10 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
-function formatDateTime(value: Date | string | null | undefined): string {
+function formatDateTime(value: Date | string | null | undefined, timeZone?: string | null): string {
   if (!value) return '-';
   return new Date(value).toLocaleString('en-US', {
+    ...(timeZone ? { timeZone } : {}),
     weekday: 'short',
     year: 'numeric',
     month: 'short',
@@ -46,9 +47,21 @@ function formatDateTime(value: Date | string | null | undefined): string {
   });
 }
 
-function formatTime(value: Date | string | null | undefined): string {
+function formatTime(value: Date | string | null | undefined, timeZone?: string | null): string {
   if (!value) return '-';
-  return new Date(value).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  return new Date(value).toLocaleTimeString('en-US', {
+    ...(timeZone ? { timeZone } : {}),
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function readableTextColor(background: string): string {
+  const hex = background.replace('#', '');
+  const r = Number.parseInt(hex.slice(0, 2), 16);
+  const g = Number.parseInt(hex.slice(2, 4), 16);
+  const b = Number.parseInt(hex.slice(4, 6), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#111827' : '#ffffff';
 }
 
 async function logoDataUri(logoUrl?: string | null): Promise<string | null> {
@@ -86,12 +99,15 @@ export async function generateProgramPDF(data: {
     startsAt: Date;
     endsAt?: Date | null;
     churches: Array<{ id: string; name: string; logoUrl?: string | null }>;
+    timeZone?: string | null;
   };
   ministryLogoUrl?: string | null;
   primaryColor?: string | null;
 }): Promise<Buffer> {
   const logo = await logoDataUri(data.ministryLogoUrl);
-  const color = /^#[0-9a-fA-F]{6}$/.test(data.primaryColor || '') ? data.primaryColor : '#d89b12';
+  const color = typeof data.primaryColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.primaryColor) ? data.primaryColor : '#d89b12';
+  const colorText = readableTextColor(color);
+  const timeZone = data.target.timeZone;
   const churchNames = data.target.churches.map((church) => church.name).join(', ');
   const rows = data.program.items.map((item, index) => {
     const person = item.user
@@ -100,7 +116,7 @@ export async function generateProgramPDF(data: {
     return `
       <tr>
         <td class="index">${index + 1}</td>
-        <td class="time">${escapeHtml(formatTime(item.startsAt))}<span>${escapeHtml(formatTime(item.endsAt))}</span></td>
+        <td class="time">${escapeHtml(formatTime(item.startsAt, timeZone))}<span>${escapeHtml(formatTime(item.endsAt, timeZone))}</span></td>
         <td>
           <strong>${escapeHtml(item.title)}</strong>
           ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
@@ -122,8 +138,9 @@ export async function generateProgramPDF(data: {
     .page { width: 760px; margin: 0 auto; padding: 32px; }
     .sheet { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; }
     .header { padding: 32px 36px; border-top: 8px solid ${color}; border-bottom: 1px solid #e5e7eb; }
-    .brand { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
-    .logo { width: 78px; height: 78px; object-fit: contain; }
+    .brand { display: flex; align-items: center; gap: 18px; margin-bottom: 24px; }
+    .logo-wrap { width: 92px; height: 92px; display: flex; align-items: center; justify-content: center; background: #ffffff; }
+    .logo { max-width: 92px; max-height: 92px; object-fit: contain; mix-blend-mode: normal; }
     .fallback-logo { width: 62px; height: 62px; border-radius: 10px; background: ${color}; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; }
     .eyebrow { color: ${color}; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
     h1 { margin: 6px 0 0; font-size: 28px; line-height: 1.15; }
@@ -134,7 +151,7 @@ export async function generateProgramPDF(data: {
     .content { padding: 28px 36px 34px; }
     .description { margin-bottom: 20px; color: #374151; font-size: 14px; line-height: 1.55; white-space: pre-line; }
     table { width: 100%; border-collapse: collapse; }
-    th { background: #111827; color: #fff; padding: 12px 10px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; text-align: left; }
+    th { background: ${color}; color: ${colorText}; padding: 12px 10px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; text-align: left; }
     td { border-bottom: 1px solid #e5e7eb; padding: 13px 10px; vertical-align: top; font-size: 13px; }
     td p { margin: 5px 0 0; color: #6b7280; line-height: 1.4; }
     .index { width: 42px; color: ${color}; font-weight: 800; }
@@ -149,7 +166,7 @@ export async function generateProgramPDF(data: {
     <div class="sheet">
       <div class="header">
         <div class="brand">
-          ${logo ? `<img class="logo" src="${escapeHtml(logo)}" />` : `<div class="fallback-logo">IC</div>`}
+          ${logo ? `<div class="logo-wrap"><img class="logo" src="${escapeHtml(logo)}" /></div>` : `<div class="fallback-logo">IC</div>`}
           <div>
             <div class="eyebrow">${escapeHtml(data.target.type)} Program</div>
             <h1>${escapeHtml(data.program.title || data.target.title)}</h1>
@@ -158,10 +175,10 @@ export async function generateProgramPDF(data: {
         <div class="meta">
           <div><span>${escapeHtml(data.target.type)}</span><strong>${escapeHtml(data.target.title)}</strong></div>
           <div><span>Church${data.target.churches.length === 1 ? '' : 'es'}</span><strong>${escapeHtml(churchNames || '-')}</strong></div>
-          <div><span>Starts</span><strong>${escapeHtml(formatDateTime(data.target.startsAt))}</strong></div>
-          <div><span>Ends</span><strong>${escapeHtml(formatDateTime(data.target.endsAt))}</strong></div>
+          <div><span>Starts</span><strong>${escapeHtml(formatDateTime(data.target.startsAt, timeZone))}</strong></div>
+          <div><span>Ends</span><strong>${escapeHtml(formatDateTime(data.target.endsAt, timeZone))}</strong></div>
           <div><span>Location</span><strong>${escapeHtml(data.target.location || '-')}</strong></div>
-          <div><span>Generated</span><strong>${escapeHtml(formatDateTime(new Date()))}</strong></div>
+          <div><span>Generated</span><strong>${escapeHtml(formatDateTime(new Date(), timeZone))}</strong></div>
         </div>
       </div>
       <div class="content">
