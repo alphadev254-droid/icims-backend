@@ -250,6 +250,7 @@ model Church {
   referralLinks          ReferralLink[]
   events                 Event[]
   services               Service[]
+  serviceLinks           ServiceChurch[]
   eventLinks             EventChurch[]
   eventTickets           EventTicket[]
   givingCampaigns        GivingCampaign[]
@@ -271,6 +272,7 @@ model Church {
   pledges                Pledge[]
   sharedAccessLinks      SharedAccessLink[]
   children               Child[]
+  bookableResourceAccess BookableResourceChurch[]
 
   @@index([ministryAdminId, status])
   @@index([status])
@@ -417,11 +419,26 @@ model Service {
   updatedAt   DateTime   @updatedAt
 
   church      Church     @relation(fields: [churchId], references: [id])
+  linkedChurches ServiceChurch[]
   attendance  Attendance?
   program     Program?
 
   @@index([churchId, startsAt])
   @@map("services")
+}
+
+model ServiceChurch {
+  id        String   @id @default(cuid())
+  serviceId String
+  churchId  String
+  createdAt DateTime @default(now())
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  church  Church  @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, churchId])
+  @@index([churchId])
+  @@map("service_churches")
 }
 
 model Program {
@@ -1061,11 +1078,25 @@ model BookableResource {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  bookings ResourceBooking[]
+  bookings         ResourceBooking[]
+  selectedChurches BookableResourceChurch[]
 
   @@index([ministryAdminId, status], map: "bookable_resources_ministry_status_idx")
   @@index([churchId, status], map: "bookable_resources_church_status_idx")
   @@map("bookable_resources")
+}
+
+model BookableResourceChurch {
+  resourceId String
+  churchId   String
+  createdAt  DateTime @default(now())
+
+  resource BookableResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  church   Church           @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@id([resourceId, churchId])
+  @@index([churchId], map: "bookable_resource_churches_church_idx")
+  @@map("bookable_resource_churches")
 }
 
 model ResourceBooking {

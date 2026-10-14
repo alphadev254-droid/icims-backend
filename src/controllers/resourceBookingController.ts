@@ -15,7 +15,8 @@ const resourceSchema = z.object({
   description: z.string().trim().max(5000).optional().nullable(),
   location: z.string().trim().max(191).optional().nullable(),
   custodianName: z.string().trim().max(191).optional().nullable(),
-  scope: z.enum(['own_church', 'all_ministry']).default('own_church'),
+  scope: z.enum(['own_church', 'selected_churches', 'all_ministry']).default('own_church'),
+  churchIds: z.array(z.string().min(1)).max(100).optional(),
   status: z.enum(['active', 'maintenance', 'retired']).default('active'),
   approvalRequired: z.boolean().default(false),
   bufferBeforeMinutes: z.coerce.number().int().min(0).max(1440).default(0),
@@ -36,6 +37,9 @@ const includeBooking = {
   requester: { select: { id: true, firstName: true, lastName: true } },
   decidedBy: { select: { id: true, firstName: true, lastName: true } },
 } as const;
+const includeResourceChurches = {
+  selectedChurches: { select: { churchId: true } },
+} as const;
 
 function resourceImages(value: string | null): string[] {
   try {
@@ -44,9 +48,44 @@ function resourceImages(value: string | null): string[] {
   } catch { return []; }
 }
 
-function withImages<T extends { imageUrls: string | null }>(resource: T) {
-  const { imageUrls, ...fields } = resource;
-  return { ...fields, images: resourceImages(imageUrls) };
+function withImages<T extends { imageUrls: string | null; selectedChurches?: Array<{ churchId: string }> }>(resource: T) {
+  const { imageUrls, selectedChurches = [], ...fields } = resource;
+  return {
+    ...fields,
+    images: resourceImages(imageUrls),
+    churchIds: selectedChurches.map(item => item.churchId),
+  };
+}
+
+function resourceAccessWhere(churchIds: string[]) {
+  return {
+    OR: [
+      { churchId: { in: churchIds } },
+      { scope: 'all_ministry' },
+      { scope: 'selected_churches', selectedChurches: { some: { churchId: { in: churchIds } } } },
+    ],
+  };
+}
+
+function selectedResourceChurchIds(params: {
+  scope: string;
+  ownerChurchId: string;
+  requestedChurchIds?: string[];
+  currentChurchIds?: string[];
+  accessibleChurchIds: string[];
+}) {
+  if (params.scope !== 'selected_churches') return [];
+  const selected = [...new Set([
+    params.ownerChurchId,
+    ...(params.requestedChurchIds ?? params.currentChurchIds ?? []),
+  ])];
+  if (selected.some(churchId => !params.accessibleChurchIds.includes(churchId))) {
+    throw new BookingError('One or more selected branches are outside your access', 403);
+  }
+  if (selected.length < 2) {
+    throw new BookingError('Select at least one additional branch', 400);
+  }
+  return selected;
 }
 
 async function deleteResourceImageFile(url: string) {
@@ -74,22 +113,16 @@ export async function listBookableResources(req: Request, res: Response) {
   const { ministryAdminId, churchIds } = await context(req);
   const churchId = typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
   if (churchId && !churchIds.includes(churchId)) return res.status(403).json({ success: false, message: 'Branch access denied' });
-  const category = typeof req.query.category === 'string' ? req.query.category : undefined;
-  if (category && !['room', 'hall', 'vehicle', 'instrument', 'media', 'projector', 'equipment', 'other'].includes(category)) return res.status(400).json({ success: false, message: 'Invalid resource type' });
-  const paginated = req.query.page !== undefined || req.query.limit !== undefined;
-  const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
-  const limit = Math.min(100, Math.max(1, Math.floor(Number(req.query.limit) || 12)));
-  const where: any = {
-    ministryAdminId,
-    ...(churchId ? { OR: [{ churchId }, { scope: 'all_ministry' }] } : { OR: [{ churchId: { in: churchIds } }, { scope: 'all_ministry' }] }),
-    ...(req.query.status ? { status: String(req.query.status) } : { status: { not: 'deleted' } }),
-    ...(category ? { category } : {}),
-  };
-  const [resources, total] = await Promise.all([
-    prisma.bookableResource.findMany({ where, orderBy: [{ category: 'asc' }, { name: 'asc' }], ...(paginated ? { skip: (page - 1) * limit, take: limit } : {}) }),
-    paginated ? prisma.bookableResource.count({ where }) : Promise.resolve(0),
-  ]);
-  return res.json({ success: true, data: resources.map(withImages), ...(paginated ? { pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } } : {}) });
+  const resources = await prisma.bookableResource.findMany({
+    where: {
+      ministryAdminId,
+      ...resourceAccessWhere(churchId ? [churchId] : churchIds),
+      ...(req.query.status ? { status: String(req.query.status) } : { status: { not: 'deleted' } }),
+    },
+    include: includeResourceChurches,
+    orderBy: [{ category: 'asc' }, { name: 'asc' }],
+  });
+  return res.json({ success: true, data: resources.map(withImages) });
 }
 
 export async function createBookableResource(req: Request, res: Response) {
@@ -97,21 +130,63 @@ export async function createBookableResource(req: Request, res: Response) {
   if (!parsed.success) return res.status(400).json({ success: false, message: parsed.error.errors[0].message });
   const { userId, ministryAdminId, churchIds } = await context(req);
   if (!churchIds.includes(parsed.data.churchId)) return res.status(403).json({ success: false, message: 'Branch access denied' });
-  const asset = await prisma.bookableResource.create({ data: { ...parsed.data, ministryAdminId, createdById: userId } });
-  return res.status(201).json({ success: true, data: withImages(asset) });
+  try {
+    const { churchIds: requestedChurchIds, ...resourceData } = parsed.data;
+    const selectedChurchIds = selectedResourceChurchIds({
+      scope: resourceData.scope,
+      ownerChurchId: resourceData.churchId,
+      requestedChurchIds,
+      accessibleChurchIds: churchIds,
+    });
+    const asset = await prisma.bookableResource.create({
+      data: {
+        ...resourceData,
+        ministryAdminId,
+        createdById: userId,
+        selectedChurches: { create: selectedChurchIds.map(churchId => ({ churchId })) },
+      },
+      include: includeResourceChurches,
+    });
+    return res.status(201).json({ success: true, data: withImages(asset) });
+  } catch (error) { return respondError(res, error); }
 }
 
 export async function updateBookableResource(req: Request, res: Response) {
   const parsed = resourceSchema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ success: false, message: parsed.error.errors[0].message });
   const { ministryAdminId, churchIds } = await context(req);
-  const asset = await prisma.bookableResource.findFirst({ where: { id: String(req.params.id), ministryAdminId } });
+  const asset = await prisma.bookableResource.findFirst({
+    where: { id: String(req.params.id), ministryAdminId },
+    include: includeResourceChurches,
+  });
   if (!asset) return res.status(404).json({ success: false, message: 'Resource not found' });
   if (!churchIds.includes(asset.churchId) || (parsed.data.churchId && !churchIds.includes(parsed.data.churchId))) return res.status(403).json({ success: false, message: 'Branch access denied' });
   if (parsed.data.churchId && parsed.data.churchId !== asset.churchId && await prisma.resourceBooking.count({ where: { resourceId: asset.id, status: { in: ['pending', 'approved'] } } })) return res.status(409).json({ success: false, message: 'Cancel active bookings before moving this resource to another branch' });
   if (parsed.data.status && parsed.data.status !== 'active' && asset.status === 'active' && await prisma.resourceBooking.count({ where: { resourceId: asset.id, status: { in: ['pending', 'approved'] }, endsAt: { gt: new Date() } } })) return res.status(409).json({ success: false, message: 'Cancel upcoming bookings before making this resource unavailable' });
-  const updated = await prisma.bookableResource.update({ where: { id: asset.id }, data: parsed.data });
-  return res.json({ success: true, data: withImages(updated) });
+  try {
+    const { churchIds: requestedChurchIds, ...resourceData } = parsed.data;
+    const nextChurchId = resourceData.churchId ?? asset.churchId;
+    const nextScope = resourceData.scope ?? asset.scope;
+    const selectedChurchIds = selectedResourceChurchIds({
+      scope: nextScope,
+      ownerChurchId: nextChurchId,
+      requestedChurchIds,
+      currentChurchIds: asset.selectedChurches.map(item => item.churchId),
+      accessibleChurchIds: churchIds,
+    });
+    const updated = await prisma.bookableResource.update({
+      where: { id: asset.id },
+      data: {
+        ...resourceData,
+        selectedChurches: {
+          deleteMany: {},
+          create: selectedChurchIds.map(churchId => ({ churchId })),
+        },
+      },
+      include: includeResourceChurches,
+    });
+    return res.json({ success: true, data: withImages(updated) });
+  } catch (error) { return respondError(res, error); }
 }
 
 export async function deleteBookableResource(req: Request, res: Response) {
@@ -157,7 +232,11 @@ export async function uploadBookableResourceImage(req: Request, res: Response) {
       const current = await tx.bookableResource.findUniqueOrThrow({ where: { id: String(req.params.id) } });
       const images = resourceImages(current.imageUrls);
       if (images.length >= 3) throw new BookingError('A resource can have at most 3 images', 409);
-      return tx.bookableResource.update({ where: { id: current.id }, data: { imageUrls: JSON.stringify([...images, url]) } });
+      return tx.bookableResource.update({
+        where: { id: current.id },
+        data: { imageUrls: JSON.stringify([...images, url]) },
+        include: includeResourceChurches,
+      });
     });
     return res.status(201).json({ success: true, data: withImages(asset) });
   } catch (error) {
@@ -178,7 +257,11 @@ export async function removeBookableResourceImage(req: Request, res: Response) {
       const current = await tx.bookableResource.findUniqueOrThrow({ where: { id: asset.id } });
       const images = resourceImages(current.imageUrls);
       if (!images.includes(parsed.data.url)) throw new BookingError('Image not found on this resource', 404);
-      return tx.bookableResource.update({ where: { id: asset.id }, data: { imageUrls: JSON.stringify(images.filter(url => url !== parsed.data.url)) } });
+      return tx.bookableResource.update({
+        where: { id: asset.id },
+        data: { imageUrls: JSON.stringify(images.filter(url => url !== parsed.data.url)) },
+        include: includeResourceChurches,
+      });
     });
     await deleteResourceImageFile(parsed.data.url);
     return res.json({ success: true, data: withImages(updated) });
@@ -249,7 +332,13 @@ export async function checkResourceAvailability(req: Request, res: Response) {
   const startsAt = new Date(parsed.data.startsAt);
   const endsAt = new Date(parsed.data.endsAt);
   if (startsAt >= endsAt) return res.status(400).json({ success: false, message: 'End time must be after start time' });
-  const resources = await prisma.bookableResource.findMany({ where: { id: { in: parsed.data.resourceIds }, ministryAdminId, OR: [{ churchId: parsed.data.churchId }, { scope: 'all_ministry' }] } });
+  const resources = await prisma.bookableResource.findMany({
+    where: {
+      id: { in: parsed.data.resourceIds },
+      ministryAdminId,
+      ...resourceAccessWhere([parsed.data.churchId]),
+    },
+  });
   if (resources.length !== new Set(parsed.data.resourceIds).size) return res.status(403).json({ success: false, message: 'One or more resources are unavailable for this branch' });
   const data = await Promise.all(resources.map(async resource => {
     const interval = blockedInterval(resource, startsAt, endsAt);
@@ -273,7 +362,14 @@ export async function requestResourceBooking(req: Request, res: Response) {
     const groupId = newBookingGroupId();
     const bookings = await prisma.$transaction(async tx => {
       await lockResources(tx, ids);
-      const resources = await tx.bookableResource.findMany({ where: { id: { in: ids }, ministryAdminId, status: 'active', OR: [{ churchId: input.churchId }, { scope: 'all_ministry' }] } });
+      const resources = await tx.bookableResource.findMany({
+        where: {
+          id: { in: ids },
+          ministryAdminId,
+          status: 'active',
+          ...resourceAccessWhere([input.churchId]),
+        },
+      });
       if (resources.length !== ids.length) throw new BookingError('One or more resources are unavailable for this branch', 403);
       for (const resource of resources) {
         const interval = blockedInterval(resource, activity.startsAt, activity.endsAt);

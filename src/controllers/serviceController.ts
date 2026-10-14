@@ -8,6 +8,7 @@ import { assertNoLinkedBookingChange, cancelLinkedBookings } from '../services/r
 const serviceSchema = z
   .object({
     churchId: z.string().min(1),
+    churchIds: z.array(z.string().min(1)).optional(),
     title: z.string().trim().min(1).max(191),
     type: z.string().trim().max(191).optional().nullable(),
     startsAt: z.string().datetime(),
@@ -26,6 +27,30 @@ const serviceSchema = z
       path: ['endsAt'],
     },
   );
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => !!value))];
+}
+
+function serviceChurchIds(data: { churchId: string; churchIds?: string[] }) {
+  return uniqueStrings([data.churchId, ...(data.churchIds ?? [])]);
+}
+
+const serviceInclude = {
+  church: { select: { id: true, name: true } },
+  linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true } } } },
+  attendance: { select: { id: true } },
+  program: { select: { id: true } },
+};
+
+function serviceAccessWhere(churchIds: string[]) {
+  return {
+    OR: [
+      { churchId: { in: churchIds } },
+      { linkedChurches: { some: { churchId: { in: churchIds } } } },
+    ],
+  };
+}
 
 export async function accessibleChurchIds(req: Request) {
   return getAccessibleChurchIds(
@@ -56,22 +81,25 @@ export async function listServices(req: Request, res: Response) {
   const timeZone = await resolveTimeZone({ req, churchId });
   const dateRange = dateRangeInTimeZone(startDate, endDate, timeZone);
   const limit = page ? 50 : 500;
-  const where = {
-    churchId: { in: churchId ? [churchId] : ids },
-    ...(startDate || endDate ? { startsAt: dateRange } : {}),
-    ...(search ? { OR: [
+  const scopedChurchIds = churchId ? [churchId] : ids;
+  const searchWhere = search ? {
+    OR: [
       { title: { contains: search } },
       { type: { contains: search } },
       { church: { name: { contains: search } } },
-    ] } : {}),
+      { linkedChurches: { some: { church: { name: { contains: search } } } } },
+    ],
+  } : {};
+  const where = {
+    AND: [
+      serviceAccessWhere(scopedChurchIds),
+      searchWhere,
+    ],
+    ...(startDate || endDate ? { startsAt: dateRange } : {}),
   };
   const services = await prisma.service.findMany({
     where,
-    include: {
-      church: { select: { id: true, name: true } },
-      attendance: { select: { id: true } },
-      program: { select: { id: true } },
-    },
+    include: serviceInclude,
     orderBy: [{ startsAt: 'desc' }, { id: 'desc' }],
     skip: page ? (page - 1) * limit : 0,
     take: page ? limit + 1 : limit,
@@ -87,16 +115,19 @@ export async function getService(req: Request, res: Response) {
   const service = await prisma.service.findUnique({
     where: { id: String(req.params.id) },
     include: {
-      church: { select: { id: true, name: true } },
-      attendance: { select: { id: true } },
-      program: { select: { id: true } },
+      ...serviceInclude,
     },
   });
   if (!service)
     return res
       .status(404)
       .json({ success: false, message: 'Service not found' });
-  if (!(await accessibleChurchIds(req)).includes(service.churchId))
+  const ids = await accessibleChurchIds(req);
+  const visibleChurchIds = serviceChurchIds({
+    churchId: service.churchId,
+    churchIds: service.linkedChurches.map((link) => link.churchId),
+  });
+  if (!visibleChurchIds.some((id) => ids.includes(id)))
     return res.status(403).json({ success: false, message: 'Access denied' });
   return res.json({ success: true, data: service });
 }
@@ -107,15 +138,19 @@ export async function createService(req: Request, res: Response) {
     return res
       .status(400)
       .json({ success: false, message: parsed.error.errors[0].message });
-  if (!(await accessibleChurchIds(req)).includes(parsed.data.churchId))
+  const ids = await accessibleChurchIds(req);
+  const linkedChurchIds = serviceChurchIds(parsed.data);
+  if (linkedChurchIds.some((id) => !ids.includes(id)))
     return res.status(403).json({ success: false, message: 'Access denied' });
-  const { startsAt, endsAt, ...fields } = parsed.data;
+  const { startsAt, endsAt, churchIds: _churchIds, ...fields } = parsed.data;
   const service = await prisma.service.create({
     data: {
       ...fields,
       startsAt: new Date(startsAt),
       endsAt: endsAt ? new Date(endsAt) : null,
+      linkedChurches: { create: linkedChurchIds.map((churchId) => ({ churchId })) },
     },
+    include: serviceInclude,
   });
   return res.status(201).json({ success: true, data: service });
 }
@@ -123,21 +158,26 @@ export async function createService(req: Request, res: Response) {
 export async function updateService(req: Request, res: Response) {
   const existing = await prisma.service.findUnique({
     where: { id: String(req.params.id) },
-    include: { attendance: { select: { id: true } } },
+    include: { attendance: { select: { id: true } }, linkedChurches: { select: { churchId: true } } },
   });
   if (!existing)
     return res
       .status(404)
       .json({ success: false, message: 'Service not found' });
   const ids = await accessibleChurchIds(req);
-  if (!ids.includes(existing.churchId))
+  const existingChurchIds = serviceChurchIds({
+    churchId: existing.churchId,
+    churchIds: existing.linkedChurches.map((link) => link.churchId),
+  });
+  if (!existingChurchIds.some((id) => ids.includes(id)))
     return res.status(403).json({ success: false, message: 'Access denied' });
   const parsed = serviceSchema.safeParse(req.body);
   if (!parsed.success)
     return res
       .status(400)
       .json({ success: false, message: parsed.error.errors[0].message });
-  if (!ids.includes(parsed.data.churchId))
+  const linkedChurchIds = serviceChurchIds(parsed.data);
+  if (linkedChurchIds.some((id) => !ids.includes(id)))
     return res.status(403).json({ success: false, message: 'Access denied' });
   if (existing.attendance && parsed.data.churchId !== existing.churchId)
     return res
@@ -146,7 +186,7 @@ export async function updateService(req: Request, res: Response) {
         success: false,
         message: 'A service with attendance cannot move to another church',
       });
-  const { startsAt, endsAt, ...fields } = parsed.data;
+  const { startsAt, endsAt, churchIds: _churchIds, ...fields } = parsed.data;
   const timeOrBranchChanged = existing.churchId !== fields.churchId || existing.startsAt.getTime() !== new Date(startsAt).getTime() || existing.endsAt?.getTime() !== (endsAt ? new Date(endsAt).getTime() : undefined);
   if (fields.status !== 'cancelled') await assertNoLinkedBookingChange('service', existing.id, timeOrBranchChanged);
   const service = await prisma.$transaction(async (tx) => {
@@ -158,6 +198,11 @@ export async function updateService(req: Request, res: Response) {
         endsAt: endsAt ? new Date(endsAt) : null,
       },
     });
+    await tx.serviceChurch.deleteMany({ where: { serviceId: existing.id } });
+    await tx.serviceChurch.createMany({
+      data: linkedChurchIds.map((churchId) => ({ serviceId: existing.id, churchId })),
+      skipDuplicates: true,
+    });
     if (existing.attendance)
       await tx.attendance.update({
         where: { id: existing.attendance.id },
@@ -166,7 +211,7 @@ export async function updateService(req: Request, res: Response) {
           serviceType: updated.type || updated.title,
         },
       });
-    return updated;
+    return tx.service.findUniqueOrThrow({ where: { id: updated.id }, include: serviceInclude });
   });
   if (service.status === 'cancelled') await cancelLinkedBookings('service', service.id);
   return res.json({ success: true, data: service });
@@ -175,13 +220,18 @@ export async function updateService(req: Request, res: Response) {
 export async function deleteService(req: Request, res: Response) {
   const service = await prisma.service.findUnique({
     where: { id: String(req.params.id) },
-    include: { attendance: { select: { id: true } } },
+    include: { attendance: { select: { id: true } }, linkedChurches: { select: { churchId: true } } },
   });
   if (!service)
     return res
       .status(404)
       .json({ success: false, message: 'Service not found' });
-  if (!(await accessibleChurchIds(req)).includes(service.churchId))
+  const ids = await accessibleChurchIds(req);
+  const visibleChurchIds = serviceChurchIds({
+    churchId: service.churchId,
+    churchIds: service.linkedChurches.map((link) => link.churchId),
+  });
+  if (!visibleChurchIds.some((id) => ids.includes(id)))
     return res.status(403).json({ success: false, message: 'Access denied' });
   if (service.attendance)
     return res

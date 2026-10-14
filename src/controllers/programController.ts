@@ -10,6 +10,7 @@ import {
   queueAssignmentNotification,
   type ProgramEmailContext,
 } from '../services/programNotificationService';
+import { generateProgramPDF } from '../lib/programPDF';
 
 const itemSchema = z
   .object({
@@ -52,6 +53,7 @@ const programSchema = z.object({
   description: z.string().trim().optional().nullable(),
   items: z.array(itemSchema).max(100),
   notifyPrevious: z.boolean().optional().default(false),
+  sendAssignmentEmails: z.boolean().optional().default(false),
 });
 
 const programInclude = {
@@ -75,14 +77,37 @@ async function target(req: Request) {
   const id = String(req.params.id);
   const ids = await accessibleChurchIds(req);
   if (req.baseUrl.endsWith('/services')) {
-    const service = await prisma.service.findUnique({ where: { id }, include: { church: { select: { name: true } } } });
+    const service = await prisma.service.findUnique({
+      where: { id },
+      include: {
+        church: { select: { id: true, name: true, logoUrl: true, ministryAdminId: true } },
+        linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true, logoUrl: true } } } },
+      },
+    });
     if (!service) return { error: 404, message: 'Service not found' };
-    if (!ids.includes(service.churchId))
+    const serviceChurchIds = [
+      service.churchId,
+      ...service.linkedChurches.map((link) => link.churchId),
+    ];
+    if (!serviceChurchIds.some((churchId) => ids.includes(churchId)))
       return { error: 403, message: 'Access denied' };
+    const churches = [
+      { id: service.church.id, name: service.church.name, logoUrl: service.church.logoUrl },
+      ...service.linkedChurches.map((link) => ({ id: link.church.id, name: link.church.name, logoUrl: link.church.logoUrl })),
+    ].filter((church, index, all) => all.findIndex((item) => item.id === church.id) === index);
     return {
-      personChurchIds: [service.churchId],
+      personChurchIds: serviceChurchIds.filter((churchId) => ids.includes(churchId)),
       serviceId: service.id,
       eventId: null,
+      pdfTarget: {
+        type: 'Service' as const,
+        title: service.title,
+        location: service.location,
+        startsAt: service.startsAt,
+        endsAt: service.endsAt,
+        churches,
+        ministryAdminId: service.church.ministryAdminId,
+      },
       context: {
         targetType: 'services' as const, targetId: service.id, targetTitle: service.title,
         churchId: service.churchId, churchName: service.church.name,
@@ -93,7 +118,10 @@ async function target(req: Request) {
   }
   const event = await prisma.event.findUnique({
     where: { id },
-    include: { linkedChurches: { select: { churchId: true } }, church: { select: { name: true } } },
+    include: {
+      linkedChurches: { select: { churchId: true, church: { select: { id: true, name: true, logoUrl: true } } } },
+      church: { select: { id: true, name: true, logoUrl: true, ministryAdminId: true } },
+    },
   });
   if (!event) return { error: 404, message: 'Event not found' };
   if (
@@ -109,6 +137,18 @@ async function target(req: Request) {
     ].filter((id) => ids.includes(id)),
     serviceId: null,
     eventId: event.id,
+    pdfTarget: {
+      type: 'Event' as const,
+      title: event.title,
+      location: event.location,
+      startsAt: event.date,
+      endsAt: event.endDate,
+      churches: [
+        { id: event.church.id, name: event.church.name, logoUrl: event.church.logoUrl },
+        ...event.linkedChurches.map((link) => ({ id: link.church.id, name: link.church.name, logoUrl: link.church.logoUrl })),
+      ].filter((church, index, all) => all.findIndex((item) => item.id === church.id) === index),
+      ministryAdminId: event.church.ministryAdminId,
+    },
     context: {
       targetType: 'events' as const, targetId: event.id, targetTitle: event.title,
       churchId: event.churchId, churchName: event.church.name,
@@ -116,6 +156,36 @@ async function target(req: Request) {
       timeZone: await resolveTimeZone({ req, churchId: event.churchId }),
     },
   };
+}
+
+export async function downloadProgram(req: Request, res: Response) {
+  const resolved = await target(req);
+  if (resolved.error)
+    return res.status(resolved.error).json({ success: false, message: resolved.message });
+  const program = await prisma.program.findFirst({
+    where: resolved.serviceId
+      ? { serviceId: resolved.serviceId }
+      : { eventId: resolved.eventId! },
+    include: programInclude,
+  });
+  if (!program) return res.status(404).json({ success: false, message: 'Program not found' });
+  const pdfTarget = (resolved as any).pdfTarget;
+  const profile = pdfTarget?.ministryAdminId
+    ? await prisma.churchProfile.findUnique({
+        where: { ministryAdminId: pdfTarget.ministryAdminId },
+        select: { logoUrl: true, primaryColor: true },
+      })
+    : null;
+  const pdf = await generateProgramPDF({
+    program,
+    target: pdfTarget,
+    ministryLogoUrl: pdfTarget?.churches.find((church: any) => church.logoUrl)?.logoUrl || profile?.logoUrl || null,
+    primaryColor: profile?.primaryColor || '#d89b12',
+  });
+  const filename = `${program.title || resolved.context!.targetTitle}-program`.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename || 'program'}.pdf"`);
+  res.send(pdf);
 }
 
 async function decorateProgram(program: NonNullable<Awaited<ReturnType<typeof prisma.program.findFirst<{ include: typeof programInclude }>>>>, context: ProgramEmailContext) {
@@ -175,6 +245,15 @@ export async function saveProgram(req: Request, res: Response) {
     return res
       .status(400)
       .json({ success: false, message: parsed.error.errors[0].message });
+  if (
+    parsed.data.sendAssignmentEmails &&
+    !req.user?.permissions?.includes('programs:send')
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: 'You do not have permission to send program assignment emails',
+    });
+  }
   const userIds = [
     ...new Set(
       parsed.data.items
@@ -204,7 +283,7 @@ export async function saveProgram(req: Request, res: Response) {
   const incomingIds = parsed.data.items.map((item) => item.id).filter((id): id is string => !!id);
   if (new Set(incomingIds).size !== incomingIds.length)
     return res.status(400).json({ success: false, message: 'Duplicate program item' });
-  const { program, previousItems } = await prisma.$transaction(async (tx) => {
+  const { program, previousItems, wasCreated } = await prisma.$transaction(async (tx) => {
     const existing = await tx.program.findFirst({
       where,
       include: programInclude,
@@ -242,11 +321,12 @@ export async function saveProgram(req: Request, res: Response) {
     return {
       program: await tx.program.findUniqueOrThrow({ where: { id: saved.id }, include: programInclude }),
       previousItems,
+      wasCreated: !existing,
     };
   }).catch((error) => {
     if (error instanceof Error && error.message === 'INVALID_PROGRAM_ITEM') return null;
     throw error;
-  }) || { program: null, previousItems: [] };
+  }) || { program: null, previousItems: [], wasCreated: false };
   if (!program) return res.status(400).json({ success: false, message: 'An item does not belong to this program' });
   let notificationWarnings = 0;
   if (parsed.data.notifyPrevious) {
@@ -266,7 +346,35 @@ export async function saveProgram(req: Request, res: Response) {
       }
     }
   }
-  return res.json({ success: true, data: await decorateProgram(program, resolved.context!), notificationWarnings });
+  let assignmentEmailsQueued = 0;
+  let assignmentEmailsSkipped = 0;
+  if (wasCreated && parsed.data.sendAssignmentEmails) {
+    const now = new Date();
+    const eligibleItems = program.items.filter((item) => {
+      const eligible = item.endsAt > now && !!assignmentRecipient(item);
+      if (!eligible) assignmentEmailsSkipped += 1;
+      return eligible;
+    });
+    const results = await Promise.allSettled(
+      eligibleItems.map((item) =>
+        queueAssignmentNotification({
+          programId: program.id,
+          item,
+          context: resolved.context!,
+          kind: 'assignment',
+        }),
+      ),
+    );
+    assignmentEmailsQueued = results.filter((result) => result.status === 'fulfilled').length;
+    notificationWarnings += results.length - assignmentEmailsQueued;
+  }
+  return res.json({
+    success: true,
+    data: await decorateProgram(program, resolved.context!),
+    notificationWarnings,
+    assignmentEmailsQueued,
+    assignmentEmailsSkipped,
+  });
 }
 
 export async function deleteProgram(req: Request, res: Response) {

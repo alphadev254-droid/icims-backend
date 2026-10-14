@@ -175,7 +175,10 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
     requestedTypes.includes('attendance')
       ? prisma.service.findMany({
           where: {
-            churchId: { in: churchIds },
+            OR: [
+              { churchId: { in: churchIds } },
+              { linkedChurches: { some: { churchId: { in: churchIds } } } },
+            ],
             startsAt: { gte: startDate, lte: endDate },
             status: { not: 'cancelled' },
             attendance: null,
@@ -189,6 +192,7 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             status: true,
             churchId: true,
             church: { select: { name: true } },
+            linkedChurches: { select: { churchId: true, church: { select: { name: true } } } },
           },
         }).then(services => {
           activities.push(...services.map(service => ({
@@ -202,7 +206,13 @@ export async function getCalendarActivities(req: Request, res: Response): Promis
             churchName: service.church.name,
             description: service.description,
             status: service.status,
-            meta: { serviceId: service.id },
+            meta: {
+              serviceId: service.id,
+              churches: [
+                { id: service.churchId, name: service.church.name },
+                ...service.linkedChurches.map(link => ({ id: link.churchId, name: link.church.name })),
+              ].filter((church, index, all) => all.findIndex(item => item.id === church.id) === index),
+            },
           })));
         })
       : Promise.resolve(),

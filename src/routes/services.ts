@@ -11,6 +11,7 @@ import {
   getProgram,
   saveProgram,
   deleteProgram,
+  downloadProgram,
   searchProgramPeople,
   sendProgramAssignment,
 } from '../controllers/programController';
@@ -25,6 +26,7 @@ router.get('/:id', authorizePermission('attendance:read'), getService);
 router.put('/:id', authorizePermission('attendance:update'), updateService);
 router.delete('/:id', authorizePermission('attendance:update'), deleteService);
 router.get('/:id/program', authorizePermission('attendance:read'), authorizePermission('programs:read'), getProgram);
+router.get('/:id/program/download', authorizePermission('attendance:read'), authorizePermission('programs:read'), downloadProgram);
 router.put(
   '/:id/program',
   authorizePermission('attendance:read'),
