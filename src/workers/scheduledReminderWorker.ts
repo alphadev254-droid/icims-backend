@@ -66,6 +66,10 @@ function renderText(template: string, recipient: ReminderRecipient) {
     .replace(/\{deadline\}/g, recipient.deadline ? recipient.deadline.toLocaleDateString() : '');
 }
 
+function hasOutstandingPledgeBalance(pledge: { pledgedAmount: number; amountPaid: number }) {
+  return pledge.pledgedAmount > pledge.amountPaid;
+}
+
 function reminderEmailHtml(title: string, message: string) {
   return `
     <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;padding:24px;color:#111827">
@@ -131,12 +135,13 @@ async function resolveMonthlyRecipients(reminder: any, today: Date): Promise<Rem
   const pledgeWhere: any = {
     churchId: reminder.churchId,
     userId: { not: null },
+    pledgedAmount: { gt: prisma.pledge.fields.amountPaid },
     ...(reminder.campaignId ? { campaignId: reminder.campaignId } : {}),
   };
   if (reminder.audience === 'overdue_pledges') {
     pledgeWhere.OR = [
       { status: 'overdue' },
-      { fulfillmentDeadline: { lt: today }, pledgedAmount: { gt: prisma.pledge.fields.amountPaid } },
+      { fulfillmentDeadline: { lt: today } },
     ];
   } else {
     pledgeWhere.status = { not: 'fulfilled' };
@@ -151,7 +156,7 @@ async function resolveMonthlyRecipients(reminder: any, today: Date): Promise<Rem
   });
 
   return pledges
-    .filter(pledge => pledge.user && pledge.user.loginEnabled !== false)
+    .filter(pledge => pledge.user && pledge.user.loginEnabled !== false && hasOutstandingPledgeBalance(pledge))
     .map(pledge => ({
       userId: pledge.user!.id,
       email: pledge.user!.email,
@@ -175,6 +180,7 @@ async function resolveDeadlineRecipients(reminder: any, today: Date): Promise<Re
         churchId: reminder.churchId,
         userId: { not: null },
         status: { not: 'fulfilled' },
+        pledgedAmount: { gt: prisma.pledge.fields.amountPaid },
         fulfillmentDeadline: { gte: startOfDay(deadlineDate), lte: endOfDay(deadlineDate) },
         ...(reminder.campaignId ? { campaignId: reminder.campaignId } : {}),
       },
@@ -184,7 +190,7 @@ async function resolveDeadlineRecipients(reminder: any, today: Date): Promise<Re
       },
     });
 
-    recipients.push(...pledges.filter(pledge => pledge.user && pledge.user.loginEnabled !== false).map(pledge => ({
+    recipients.push(...pledges.filter(pledge => pledge.user && pledge.user.loginEnabled !== false && hasOutstandingPledgeBalance(pledge)).map(pledge => ({
       userId: pledge.user!.id,
       email: pledge.user!.email,
       firstName: pledge.user!.firstName,
@@ -221,14 +227,24 @@ async function createLogIfNew(reminderId: string, recipient: ReminderRecipient, 
 }
 
 async function sendToRecipient(reminder: any, recipient: ReminderRecipient, scheduledFor: Date) {
-  const title = renderText(reminder.title, recipient);
-  const message = renderText(reminder.message, recipient);
+  let currentRecipient = recipient;
+  if (recipient.pledgeId) {
+    const pledge = await prisma.pledge.findUnique({
+      where: { id: recipient.pledgeId },
+      select: { pledgedAmount: true, amountPaid: true },
+    });
+    if (!pledge || !hasOutstandingPledgeBalance(pledge)) return;
+    currentRecipient = { ...recipient, ...pledge };
+  }
 
-  if (reminder.channelEmail && recipient.email) {
-    const log = await createLogIfNew(reminder.id, recipient, 'email', scheduledFor);
+  const title = renderText(reminder.title, currentRecipient);
+  const message = renderText(reminder.message, currentRecipient);
+
+  if (reminder.channelEmail && currentRecipient.email) {
+    const log = await createLogIfNew(reminder.id, currentRecipient, 'email', scheduledFor);
     if (log) {
       try {
-        await queueEmail(recipient.email, title, reminderEmailHtml(title, message), 'notification');
+        await queueEmail(currentRecipient.email, title, reminderEmailHtml(title, message), 'notification');
         await prisma.scheduledReminderLog.update({ where: { id: log.id }, data: { status: 'queued', sentAt: new Date() } });
       } catch (error: any) {
         await prisma.scheduledReminderLog.update({ where: { id: log.id }, data: { status: 'failed', error: error.message } });
@@ -236,11 +252,11 @@ async function sendToRecipient(reminder: any, recipient: ReminderRecipient, sche
     }
   }
 
-  if (reminder.channelPush && recipient.userId) {
-    const log = await createLogIfNew(reminder.id, recipient, 'push', scheduledFor);
+  if (reminder.channelPush && currentRecipient.userId) {
+    const log = await createLogIfNew(reminder.id, currentRecipient, 'push', scheduledFor);
     if (log) {
       try {
-        await sendPushNotification(recipient.userId, title, message, { type: 'scheduled_reminder', reminderId: reminder.id });
+        await sendPushNotification(currentRecipient.userId, title, message, { type: 'scheduled_reminder', reminderId: reminder.id });
         await prisma.scheduledReminderLog.update({ where: { id: log.id }, data: { status: 'sent', sentAt: new Date() } });
       } catch (error: any) {
         await prisma.scheduledReminderLog.update({ where: { id: log.id }, data: { status: 'failed', error: error.message } });
