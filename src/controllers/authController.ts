@@ -665,6 +665,23 @@ export async function register(req: Request, res: Response): Promise<void> {
 
   const { queueEmail } = await import('../lib/emailQueue');
   const { memberWelcomeTemplate, memberPendingApprovalTemplate, churchMemberApprovalRequestTemplate } = await import('../lib/emailTemplates');
+
+  if (!data.inviteToken) {
+    const { notifySystemAdminOfRegistrationActivity } = await import('../lib/systemAdminNotifications');
+    await notifySystemAdminOfRegistrationActivity({
+      title: 'New ministry registration',
+      summary: 'A new ministry has registered and is awaiting email verification.',
+      details: [
+        ['Ministry', data.ministryName ?? null],
+        ['Administrator', `${user.firstName} ${user.lastName}`],
+        ['Email', user.email],
+        ['Phone', user.phone],
+        ['Country', data.accountCountry],
+        ['Branches reported', data.numberOfBranches === undefined ? null : String(data.numberOfBranches)],
+        ['Email verified', 'No'],
+      ],
+    });
+  }
   
   // Send different email based on role
   if (data.inviteToken && user.church) {

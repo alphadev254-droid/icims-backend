@@ -19,6 +19,7 @@ import { sendEmailVerificationOtp } from '../services/emailVerificationService';
 import { fetchPayoutProvidersForMarket } from '../services/payoutProviderOptionsService';
 import { queueEmail } from '../lib/emailQueue';
 import { marketerStatusTemplate } from '../lib/emailTemplates';
+import { notifySystemAdminOfRegistrationActivity } from '../lib/systemAdminNotifications';
 import { phoneSchema } from '../lib/inputValidation';
 import {
   createAdminReferrerWithdrawalPayout,
@@ -306,6 +307,21 @@ export async function registerReferrer(req: Request, res: Response): Promise<voi
 
   await sendEmailVerificationOtp(result.user.id);
 
+  await notifySystemAdminOfRegistrationActivity({
+    title: 'New marketer registration',
+    summary: 'A new marketer account has been registered and is awaiting review.',
+    details: [
+      ['Name', `${data.firstName} ${data.lastName}`],
+      ['Email', result.user.email],
+      ['Phone', data.phone],
+      ['Country', data.country],
+      ['City', data.city],
+      ['District', data.district],
+      ['Email verified', 'No'],
+      ['Account status', result.referrer.status],
+    ],
+  });
+
   res.status(201).json({
     success: true,
     requiresEmailVerification: true,
@@ -437,6 +453,18 @@ export async function uploadMyReferrerAgreement(req: Request, res: Response): Pr
   if (referrer.signedAgreementUrl && referrer.signedAgreementUrl !== nextUrl) {
     removeUploadIfSafe(referrer.signedAgreementUrl);
   }
+
+  await notifySystemAdminOfRegistrationActivity({
+    title: 'Marketer agreement uploaded',
+    summary: 'A marketer submitted a signed agreement for system admin review.',
+    details: [
+      ['Name', referrer.displayName || `${referrer.user.firstName} ${referrer.user.lastName}`],
+      ['Email', referrer.user.email],
+      ['Country', referrer.country],
+      ['Agreement file', file.originalname],
+      ['Review status', updated.agreementStatus],
+    ],
+  });
 
   res.status(201).json({
     success: true,

@@ -413,9 +413,10 @@ export async function getCells(req: Request, res: Response): Promise<void> {
   ]);
 
   const cellIds = cells.map(c => c.id);
+  const includeTopInviters = req.query.includeTopInviters === 'true';
 
   // Round 2: all enrichment in parallel, scoped to page cell IDs (and optional date range)
-  const [lastMeetingsRaw, attendanceRowsScoped, visitorRowsPerCell, offeringStatsRaw] = await Promise.all([
+  const [lastMeetingsRaw, attendanceRowsScoped, visitorRowsPerCell, offeringStatsRaw, inviterCounts] = await Promise.all([
     prisma.cellMeeting.groupBy({
       by: ['cellId'],
       where: { cellId: { in: cellIds }, publicationStatus: 'published', recordType: { not: 'scheduled_source' }, ...(hasDates && { date: dateFilter }) },
@@ -448,7 +449,45 @@ export async function getCells(req: Request, res: Response): Promise<void> {
       },
       _sum: { amount: true },
     }),
+    includeTopInviters
+      ? prisma.cellAttendance.groupBy({
+          by: ['cellId', 'invitedByUserId'],
+          where: {
+            cellId: { in: cellIds },
+            isVisitor: true,
+            invitedByUserId: { not: null },
+            ...(hasDates && { meeting: { date: dateFilter } }),
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
   ]);
+
+  const inviterIds = includeTopInviters
+    ? Array.from(new Set(inviterCounts.map(row => row.invitedByUserId).filter((id): id is string => Boolean(id))))
+    : [];
+  const inviterUsers = inviterIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: inviterIds } },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      })
+    : [];
+  const inviterUserMap = new Map(inviterUsers.map(user => [user.id, user]));
+  const topInvitersByCell = new Map<string, Array<{ id: string; name: string; count: number }>>();
+  for (const row of inviterCounts) {
+    if (!row.invitedByUserId) continue;
+    const inviter = inviterUserMap.get(row.invitedByUserId);
+    const list = topInvitersByCell.get(row.cellId) ?? [];
+    list.push({
+      id: row.invitedByUserId,
+      name: inviter ? `${inviter.firstName ?? ''} ${inviter.lastName ?? ''}`.trim() || inviter.email || 'Unknown member' : 'Unknown member',
+      count: row._count._all,
+    });
+    topInvitersByCell.set(row.cellId, list);
+  }
+  for (const list of topInvitersByCell.values()) {
+    list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
 
   // Round 3: active member identities for guest conversion matching
   const activeMembersPerCell = await prisma.cellMember.findMany({
@@ -477,6 +516,7 @@ export async function getCells(req: Request, res: Response): Promise<void> {
 
   const enriched = cells.map(c => ({
     ...c,
+    ...(includeTopInviters && { topInviters: (topInvitersByCell.get(c.id) ?? []).slice(0, 5) }),
     lastMeetingDate: lastMeetingMap.get(c.id) ?? null,
     meetingsInPeriod: hasDates ? (meetingCountMap.get(c.id) ?? 0) : (c._count?.meetings ?? 0),
     totalVisitors: cellVisitorRows.get(c.id)?.length ?? 0,
