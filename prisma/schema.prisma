@@ -260,6 +260,7 @@ model Church {
   attendanceParticipants AttendanceParticipant[]
   meetings               Meeting[]
   announcements          Announcement[]
+  announcementLinks      AnnouncementChurch[]
   resources              Resource[]
   transactions           Transaction[]
   subaccount             Subaccount?
@@ -1023,9 +1024,24 @@ model Announcement {
   publishedAt       DateTime?
 
   church Church             @relation(fields: [churchId], references: [id])
+  targetChurches AnnouncementChurch[]
   views  AnnouncementView[]
 
   @@map("announcements")
+}
+
+model AnnouncementChurch {
+  id             String   @id @default(cuid())
+  announcementId String
+  churchId       String
+  createdAt      DateTime @default(now())
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  church       Church       @relation(fields: [churchId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([announcementId, churchId])
+  @@index([churchId])
+  @@map("announcement_churches")
 }
 
 // ─── Resources ────────────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ const schema = z.object({
   type: z.enum(['announcement', 'prayer_request', 'newsletter']).default('announcement'),
   priority: z.enum(['normal', 'urgent']).default('normal'),
   churchId: z.string().min(1, 'Church ID required'),
+  churchIds: z.array(z.string().min(1)).min(1, 'Select at least one church').max(100).optional(),
   attachments: z.string().optional(),
   deliveryMode: z.enum(['now', 'scheduled']).default('now').optional(),
   scheduledAt: z.string().datetime().optional().nullable(),
@@ -42,6 +43,31 @@ const schema = z.object({
   schedulePattern: z.enum(['repeat', 'custom_dates']).default('repeat').optional(),
   occurrenceTimes: z.array(z.string().datetime()).max(366).optional(),
 });
+
+function uniqueChurchIds(churchId: string, churchIds?: string[]): string[] {
+  return [...new Set([churchId, ...(churchIds ?? [])])];
+}
+
+function announcementChurchIds(item: { churchId: string; targetChurches?: Array<{ churchId: string }> }): string[] {
+  return uniqueChurchIds(item.churchId, item.targetChurches?.map(link => link.churchId));
+}
+
+const announcementInclude = {
+  church: { select: { id: true, name: true, ministryAdminId: true } },
+  targetChurches: {
+    select: { churchId: true, church: { select: { id: true, name: true } } },
+    orderBy: { createdAt: 'asc' as const },
+  },
+};
+
+function announcementAccessWhere(churchIds: string[]) {
+  return {
+    OR: [
+      { churchId: { in: churchIds } },
+      { targetChurches: { some: { churchId: { in: churchIds } } } },
+    ],
+  };
+}
 
 type StoredAttachment = { url: string; name?: string; size?: number; mimeType?: string };
 
@@ -137,7 +163,7 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
     userId,
   );
   
-  const whereClause: any = { churchId: { in: churchIds } };
+  const whereClause: Prisma.AnnouncementWhereInput = announcementAccessWhere(churchIds);
   
   // Apply church filter if provided
   if (filterChurchId) {
@@ -146,19 +172,12 @@ export async function getAnnouncements(req: Request, res: Response): Promise<voi
       res.status(403).json({ success: false, message: 'Access denied to this church' });
       return;
     }
-    whereClause.churchId = filterChurchId;
+    Object.assign(whereClause, announcementAccessWhere([filterChurchId]));
   }
   
   const items = await prisma.announcement.findMany({
     where: whereClause,
-    include: {
-      church: {
-        select: {
-          id: true,
-          name: true,
-        },
-      },
-    },
+    include: announcementInclude,
     orderBy: { createdAt: 'desc' },
   });
   const itemsWithSchedules = await attachAnnouncementSchedules(items);
@@ -179,7 +198,8 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { churchId: targetChurchId, deliveryMode, scheduledAt, recurrenceRule, schedulePattern = 'repeat', occurrenceTimes, timezone: requestedTimezone, ...announcementData } = parsed.data;
+  const { churchId: targetChurchId, churchIds: requestedChurchIds, deliveryMode, scheduledAt, recurrenceRule, schedulePattern = 'repeat', occurrenceTimes, timezone: requestedTimezone, ...announcementData } = parsed.data;
+  const targetChurchIds = uniqueChurchIds(targetChurchId, requestedChurchIds);
   const mode = deliveryMode ?? 'now';
   const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(occurrenceTimes) : undefined;
 
@@ -218,8 +238,8 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
     userId
   );
 
-  if (!accessibleChurchIds.includes(targetChurchId)) {
-    res.status(403).json({ success: false, message: 'Access denied to this church' });
+  if (targetChurchIds.some(id => !accessibleChurchIds.includes(id))) {
+    res.status(403).json({ success: false, message: 'Access denied to one or more selected churches' });
     return;
   }
   const timezone = await resolveTimeZone({ req, explicit: requestedTimezone, churchId: targetChurchId });
@@ -230,8 +250,9 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
       churchId: targetChurchId,
       createdById: userId!,
       ...communicationPublication(mode === 'scheduled'),
+      targetChurches: { create: targetChurchIds.map(churchId => ({ churchId })) },
     },
-    include: { church: { select: { ministryAdminId: true } } },
+    include: announcementInclude,
   });
 
   const startAt = mode === 'scheduled' ? (exactOccurrences?.[0] ?? new Date(scheduledAt!)) : new Date();
@@ -257,7 +278,7 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
 
   const item = await prisma.announcement.findUnique({ 
     where: { id },
-    include: { church: true }
+    include: announcementInclude,
   });
   if (!item) {
     res.status(404).json({ success: false, message: 'Not found' });
@@ -274,7 +295,8 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     userId
   );
 
-  if (!accessibleChurchIds.includes(item.churchId)) {
+  const existingChurchIds = announcementChurchIds(item);
+  if (existingChurchIds.some(id => !accessibleChurchIds.includes(id))) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }
@@ -285,7 +307,17 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     return;
   }
 
-  const { deliveryMode, scheduledAt, recurrenceRule, schedulePattern = 'repeat', occurrenceTimes, timezone: requestedTimezone, ...announcementData } = parsed.data;
+  const { churchId: requestedPrimaryChurchId, churchIds: requestedChurchIds, deliveryMode, scheduledAt, recurrenceRule, schedulePattern = 'repeat', occurrenceTimes, timezone: requestedTimezone, ...announcementData } = parsed.data;
+  const shouldUpdateChurches = requestedChurchIds !== undefined
+    || (requestedPrimaryChurchId !== undefined && requestedPrimaryChurchId !== item.churchId);
+  const nextPrimaryChurchId = requestedPrimaryChurchId ?? item.churchId;
+  const nextChurchIds = shouldUpdateChurches
+    ? uniqueChurchIds(nextPrimaryChurchId, requestedChurchIds)
+    : existingChurchIds;
+  if (nextChurchIds.some(churchId => !accessibleChurchIds.includes(churchId))) {
+    res.status(403).json({ success: false, message: 'Access denied to one or more selected churches' });
+    return;
+  }
   const mode = deliveryMode ?? undefined;
   const exactOccurrences = schedulePattern === 'custom_dates' ? buildExactScheduleInstants(occurrenceTimes) : undefined;
 
@@ -298,17 +330,8 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
     WHERE sourceModule = 'announcements' AND sourceId = ${id} LIMIT 1
   `;
   const timezone = requestedTimezone
-    ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: item.churchId })
-    : existingTimezoneRows[0]?.timezone ?? await resolveTimeZone({ req, churchId: item.churchId });
-
-  const updated = await prisma.announcement.update({
-    where: { id },
-    data: announcementData,
-    include: { church: { select: { ministryAdminId: true } } },
-  });
-  const removedAttachments = announcementData.attachments !== undefined
-    ? parseAttachments(item.attachments).filter(oldFile => !parseAttachments(announcementData.attachments).some(newFile => newFile.url === oldFile.url))
-    : [];
+    ? await resolveTimeZone({ req, explicit: requestedTimezone, churchId: nextPrimaryChurchId })
+    : existingTimezoneRows[0]?.timezone ?? await resolveTimeZone({ req, churchId: nextPrimaryChurchId });
 
   const existingSchedule = await prisma.$queryRaw<Array<{ recurrenceRuleId: string | null }>>`
     SELECT recurrenceRuleId
@@ -336,7 +359,35 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       res.status(403).json({ success: false, message: scheduleAccess.message });
       return;
     }
+  } else if (mode === 'now') {
+    if (existingSchedule.length > 0) {
+      const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
+      if (!scheduleAccess.allowed) {
+        res.status(403).json({ success: false, message: scheduleAccess.message });
+        return;
+      }
+    }
+  }
 
+  const updated = await prisma.$transaction(async tx => {
+    await tx.announcement.update({
+      where: { id },
+      data: { ...announcementData, ...(shouldUpdateChurches ? { churchId: nextPrimaryChurchId } : {}) },
+    });
+    if (shouldUpdateChurches) {
+      await tx.announcementChurch.deleteMany({ where: { announcementId: id } });
+      await tx.announcementChurch.createMany({
+        data: nextChurchIds.map(churchId => ({ announcementId: id, churchId })),
+        skipDuplicates: true,
+      });
+    }
+    return tx.announcement.findUniqueOrThrow({ where: { id }, include: announcementInclude });
+  });
+  const removedAttachments = announcementData.attachments !== undefined
+    ? parseAttachments(item.attachments).filter(oldFile => !parseAttachments(announcementData.attachments).some(newFile => newFile.url === oldFile.url))
+    : [];
+
+  if (mode === 'scheduled') {
     const startAt = exactOccurrences?.[0] ?? new Date(scheduledAt!);
     const recurrenceRuleId = await saveRecurrenceRule(schedulePattern === 'custom_dates' ? null : recurrenceRule ?? null, startAt, existingSchedule[0]?.recurrenceRuleId);
     await syncAnnouncementToSchedule({
@@ -346,13 +397,6 @@ export async function updateAnnouncement(req: Request, res: Response): Promise<v
       timezone,
     }, exactOccurrences);
   } else if (mode === 'now') {
-    if (existingSchedule.length > 0) {
-      const scheduleAccess = await assertScheduleAccess(req, null, 'delete');
-      if (!scheduleAccess.allowed) {
-        res.status(403).json({ success: false, message: scheduleAccess.message });
-        return;
-      }
-    }
     await syncAnnouncementToSchedule({
       ...updated,
       scheduledAt: new Date(),
@@ -375,7 +419,7 @@ export async function deleteAnnouncement(req: Request, res: Response): Promise<v
 
   const item = await prisma.announcement.findUnique({ 
     where: { id },
-    include: { church: true }
+    include: announcementInclude,
   });
   if (!item) {
     res.status(404).json({ success: false, message: 'Not found' });
@@ -392,7 +436,7 @@ export async function deleteAnnouncement(req: Request, res: Response): Promise<v
     userId
   );
 
-  if (!accessibleChurchIds.includes(item.churchId)) {
+  if (announcementChurchIds(item).some(id => !accessibleChurchIds.includes(id))) {
     res.status(403).json({ success: false, message: 'Access denied' });
     return;
   }

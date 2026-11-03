@@ -3,6 +3,34 @@ import prisma from '../lib/prisma';
 import { buildPersonSearchWhere } from '../lib/personSearch';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 
+const announcementAudienceSelect = {
+  id: true,
+  churchId: true,
+  targetChurches: { select: { churchId: true } },
+};
+
+function announcementChurchIds(announcement: { churchId: string; targetChurches: Array<{ churchId: string }> }) {
+  return [...new Set([announcement.churchId, ...announcement.targetChurches.map(link => link.churchId)])];
+}
+
+async function accessibleAnnouncementChurchIds(req: Request, announcementId: string) {
+  const announcement = await prisma.announcement.findUnique({
+    where: { id: announcementId },
+    select: announcementAudienceSelect,
+  });
+  if (!announcement) return { announcement: null, churchIds: [] as string[] };
+  const accessibleIds = await getAccessibleChurchIds(
+    req.user?.role ?? 'member',
+    req.user?.churchId,
+    req.user?.districts,
+    req.user?.traditionalAuthorities,
+    req.user?.regions,
+    req.user?.userId,
+  );
+  const audienceIds = announcementChurchIds(announcement);
+  return { announcement, churchIds: audienceIds.filter(id => accessibleIds.includes(id)) };
+}
+
 // ─── POST /api/announcements/:id/view ────────────────────────────────────────
 
 export async function recordAnnouncementView(req: Request, res: Response): Promise<void> {
@@ -10,8 +38,9 @@ export async function recordAnnouncementView(req: Request, res: Response): Promi
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
 
   const announcementId = String(req.params.id);
-  const exists = await prisma.announcement.findUnique({ where: { id: announcementId }, select: { id: true } });
-  if (!exists) { res.status(404).json({ success: false, message: 'Not found' }); return; }
+  const { announcement, churchIds } = await accessibleAnnouncementChurchIds(req, announcementId);
+  if (!announcement) { res.status(404).json({ success: false, message: 'Not found' }); return; }
+  if (churchIds.length === 0) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
   await (prisma as any).announcementView.upsert({
     where: { announcementId_userId: { announcementId, userId } },
@@ -27,18 +56,17 @@ export async function recordAnnouncementView(req: Request, res: Response): Promi
 export async function getAnnouncementViewStats(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role ?? 'member';
-  const churchId = req.user?.churchId;
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
   if (roleName === 'member') { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
   const announcementId = String(req.params.id);
-  const announcement = await prisma.announcement.findUnique({ where: { id: announcementId }, select: { id: true, churchId: true } });
+  const { announcement, churchIds } = await accessibleAnnouncementChurchIds(req, announcementId);
   if (!announcement) { res.status(404).json({ success: false, message: 'Not found' }); return; }
+  if (churchIds.length === 0) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
-  const accessibleIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
-  if (!accessibleIds.includes(announcement.churchId)) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
-
-  const count = await (prisma as any).announcementView.count({ where: { announcementId } });
+  const count = await (prisma as any).announcementView.count({
+    where: { announcementId, user: { churchId: { in: churchIds } } },
+  });
   res.json({ success: true, data: { count } });
 }
 
@@ -47,27 +75,25 @@ export async function getAnnouncementViewStats(req: Request, res: Response): Pro
 export async function getAnnouncementViewers(req: Request, res: Response): Promise<void> {
   const userId = req.user?.userId;
   const roleName = req.user?.role ?? 'member';
-  const churchId = req.user?.churchId;
   if (!userId) { res.status(401).json({ success: false, message: 'Not authenticated' }); return; }
   if (roleName === 'member') { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
   const announcementId = String(req.params.id);
   const search = (req.query.search as string)?.trim() || '';
 
-  const announcement = await prisma.announcement.findUnique({ where: { id: announcementId }, select: { id: true, churchId: true } });
+  const { announcement, churchIds } = await accessibleAnnouncementChurchIds(req, announcementId);
   if (!announcement) { res.status(404).json({ success: false, message: 'Not found' }); return; }
-
-  const accessibleIds = await getAccessibleChurchIds(roleName, churchId, req.user?.districts, req.user?.traditionalAuthorities, req.user?.regions, userId);
-  if (!accessibleIds.includes(announcement.churchId)) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
+  if (churchIds.length === 0) { res.status(403).json({ success: false, message: 'Access denied' }); return; }
 
   const views = await (prisma as any).announcementView.findMany({
     where: {
       announcementId,
-      ...(search ? {
-        user: buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']),
-      } : {}),
+      user: {
+        churchId: { in: churchIds },
+        ...(search ? buildPersonSearchWhere(search, ['firstName', 'lastName', 'email']) : {}),
+      },
     },
-    select: { viewedAt: true, user: { select: { firstName: true, lastName: true, email: true } } },
+    select: { viewedAt: true, user: { select: { id: true, firstName: true, lastName: true, email: true } } },
     orderBy: { viewedAt: 'desc' },
   });
 

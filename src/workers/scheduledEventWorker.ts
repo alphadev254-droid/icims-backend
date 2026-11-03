@@ -296,39 +296,49 @@ function communicationTypeLabel(type: string) {
 async function sendAnnouncement(sourceId: string) {
   const announcement = await prisma.announcement.findUnique({
     where: { id: sourceId },
-    include: { church: { select: { name: true } } },
+    include: {
+      church: { select: { id: true, name: true } },
+      targetChurches: { select: { churchId: true, church: { select: { name: true } } } },
+    },
   });
   if (!announcement) return false;
 
-  const churchMembers = await prisma.user.findMany({
-    where: { churchId: announcement.churchId, status: 'active' },
-    select: { id: true },
-  });
-  const memberIds = churchMembers.map(member => member.id);
+  const targetChurches = [
+    { churchId: announcement.churchId, church: announcement.church },
+    ...announcement.targetChurches,
+  ].filter((target, index, all) => all.findIndex(item => item.churchId === target.churchId) === index);
   const prefix = announcement.priority === 'urgent' ? 'URGENT - ' : '';
 
-  if (memberIds.length > 0) {
-    await sendPushToUsers(
-      memberIds,
-      `${announcement.church?.name || 'Your Church'} · ${prefix}${communicationTypeLabel(announcement.type)}`,
-      announcement.title,
-      { type: 'announcement', id: announcement.id, churchId: announcement.churchId }
-    );
-  }
+  for (const target of targetChurches) {
+    const churchName = target.church?.name || 'Your Church';
+    const churchMembers = await prisma.user.findMany({
+      where: { churchId: target.churchId, status: 'active' },
+      select: { id: true },
+    });
+    const memberIds = churchMembers.map(member => member.id);
+    if (memberIds.length > 0) {
+      await sendPushToUsers(
+        memberIds,
+        `${churchName} · ${prefix}${communicationTypeLabel(announcement.type)}`,
+        announcement.title,
+        { type: 'announcement', id: announcement.id, churchId: target.churchId },
+      );
+    }
 
-  await queueChurchMemberEmails({
-    churchId: announcement.churchId,
-    subject: `${announcement.church?.name || 'Your Church'} - ${prefix}${communicationTypeLabel(announcement.type)}: ${announcement.title}`,
-    buildHtml: member => announcementCreatedTemplate({
-      firstName: member.firstName,
-      title: announcement.title,
-      content: announcement.content,
-      type: announcement.type,
-      priority: announcement.priority,
-      churchName: announcement.church?.name || 'Your Church',
-    }),
-    emailType: 'notification',
-  });
+    await queueChurchMemberEmails({
+      churchId: target.churchId,
+      subject: `${churchName} - ${prefix}${communicationTypeLabel(announcement.type)}: ${announcement.title}`,
+      buildHtml: member => announcementCreatedTemplate({
+        firstName: member.firstName,
+        title: announcement.title,
+        content: announcement.content,
+        type: announcement.type,
+        priority: announcement.priority,
+        churchName,
+      }),
+      emailType: 'notification',
+    });
+  }
 
   if (announcement.publicationStatus !== 'published') {
     await prisma.announcement.update({
