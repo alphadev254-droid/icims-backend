@@ -2182,6 +2182,55 @@ model ScheduledReminderLog {
   @@map("scheduled_reminder_logs")
 }
 
+model ReportAutomation {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  createdById     String
+  reportType      String
+  name            String
+  filters         Json
+  periodPreset    String
+  frequency       String
+  dayOfWeek       Int?
+  dayOfMonth      Int?
+  timeOfDay       String
+  timezone        String
+  format          String   @default("xlsx")
+  recipients      Json
+  isActive        Boolean  @default(true)
+  nextRunAt       DateTime?
+  lastRunAt       DateTime?
+  lastStatus      String?
+  lastError       String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  runs ReportAutomationRun[]
+
+  @@index([ministryAdminId, reportType])
+  @@index([isActive, nextRunAt])
+  @@map("report_automations")
+}
+
+model ReportAutomationRun {
+  id              String    @id @default(cuid())
+  automationId    String
+  scheduledFor    DateTime
+  status          String
+  recipientCount  Int       @default(0)
+  fileName        String?
+  error           String?   @db.Text
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  automation ReportAutomation @relation(fields: [automationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([automationId, createdAt])
+  @@index([status, scheduledFor])
+  @@map("report_automation_runs")
+}
+
 model AnnouncementView {
   id             String   @id @default(cuid())
   announcementId String
