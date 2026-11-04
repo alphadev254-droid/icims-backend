@@ -7,6 +7,7 @@ const router = Router();
 const asyncRoute = (handler: (req: Request, res: Response) => Promise<unknown>) =>
   (req: Request, res: Response, next: NextFunction) => { void handler(req, res).catch(next); };
 router.use(authenticate, requireFeature('reports_analytics'));
+router.get('/context', authorizePermission('reports:read'), asyncRoute(reportAutomationController.contextInfo));
 router.get('/definitions', authorizePermission('reports:read'), asyncRoute(reportAutomationController.definitions));
 router.get('/recipients', authorizePermission('reports:read'), asyncRoute(reportAutomationController.recipients));
 router.get('/', authorizePermission('reports:read'), asyncRoute(reportAutomationController.list));

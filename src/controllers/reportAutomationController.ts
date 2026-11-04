@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { calculateNextReportRun, REPORT_DEFINITIONS, reportAutomationInputSchema } from '../lib/reportAutomation';
+import { resolveTimeZone } from '../lib/timezone';
 
 async function context(req: Request) {
   const user = req.user!;
@@ -26,6 +27,12 @@ async function validateRecipientUsers(userIds: string[], ministryAdminId: string
 }
 
 export const reportAutomationController = {
+  async contextInfo(req: Request, res: Response) {
+    const { ministryAdminId } = await context(req);
+    if (!ministryAdminId) return res.status(403).json({ success: false, message: 'Ministry context is required' });
+    const timezone = await resolveTimeZone({ req, ministryAdminId });
+    res.json({ success: true, data: { timezone } });
+  },
   async definitions(_req: Request, res: Response) {
     res.json({ success: true, data: REPORT_DEFINITIONS });
   },
@@ -41,7 +48,11 @@ export const reportAutomationController = {
         status: 'active',
         email: { not: '' },
         AND: [
-          { OR: [{ id: ministryAdminId }, { ministryAdminId, churchId: { in: accessibleChurchIds } }] },
+          { OR: [
+            { id: ministryAdminId },
+            { ministryAdminId },
+            { churchId: { in: accessibleChurchIds } },
+          ] },
           { OR: [{ id: ministryAdminId }, { role: { is: { name: { not: 'member' } } } }] },
           ...(search ? [{ OR: [
             { firstName: { contains: search } },

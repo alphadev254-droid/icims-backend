@@ -50,6 +50,41 @@ const formatEmailDate = (value: Date | string | null | undefined) => value
 const formatEmailMoney = (currency: string, amount: number) =>
   `${currency} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+export function scheduledReportTemplate(data: {
+  reportName: string;
+  startDate: string;
+  endDate: string;
+  timeZone: string;
+}) {
+  return `<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Scheduled Report Ready</h1>
+      <p>${escapeHtml(data.reportName)}</p>
+    </div>
+    <div class="content">
+      <h2>Your report is attached</h2>
+      <p>Your automated report has been generated successfully and is included with this email as an Excel workbook.</p>
+      <div class="info-box">
+        <h3>${escapeHtml(data.reportName)}</h3>
+        <p><strong>Reporting period:</strong> ${escapeHtml(data.startDate)} to ${escapeHtml(data.endDate)}</p>
+        <p><strong>Timezone:</strong> ${escapeHtml(data.timeZone)}</p>
+        <p><strong>Format:</strong> Microsoft Excel (.xlsx)</p>
+      </div>
+      <p>Please open the attached workbook to review the full report.</p>
+      <p style="font-size:13px;color:#6b7280;">This email was generated automatically from your saved report schedule.</p>
+    </div>
+    <div class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${escapeHtml(SYSTEM_NAME)}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
 export function programAssignmentTemplate(data: {
   kind: 'assignment' | 'removal';
   recipientName: string;

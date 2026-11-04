@@ -9,6 +9,7 @@ import { getMinistryPledges } from '../controllers/pledgeController';
 import { getAttendance, getServiceVisitorsReport } from '../controllers/attendanceController';
 import { getCells, getCellVisitors } from '../controllers/cellController';
 import { exportTransactions, getGivingByMember } from '../controllers/transactionController';
+import { scheduledReportTemplate } from '../lib/emailTemplates';
 
 type AutomationRow = Awaited<ReturnType<typeof prisma.reportAutomation.findUniqueOrThrow>>;
 type JsonMap = Record<string, any>;
@@ -88,7 +89,13 @@ export async function executeReportAutomation(automationId: string, scheduledFor
     if (!emails.length) throw new Error('No valid recipients are configured');
     const filename = `${automation.reportType}-${period.startDate}-to-${period.endDate}.xlsx`;
     const label = REPORT_DEFINITIONS[automation.reportType as ReportType].label;
-    await Promise.all(emails.map(to => queueEmail(to, `${label}: ${period.startDate} to ${period.endDate}`, `<p>Your scheduled <strong>${label}</strong> is attached.</p><p>Reporting period: ${period.startDate} to ${period.endDate} (${automation.timezone}).</p>`, [{ filename, content, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentDisposition: 'attachment' }], 'notification')));
+    const html = scheduledReportTemplate({
+      reportName: label,
+      startDate: period.startDate,
+      endDate: period.endDate,
+      timeZone: automation.timezone,
+    });
+    await Promise.all(emails.map(to => queueEmail(to, `${label}: ${period.startDate} to ${period.endDate}`, html, [{ filename, content, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentDisposition: 'attachment' }], 'notification')));
     await prisma.$transaction([
       prisma.reportAutomationRun.update({ where: { id: run.id }, data: { status: 'queued', recipientCount: emails.length, fileName: filename, completedAt: new Date() } }),
       prisma.reportAutomation.update({ where: { id: automation.id }, data: { lastRunAt: new Date(), lastStatus: 'queued', lastError: null } }),
