@@ -61,7 +61,14 @@ export const reportAutomationController = {
           ] }] : []),
         ],
       },
-      select: { id: true, firstName: true, lastName: true, email: true, church: { select: { id: true, name: true } } },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        role: { select: { name: true, displayName: true } },
+        church: { select: { id: true, name: true } },
+      },
       orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }], take: search ? 100 : 50,
     });
     res.json({ success: true, data: users });
