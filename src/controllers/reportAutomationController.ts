@@ -32,10 +32,26 @@ export const reportAutomationController = {
   async recipients(req: Request, res: Response) {
     const { ministryAdminId, accessibleChurchIds } = await context(req);
     if (!ministryAdminId) return res.status(403).json({ success: false, message: 'Ministry context is required' });
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    if (search.length > 0 && search.length < 3) {
+      return res.json({ success: true, data: [] });
+    }
     const users = await prisma.user.findMany({
-      where: { status: 'active', email: { not: '' }, OR: [{ id: ministryAdminId }, { ministryAdminId, churchId: { in: accessibleChurchIds } }] },
+      where: {
+        status: 'active',
+        email: { not: '' },
+        AND: [
+          { OR: [{ id: ministryAdminId }, { ministryAdminId, churchId: { in: accessibleChurchIds } }] },
+          { OR: [{ id: ministryAdminId }, { role: { is: { name: { not: 'member' } } } }] },
+          ...(search ? [{ OR: [
+            { firstName: { contains: search } },
+            { lastName: { contains: search } },
+            { email: { contains: search } },
+          ] }] : []),
+        ],
+      },
       select: { id: true, firstName: true, lastName: true, email: true, church: { select: { id: true, name: true } } },
-      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }], take: 500,
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }], take: search ? 100 : 50,
     });
     res.json({ success: true, data: users });
   },
