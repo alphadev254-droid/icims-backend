@@ -23,12 +23,17 @@ const stageSchema = z.object({
 });
 
 const workflowSchema = z.object({
-  churchId: z.string().min(1),
+  churchId: z.string().min(1).optional(),
+  churchIds: z.array(z.string().min(1)).min(1).max(100).optional(),
   name: z.string().trim().min(1).max(160),
   description: z.string().trim().max(4000).optional(),
   isDefault: z.boolean().default(false),
   publish: z.boolean().default(false),
   stages: z.array(stageSchema).min(1).max(30),
+}).superRefine((value, ctx) => {
+  if (!value.churchId && !value.churchIds?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select at least one church', path: ['churchIds'] });
+  }
 });
 
 const journeySchema = z.object({
@@ -138,48 +143,53 @@ export async function createWorkflow(req: Request, res: Response) {
     res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid workflow' });
     return;
   }
-  const church = await scopedChurch(req, parsed.data.churchId);
-  if (!church?.ministryAdminId) {
-    res.status(404).json({ success: false, message: 'Church not found' });
+  const requestedChurchIds = [...new Set(parsed.data.churchIds?.length ? parsed.data.churchIds : [parsed.data.churchId!])];
+  const accessibleChurchIds = await requestScope(req);
+  if (requestedChurchIds.some(churchId => !accessibleChurchIds.includes(churchId))) {
+    res.status(404).json({ success: false, message: 'One or more selected churches were not found' });
     return;
   }
-  const courseLinkError = await validateWorkflowCourseLinks(church.id, parsed.data.stages);
+  const churches = await prisma.church.findMany({
+    where: { id: { in: requestedChurchIds }, status: 'active', ministryAdminId: { not: null } },
+    select: { id: true, ministryAdminId: true },
+  });
+  if (churches.length !== requestedChurchIds.length) {
+    res.status(404).json({ success: false, message: 'One or more selected churches are unavailable' });
+    return;
+  }
+  const hasCourseRequirements = parsed.data.stages.some(stage => stage.requirements.some(item => item.type === 'course'));
+  if (hasCourseRequirements && churches.length > 1) {
+    res.status(422).json({ success: false, message: 'A workflow linked to a course or class can only be created for one church' });
+    return;
+  }
+  const courseLinkError = hasCourseRequirements ? await validateWorkflowCourseLinks(churches[0].id, parsed.data.stages) : null;
   if (courseLinkError) { res.status(422).json({ success: false, message: courseLinkError }); return; }
-  const existingVersion = await prisma.discipleshipWorkflow.aggregate({
-    where: { churchId: church.id, name: parsed.data.name },
-    _max: { version: true },
-  });
-  const workflow = await prisma.$transaction(async tx => {
-    if (parsed.data.isDefault) {
-      await tx.discipleshipWorkflow.updateMany({ where: { churchId: church.id, isDefault: true }, data: { isDefault: false } });
-    }
-    return tx.discipleshipWorkflow.create({
-      data: {
-        ministryAdminId: church.ministryAdminId!,
-        churchId: church.id,
-        name: parsed.data.name,
-        description: parsed.data.description,
-        status: parsed.data.publish ? 'published' : 'draft',
-        version: (existingVersion._max.version || 0) + 1,
-        isDefault: parsed.data.isDefault,
-        stages: {
-          create: parsed.data.stages.map((stage, stageIndex) => ({
-            name: stage.name,
-            description: stage.description,
-            position: stageIndex + 1,
-            requirements: {
-              create: stage.requirements.map((requirement, requirementIndex) => ({
-                ...requirement,
-                position: requirementIndex + 1,
-              })),
-            },
-          })),
+  const workflows = await prisma.$transaction(async tx => {
+    const created = [];
+    for (const church of churches) {
+      const existingVersion = await tx.discipleshipWorkflow.aggregate({
+        where: { churchId: church.id, name: parsed.data.name },
+        _max: { version: true },
+      });
+      if (parsed.data.isDefault) {
+        await tx.discipleshipWorkflow.updateMany({ where: { churchId: church.id, isDefault: true }, data: { isDefault: false } });
+      }
+      created.push(await tx.discipleshipWorkflow.create({
+        data: {
+          ministryAdminId: church.ministryAdminId!, churchId: church.id, name: parsed.data.name,
+          description: parsed.data.description, status: parsed.data.publish ? 'published' : 'draft',
+          version: (existingVersion._max.version || 0) + 1, isDefault: parsed.data.isDefault,
+          stages: { create: parsed.data.stages.map((stage, stageIndex) => ({
+            name: stage.name, description: stage.description, position: stageIndex + 1,
+            requirements: { create: stage.requirements.map((requirement, requirementIndex) => ({ ...requirement, position: requirementIndex + 1 })) },
+          })) },
         },
-      },
-      include: { stages: { orderBy: { position: 'asc' }, include: { requirements: { orderBy: { position: 'asc' } } } } },
-    });
+        include: { stages: { orderBy: { position: 'asc' }, include: { requirements: { orderBy: { position: 'asc' } } } } },
+      }));
+    }
+    return created;
   });
-  res.status(201).json({ success: true, data: workflow });
+  res.status(201).json({ success: true, data: workflows[0], created: workflows, count: workflows.length });
 }
 
 export async function updateWorkflow(req: Request, res: Response) {
