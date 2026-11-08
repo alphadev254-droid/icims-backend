@@ -13,11 +13,13 @@ const stageSchema = z.object({
     name: z.string().trim().min(1).max(160),
     description: z.string().trim().max(2000).optional(),
     type: z.enum(['checklist', 'approval', 'course', 'milestone', 'assessment']).default('checklist'),
+    definitionId: z.string().min(1).optional(),
     courseId: z.string().min(1).optional(),
     classId: z.string().min(1).optional(),
     isRequired: z.boolean().default(true),
   }).superRefine((value, ctx) => {
     if (value.type === 'course' && !value.courseId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select a course for every course requirement', path: ['courseId'] });
+    if (value.type !== 'course' && !value.definitionId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select a saved requirement', path: ['definitionId'] });
     if (value.type !== 'course' && (value.courseId || value.classId)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Course links are only valid for course requirements' });
   })).default([]),
 });
@@ -110,16 +112,28 @@ function safeUserSelect() {
   } as const;
 }
 
-async function validateWorkflowCourseLinks(churchId: string, stages: z.infer<typeof stageSchema>[]) {
+function definitionChurchIds(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+async function validateWorkflowLinks(churchIds: string[], stages: z.infer<typeof stageSchema>[]) {
   const requirements = stages.flatMap(stage => stage.requirements).filter(item => item.type === 'course');
-  if (!requirements.length) return null;
+  const savedRequirements = stages.flatMap(stage => stage.requirements).filter(item => item.type !== 'course');
   const courseIds = [...new Set(requirements.map(item => item.courseId!))];
   const classIds = [...new Set(requirements.map(item => item.classId).filter(Boolean) as string[])];
-  const [courses, classes] = await Promise.all([
-    prisma.discipleshipCourse.findMany({ where: { id: { in: courseIds }, churchId, status: 'published' }, select: { id: true } }),
-    classIds.length ? prisma.discipleshipClass.findMany({ where: { id: { in: classIds }, churchId, courseId: { in: courseIds }, status: { not: 'cancelled' } }, select: { id: true, courseId: true } }) : [],
+  const definitionIds = [...new Set(savedRequirements.map(item => item.definitionId!))];
+  const [courses, classes, definitions] = await Promise.all([
+    courseIds.length ? prisma.discipleshipCourse.findMany({ where: { id: { in: courseIds }, status: 'published' }, select: { id: true, churchId: true, churchIds: true } }) : [],
+    classIds.length ? prisma.discipleshipClass.findMany({ where: { id: { in: classIds }, churchId: { in: churchIds }, courseId: { in: courseIds }, status: { not: 'cancelled' } }, select: { id: true, courseId: true } }) : [],
+    definitionIds.length ? prisma.discipleshipRequirementDefinition.findMany({ where: { id: { in: definitionIds }, status: 'published' } }) : [],
   ]);
   if (courses.length !== courseIds.length) return 'One or more selected courses are unavailable for this church';
+  if (courses.some(course => !churchIds.every(churchId => definitionChurchIds(course.churchIds).includes(churchId)))) return 'Every selected course must be available to all churches in this workflow';
+  if (definitions.length !== definitionIds.length) return 'One or more selected requirements are unavailable';
+  if (definitions.some(definition => !churchIds.every(churchId => definitionChurchIds(definition.churchIds).includes(churchId)))) return 'Every selected requirement must be available to all churches in this workflow';
+  const definitionById = new Map(definitions.map(item => [item.id, item]));
+  if (savedRequirements.some(item => definitionById.get(item.definitionId!)?.type !== item.type)) return 'A selected requirement does not match its requirement type';
+  if (classIds.length && churchIds.length !== 1) return 'A specific class can only be selected for a one-church workflow';
   const classById = new Map(classes.map(item => [item.id, item]));
   if (requirements.some(item => item.classId && classById.get(item.classId)?.courseId !== item.courseId)) return 'A selected class does not belong to its linked course';
   return null;
@@ -157,12 +171,7 @@ export async function createWorkflow(req: Request, res: Response) {
     res.status(404).json({ success: false, message: 'One or more selected churches are unavailable' });
     return;
   }
-  const hasCourseRequirements = parsed.data.stages.some(stage => stage.requirements.some(item => item.type === 'course'));
-  if (hasCourseRequirements && churches.length > 1) {
-    res.status(422).json({ success: false, message: 'A workflow linked to a course or class can only be created for one church' });
-    return;
-  }
-  const courseLinkError = hasCourseRequirements ? await validateWorkflowCourseLinks(churches[0].id, parsed.data.stages) : null;
+  const courseLinkError = await validateWorkflowLinks(requestedChurchIds, parsed.data.stages);
   if (courseLinkError) { res.status(422).json({ success: false, message: courseLinkError }); return; }
   const workflows = await prisma.$transaction(async tx => {
     const created = [];
@@ -199,7 +208,7 @@ export async function updateWorkflow(req: Request, res: Response) {
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid workflow' }); return; }
   const church = await scopedChurch(req, source.churchId);
   if (!church?.ministryAdminId) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
-  const courseLinkError = await validateWorkflowCourseLinks(source.churchId, parsed.data.stages);
+  const courseLinkError = await validateWorkflowLinks([source.churchId], parsed.data.stages);
   if (courseLinkError) { res.status(422).json({ success: false, message: courseLinkError }); return; }
   const latest = await prisma.discipleshipWorkflow.aggregate({ where: { churchId: source.churchId, name: parsed.data.name }, _max: { version: true } });
   const workflow = await prisma.$transaction(async tx => {
@@ -353,7 +362,7 @@ export async function createJourney(req: Request, res: Response) {
             requirements: { create: stage.requirements.map(requirement => ({
               sourceRequirementId: requirement.id, name: requirement.name, description: requirement.description,
               type: requirement.type, isRequired: requirement.isRequired, position: requirement.position,
-              courseId: requirement.courseId, classId: requirement.classId,
+              definitionId: requirement.definitionId, courseId: requirement.courseId, classId: requirement.classId,
             })) },
           })) },
         },
@@ -461,23 +470,28 @@ export async function completeRequirement(req: Request, res: Response) {
   }
   if (requirement.type === 'approval' && parsed.data.approved !== true) { res.status(422).json({ success: false, message: 'Approval confirmation is required' }); return; }
   if (requirement.type === 'milestone' && !parsed.data.milestoneDate) { res.status(422).json({ success: false, message: 'Milestone date is required' }); return; }
-  if (requirement.type === 'assessment' && (parsed.data.score === undefined || !parsed.data.assessmentId)) { res.status(422).json({ success: false, message: 'Assessment and score are required' }); return; }
+  if (requirement.type === 'assessment' && parsed.data.score === undefined) { res.status(422).json({ success: false, message: 'Assessment score is required' }); return; }
+  let assessmentPassed: boolean | undefined;
+  if (requirement.type === 'assessment') {
+    const definition = requirement.definitionId ? await prisma.discipleshipRequirementDefinition.findUnique({ where: { id: requirement.definitionId } }) : null;
+    if (!definition) { res.status(422).json({ success: false, message: 'The linked assessment definition is unavailable' }); return; }
+    if (definition.maxScore !== null && parsed.data.score! > definition.maxScore) { res.status(422).json({ success: false, message: `Score cannot exceed ${definition.maxScore}` }); return; }
+    assessmentPassed = parsed.data.score! >= (definition.passScore ?? 0);
+    if (!assessmentPassed) {
+      await prisma.discipleshipJourneyRequirement.update({ where: { id: requirement.id }, data: { assessmentScore: parsed.data.score, assessmentPassed: false, completionNote: parsed.data.note } });
+      res.status(422).json({ success: false, message: `Score recorded, but ${definition.passScore ?? 0} is required to pass` }); return;
+    }
+  }
   if (requirement.type === 'course') { res.status(422).json({ success: false, message: 'Course requirements complete automatically after the enrolled class is completed' }); return; }
   const journey = await prisma.$transaction(async tx => {
     if (requirement.type === 'milestone') await tx.discipleshipMilestoneRecord.upsert({ where: { requirementId: requirement.id }, update: {
       milestoneDate: new Date(parsed.data.milestoneDate!), location: parsed.data.location, officiant: parsed.data.officiant, evidenceUrl: parsed.data.evidenceUrl, notes: parsed.data.note,
     }, create: { journeyId, requirementId: requirement.id, milestoneDate: new Date(parsed.data.milestoneDate!), location: parsed.data.location,
       officiant: parsed.data.officiant, evidenceUrl: parsed.data.evidenceUrl, notes: parsed.data.note, completedById: req.user!.userId } });
-    if (requirement.type === 'assessment') {
-      const assessment = await tx.discipleshipAssessment.findUnique({ where: { id: parsed.data.assessmentId! } });
-      if (!assessment) throw new Error('ASSESSMENT_NOT_FOUND');
-      const passed = parsed.data.score! >= assessment.passScore;
-      await tx.discipleshipAssessmentResult.create({ data: { assessmentId: assessment.id, journeyId, requirementId: requirement.id,
-        score: parsed.data.score!, passed, notes: parsed.data.note, gradedById: req.user!.userId } });
-      if (!passed) throw new Error('ASSESSMENT_NOT_PASSED');
-    }
     await tx.discipleshipJourneyRequirement.update({ where: { id: requirement.id }, data: {
       status: 'completed', completedById: req.user!.userId, completionNote: parsed.data.note, completedAt: new Date(),
+      assessmentScore: requirement.type === 'assessment' ? parsed.data.score : undefined,
+      assessmentPassed: requirement.type === 'assessment' ? assessmentPassed : undefined,
     } });
     const progressPercent = await recalculateProgress(tx, journeyId);
     const updated = await tx.discipleshipJourney.updateMany({

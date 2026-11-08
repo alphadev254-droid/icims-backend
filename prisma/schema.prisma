@@ -2623,17 +2623,18 @@ model DiscipleshipWorkflowStage {
 }
 
 model DiscipleshipWorkflowRequirement {
-  id          String   @id @default(cuid())
-  stageId     String
-  name        String
-  description String?  @db.Text
-  type        String   @default("checklist") // checklist | approval | course | milestone | assessment
-  courseId    String?
-  classId     String?
-  isRequired  Boolean  @default(true)
-  position    Int
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(cuid())
+  stageId      String
+  name         String
+  description  String?  @db.Text
+  type         String   @default("checklist") // checklist | approval | course | milestone | assessment
+  definitionId String?
+  courseId     String?
+  classId      String?
+  isRequired   Boolean  @default(true)
+  position     Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   stage DiscipleshipWorkflowStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
 
@@ -2641,6 +2642,7 @@ model DiscipleshipWorkflowRequirement {
   @@index([stageId])
   @@index([courseId])
   @@index([classId])
+  @@index([definitionId])
   @@map("discipleship_workflow_requirements")
 }
 
@@ -2726,6 +2728,7 @@ model DiscipleshipJourneyRequirement {
   name                String
   description         String?   @db.Text
   type                String    @default("checklist")
+  definitionId        String?
   courseId            String?
   classId             String?
   isRequired          Boolean   @default(true)
@@ -2733,6 +2736,8 @@ model DiscipleshipJourneyRequirement {
   status              String    @default("pending") // pending | completed | waived
   completedById       String?
   completionNote      String?   @db.Text
+  assessmentScore     Float?
+  assessmentPassed    Boolean?
   completedAt         DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -2743,6 +2748,7 @@ model DiscipleshipJourneyRequirement {
   @@index([journeyStageId, status])
   @@index([courseId])
   @@index([classId])
+  @@index([definitionId])
   @@map("discipleship_journey_requirements")
 }
 
@@ -2771,6 +2777,7 @@ model DiscipleshipCourse {
   id              String                       @id @default(cuid())
   ministryAdminId String
   churchId        String
+  churchIds       Json
   title           String
   description     String?                      @db.Text
   status          String                       @default("draft") // draft | published | archived
@@ -2783,6 +2790,38 @@ model DiscipleshipCourse {
 
   @@index([churchId, status])
   @@map("discipleship_courses")
+}
+
+model DiscipleshipRequirementDefinition {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  churchIds       Json
+  type            String // checklist | approval | milestone | assessment
+  title           String
+  description     String?  @db.Text
+  status          String   @default("published") // draft | published | archived
+  passScore       Float?
+  maxScore        Float?
+  createdById     String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([ministryAdminId, type, status])
+  @@map("discipleship_requirement_definitions")
+}
+
+model DiscipleshipCatalogAssignment {
+  id        String   @id @default(cuid())
+  itemType  String // course | requirement
+  itemId    String
+  churchId  String
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([itemType, itemId, churchId], map: "disc_catalog_assignment_item_church_key")
+  @@index([churchId, userId])
+  @@map("discipleship_catalog_assignments")
 }
 
 model DiscipleshipCourseMaterial {

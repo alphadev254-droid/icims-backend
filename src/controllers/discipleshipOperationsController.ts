@@ -15,36 +15,78 @@ async function scopedJourney(req: Request, journeyId: string) {
   return prisma.discipleshipJourney.findFirst({ where: { id: journeyId, churchId: { in: churchIds } } });
 }
 
+const personInChargeSchema = z.array(z.object({ churchId: z.string().min(1), userId: z.string().min(1) })).min(1).max(100);
+
 const courseSchema = z.object({
-  churchId: z.string().min(1), title: z.string().trim().min(1).max(180), description: z.string().trim().max(5000).optional(),
+  churchId: z.string().min(1).optional(), churchIds: z.array(z.string().min(1)).min(1).max(100).optional(), title: z.string().trim().min(1).max(180), description: z.string().trim().max(5000).optional(),
   status: z.enum(['draft', 'published']).default('draft'),
+  personsInCharge: personInChargeSchema,
   materials: z.array(z.object({ title: z.string().trim().min(1).max(180), kind: z.enum(['text', 'document', 'audio', 'video', 'link']),
     url: z.string().url().optional(), content: z.string().max(50000).optional(), downloadable: z.boolean().default(false) })
     .refine(item => item.content || item.url, 'Material content or URL is required')).default([]),
+}).refine(value => value.churchId || value.churchIds?.length, { message: 'Select at least one church', path: ['churchIds'] });
+
+const requirementDefinitionSchema = z.object({
+  churchIds: z.array(z.string().min(1)).min(1).max(100),
+  type: z.enum(['checklist', 'approval', 'milestone', 'assessment']),
+  title: z.string().trim().min(1).max(180),
+  description: z.string().trim().max(5000).optional(),
+  status: z.enum(['draft', 'published']).default('published'),
+  passScore: z.number().min(0).optional(),
+  maxScore: z.number().positive().optional(),
+  personsInCharge: personInChargeSchema,
+}).superRefine((value, ctx) => {
+  if (value.type === 'assessment' && value.passScore !== undefined && value.maxScore !== undefined && value.passScore > value.maxScore) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Pass score cannot exceed the maximum score', path: ['passScore'] });
+  }
 });
+
+function jsonChurchIds(value: unknown, fallback?: string): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : fallback ? [fallback] : [];
+}
+
+async function validatePersonsInCharge(churchIds: string[], assignments: Array<{ churchId: string; userId: string }>) {
+  const uniqueChurches = new Set(assignments.map(item => item.churchId));
+  if (assignments.length !== churchIds.length || uniqueChurches.size !== churchIds.length || churchIds.some(id => !uniqueChurches.has(id))) return 'Select one person in charge for every selected church';
+  const users = await prisma.user.findMany({ where: { OR: assignments.map(item => ({ id: item.userId, churchId: item.churchId })), status: 'active' }, select: { id: true, churchId: true } });
+  const valid = new Set(users.map(user => `${user.churchId}:${user.id}`));
+  return assignments.some(item => !valid.has(`${item.churchId}:${item.userId}`)) ? 'A person in charge must be an active user of the selected church' : null;
+}
+
+async function attachAssignments<T extends { id: string }>(items: T[], itemType: 'course' | 'requirement') {
+  const assignments = items.length ? await prisma.discipleshipCatalogAssignment.findMany({ where: { itemType, itemId: { in: items.map(item => item.id) } } }) : [];
+  return items.map(item => ({ ...item, personsInCharge: assignments.filter(assignment => assignment.itemId === item.id) }));
+}
 
 export async function listCourses(req: Request, res: Response) {
   const churchIds = await scope(req);
-  const items = await prisma.discipleshipCourse.findMany({ where: { churchId: { in: churchIds }, status: req.query.includeDrafts === 'true' ? undefined : 'published' },
+  const items = await prisma.discipleshipCourse.findMany({ where: { OR: [{ churchId: { in: churchIds } }, ...churchIds.map(churchId => ({ churchIds: { array_contains: churchId } }))], status: req.query.includeDrafts === 'true' ? undefined : 'published' },
     include: { materials: { orderBy: { position: 'asc' } }, classes: { orderBy: { startsAt: 'desc' }, include: { sessions: { orderBy: { startsAt: 'asc' } }, _count: { select: { enrollments: true } } } }, assessments: true },
     orderBy: { updatedAt: 'desc' } });
-  res.json({ success: true, data: items });
+  res.json({ success: true, data: await attachAssignments(items, 'course') });
 }
 
 export async function createCourse(req: Request, res: Response) {
   const parsed = courseSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid course' }); return; }
-  const churchIds = await scope(req);
-  if (!churchIds.includes(parsed.data.churchId)) { res.status(403).json({ success: false, message: 'Church is outside your access scope' }); return; }
-  const church = await prisma.church.findUnique({ where: { id: parsed.data.churchId }, select: { ministryAdminId: true } });
-  if (!church?.ministryAdminId) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
-  const item = await prisma.discipleshipCourse.create({ data: { ministryAdminId: church.ministryAdminId, churchId: parsed.data.churchId,
-    title: parsed.data.title, description: parsed.data.description, status: parsed.data.status, createdById: req.user!.userId,
-    materials: { create: parsed.data.materials.map((material, index) => ({ ...material, position: index + 1 })) } }, include: { materials: true } });
+  const accessibleChurchIds = await scope(req);
+  const selectedChurchIds = [...new Set(parsed.data.churchIds?.length ? parsed.data.churchIds : [parsed.data.churchId!])];
+  if (selectedChurchIds.some(churchId => !accessibleChurchIds.includes(churchId))) { res.status(403).json({ success: false, message: 'A selected church is outside your access scope' }); return; }
+  const churches = await prisma.church.findMany({ where: { id: { in: selectedChurchIds }, status: 'active', ministryAdminId: { not: null } }, select: { id: true, ministryAdminId: true } });
+  if (churches.length !== selectedChurchIds.length || new Set(churches.map(church => church.ministryAdminId)).size !== 1) { res.status(422).json({ success: false, message: 'Selected churches must be active and belong to the same ministry' }); return; }
+  const assignmentError = await validatePersonsInCharge(selectedChurchIds, parsed.data.personsInCharge);
+  if (assignmentError) { res.status(422).json({ success: false, message: assignmentError }); return; }
+  const item = await prisma.$transaction(async tx => {
+    const course = await tx.discipleshipCourse.create({ data: { ministryAdminId: churches[0].ministryAdminId!, churchId: selectedChurchIds[0], churchIds: selectedChurchIds,
+      title: parsed.data.title, description: parsed.data.description, status: parsed.data.status, createdById: req.user!.userId,
+      materials: { create: parsed.data.materials.map((material, index) => ({ ...material, position: index + 1 })) } }, include: { materials: true } });
+    await tx.discipleshipCatalogAssignment.createMany({ data: parsed.data.personsInCharge.map(assignment => ({ ...assignment, itemType: 'course', itemId: course.id })) });
+    return course;
+  });
   res.status(201).json({ success: true, data: item });
 }
 
-const classSchema = z.object({ title: z.string().trim().min(1).max(180), facilitatorId: z.string().optional(), location: z.string().trim().max(240).optional(),
+const classSchema = z.object({ churchId: z.string().min(1).optional(), title: z.string().trim().min(1).max(180), facilitatorId: z.string().optional(), location: z.string().trim().max(240).optional(),
   startsAt: z.string().datetime(), endsAt: z.string().datetime().optional(), capacity: z.number().int().positive().optional(), reminderMinutes: z.number().int().min(0).max(10080).default(1440),
   sessions: z.array(z.object({ title: z.string().trim().min(1).max(180), startsAt: z.string().datetime(), endsAt: z.string().datetime().optional(), location: z.string().trim().max(240).optional() })).min(1),
 });
@@ -53,14 +95,45 @@ export async function createClass(req: Request, res: Response) {
   const parsed = classSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid class schedule' }); return; }
   const churchIds = await scope(req);
-  const course = await prisma.discipleshipCourse.findFirst({ where: { id: String(req.params.courseId), churchId: { in: churchIds } } });
+  const course = await prisma.discipleshipCourse.findUnique({ where: { id: String(req.params.courseId) } });
   if (!course) { res.status(404).json({ success: false, message: 'Course not found' }); return; }
+  const availableChurchIds = jsonChurchIds(course.churchIds, course.churchId).filter(churchId => churchIds.includes(churchId));
+  const classChurchId = parsed.data.churchId || (availableChurchIds.length === 1 ? availableChurchIds[0] : undefined);
+  if (!classChurchId || !availableChurchIds.includes(classChurchId)) { res.status(422).json({ success: false, message: 'Select a church where this course is available' }); return; }
   if (parsed.data.endsAt && new Date(parsed.data.endsAt) <= new Date(parsed.data.startsAt)) { res.status(400).json({ success: false, message: 'Class end must be after its start' }); return; }
-  const item = await prisma.discipleshipClass.create({ data: { courseId: course.id, churchId: course.churchId, title: parsed.data.title,
+  const item = await prisma.discipleshipClass.create({ data: { courseId: course.id, churchId: classChurchId, title: parsed.data.title,
     facilitatorId: parsed.data.facilitatorId, location: parsed.data.location, startsAt: new Date(parsed.data.startsAt), endsAt: parsed.data.endsAt ? new Date(parsed.data.endsAt) : null,
     capacity: parsed.data.capacity, reminderMinutes: parsed.data.reminderMinutes, sessions: { create: parsed.data.sessions.map(session => ({ title: session.title,
       startsAt: new Date(session.startsAt), endsAt: session.endsAt ? new Date(session.endsAt) : null, location: session.location, checkInCode: crypto.randomBytes(4).toString('hex').toUpperCase() })) } },
     include: { sessions: { orderBy: { startsAt: 'asc' } } } });
+  res.status(201).json({ success: true, data: item });
+}
+
+export async function listRequirementDefinitions(req: Request, res: Response) {
+  const accessibleChurchIds = await scope(req);
+  const items = await prisma.discipleshipRequirementDefinition.findMany({
+    where: { status: req.query.includeDrafts === 'true' ? undefined : 'published' },
+    orderBy: [{ type: 'asc' }, { title: 'asc' }],
+  });
+  const visible = items.filter(item => jsonChurchIds(item.churchIds).some(churchId => accessibleChurchIds.includes(churchId)));
+  res.json({ success: true, data: await attachAssignments(visible, 'requirement') });
+}
+
+export async function createRequirementDefinition(req: Request, res: Response) {
+  const parsed = requirementDefinitionSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid requirement' }); return; }
+  const accessibleChurchIds = await scope(req);
+  if (parsed.data.churchIds.some(churchId => !accessibleChurchIds.includes(churchId))) { res.status(403).json({ success: false, message: 'A selected church is outside your access scope' }); return; }
+  const churches = await prisma.church.findMany({ where: { id: { in: parsed.data.churchIds }, status: 'active', ministryAdminId: { not: null } }, select: { ministryAdminId: true } });
+  if (churches.length !== parsed.data.churchIds.length || new Set(churches.map(church => church.ministryAdminId)).size !== 1) { res.status(422).json({ success: false, message: 'Selected churches must be active and belong to the same ministry' }); return; }
+  const assignmentError = await validatePersonsInCharge(parsed.data.churchIds, parsed.data.personsInCharge);
+  if (assignmentError) { res.status(422).json({ success: false, message: assignmentError }); return; }
+  const { personsInCharge, ...definitionData } = parsed.data;
+  const item = await prisma.$transaction(async tx => {
+    const definition = await tx.discipleshipRequirementDefinition.create({ data: { ...definitionData, churchIds: [...new Set(definitionData.churchIds)], ministryAdminId: churches[0].ministryAdminId!, createdById: req.user!.userId } });
+    await tx.discipleshipCatalogAssignment.createMany({ data: personsInCharge.map(assignment => ({ ...assignment, itemType: 'requirement', itemId: definition.id })) });
+    return definition;
+  });
   res.status(201).json({ success: true, data: item });
 }
 

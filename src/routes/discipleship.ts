@@ -12,8 +12,8 @@ import {
   updateWorkflow,
 } from '../controllers/discipleshipController';
 import {
-  addMentorFollowUp, assignMentor, checkInByCode, createClass, createCourse, enrollCandidate,
-  dispatchDiscipleshipReminders, getDiscipleshipReport, listBelongingPrompts, listCourses, recordSessionAttendance, savePlacement, syncAttendanceIntake, updateBelongingPrompt,
+  addMentorFollowUp, assignMentor, checkInByCode, createClass, createCourse, createRequirementDefinition, enrollCandidate,
+  dispatchDiscipleshipReminders, getDiscipleshipReport, listBelongingPrompts, listCourses, listRequirementDefinitions, recordSessionAttendance, savePlacement, syncAttendanceIntake, updateBelongingPrompt,
 } from '../controllers/discipleshipOperationsController';
 
 const router = Router();
@@ -26,6 +26,8 @@ router.put('/workflows/:id', authorizePermission('discipleship_workflows:manage'
 router.get('/courses', authorizePermission('discipleship_courses:read'), listCourses);
 router.post('/courses', authorizePermission('discipleship_courses:manage'), createCourse);
 router.post('/courses/:courseId/classes', authorizePermission('discipleship_courses:manage'), createClass);
+router.get('/requirement-definitions', authorizePermission('discipleship_courses:read'), listRequirementDefinitions);
+router.post('/requirement-definitions', authorizePermission('discipleship_courses:manage'), createRequirementDefinition);
 router.post('/classes/:classId/enrollments', authorizePermission('discipleship_courses:manage'), enrollCandidate);
 router.post('/sessions/:sessionId/attendance', authorizePermission('discipleship_attendance:manage'), recordSessionAttendance);
 router.post('/attendance/check-in', authorizePermission('discipleship_attendance:checkin'), checkInByCode);
