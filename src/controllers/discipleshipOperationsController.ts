@@ -148,9 +148,22 @@ export async function getDiscipleshipReport(req: Request, res: Response) {
   const stageCounts = new Map<string, number>(); journeys.filter(item => item.status !== 'completed').forEach(item => { const stage = item.stages.find(value => value.id === item.currentStageId); if (stage) stageCounts.set(stage.name, (stageCounts.get(stage.name) || 0) + 1); });
   const trend = new Map<string, number>(); journeys.forEach(item => { const key = item.startedAt.toISOString().slice(0, 7); trend.set(key, (trend.get(key) || 0) + 1); });
   const averageCompletionDays = completed.length ? completed.reduce((sum, item) => sum + ((item.completedAt!.getTime() - item.startedAt.getTime()) / 86400000), 0) / completed.length : 0;
+  const journeyIds = journeys.map(item => item.id); const now = new Date(); const inSevenDays = new Date(now.getTime() + 7 * 86400000);
+  const [mentorAssignments, upcomingSessions, attendance, placements] = await Promise.all([
+    prisma.discipleshipMentorAssignment.findMany({ where: { journeyId: { in: journeyIds }, status: 'active' }, select: { journeyId: true, nextFollowUpAt: true } }),
+    prisma.discipleshipClassSession.count({ where: { class: { churchId: { in: selected } }, status: { in: ['scheduled', 'open'] }, startsAt: { gte: now, lte: inSevenDays } } }),
+    prisma.discipleshipSessionAttendance.groupBy({ by: ['status'], where: { enrollment: { journeyId: { in: journeyIds } } }, _count: { _all: true } }),
+    prisma.discipleshipPlacement.count({ where: { journeyId: { in: journeyIds }, status: 'planned' } }),
+  ]);
+  const attendanceTotal = attendance.reduce((sum, item) => sum + item._count._all, 0); const attended = attendance.filter(item => ['present', 'late'].includes(item.status)).reduce((sum, item) => sum + item._count._all, 0);
+  const activeJourneys = journeys.filter(item => item.status === 'active'); const assignedJourneyIds = new Set(mentorAssignments.map(item => item.journeyId));
+  const overdueFollowUps = mentorAssignments.filter(item => item.nextFollowUpAt && item.nextFollowUpAt < now).length;
   res.json({ success: true, data: { range: { from, to }, totals: { intake: journeys.length, active: journeys.filter(item => item.status === 'active').length,
     completed: completed.length, withdrawn: withdrawn.length, completionRate: journeys.length ? Math.round(completed.length / journeys.length * 1000) / 10 : 0,
-    dropoutRate: journeys.length ? Math.round(withdrawn.length / journeys.length * 1000) / 10 : 0, averageCompletionDays: Math.round(averageCompletionDays * 10) / 10 },
+    dropoutRate: journeys.length ? Math.round(withdrawn.length / journeys.length * 1000) / 10 : 0, averageCompletionDays: Math.round(averageCompletionDays * 10) / 10,
+    attendanceRate: attendanceTotal ? Math.round(attended / attendanceTotal * 1000) / 10 : 0,
+    unassignedMentors: activeJourneys.filter(item => !assignedJourneyIds.has(item.id)).length,
+    overdueFollowUps, upcomingSessions, pendingPlacements: placements },
     intakeTrend: [...trend].map(([period, count]) => ({ period, count })).sort((a, b) => a.period.localeCompare(b.period)),
     candidatesByStage: [...stageCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count) } });
 }
