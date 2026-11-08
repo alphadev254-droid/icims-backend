@@ -2,6 +2,7 @@ export type UserRole =
   | 'system_admin'
   | 'ministry_admin'
   | 'member'
+  | 'discipleship_candidate'
   | 'referrer';
 
 export type PackageTier = 'basic' | 'standard' | 'premium';

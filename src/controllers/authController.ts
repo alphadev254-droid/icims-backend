@@ -131,7 +131,7 @@ async function getUserPermissions(user: any): Promise<string[]> {
   }
   
   // Member: check GLOBAL permissions
-  if (roleName === 'member') {
+  if (roleName === 'member' || roleName === 'discipleship_candidate') {
     const permissions = await prisma.rolePermission.findMany({
       where: {
         roleId: user.roleId,

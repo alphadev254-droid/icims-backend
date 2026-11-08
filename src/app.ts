@@ -41,6 +41,7 @@ import { sharedAccessProtectedRoutes, sharedAccessPublicRoutes } from './routes/
 import systemNotificationRoutes from './routes/systemNotifications';
 import resourceBookingRoutes from './routes/resourceBooking';
 import reportAutomationRoutes from './routes/reportAutomations';
+import discipleshipRoutes from './routes/discipleship';
 import { errorHandler } from './middleware/errorHandler';
 import { metricsHandler, metricsMiddleware } from './middleware/metrics';
 import { requestLogger } from './middleware/requestLogger';
@@ -151,6 +152,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/system-notifications', systemNotificationRoutes);
 app.use('/api/resource-booking', resourceBookingRoutes);
 app.use('/api/report-automations', reportAutomationRoutes);
+app.use('/api/discipleship', discipleshipRoutes);
 app.use('/api/cells', cellRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/contact', contactRoutes);

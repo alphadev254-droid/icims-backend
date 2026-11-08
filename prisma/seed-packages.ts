@@ -66,6 +66,7 @@ const FEATURES = [
 
   // Church Website
   { name: 'church_website', displayName: 'Church Public Website', description: 'Publish a branded public website on your own subdomain with custom branding, about section, service times, and contact info.', category: 'core', sortOrder: 23 },
+  { name: 'discipleship_management', displayName: 'Discipleship Management', description: 'Configure discipleship pathways and manage candidate journeys from intake to integration.', category: 'management', sortOrder: 49 },
 
   // Limits
   { name: 'max_members', displayName: 'Maximum Members', category: 'limit', sortOrder: 18 },
@@ -161,6 +162,14 @@ const MODULE_BUNDLES = [
     category: 'management',
     sortOrder: 8,
     features: ['resources_library', 'users_management', 'roles_permissions', 'church_website', 'cell_management'],
+  },
+  {
+    key: 'discipleship_core',
+    name: 'Discipleship Core',
+    description: 'Candidate intake, configurable workflows, journey progression, and discipleship reporting.',
+    category: 'management',
+    sortOrder: 10,
+    features: ['discipleship_management'],
   },
   {
     key: 'scheduling_full',
@@ -268,8 +277,8 @@ const PACKAGES = [
 
 const PACKAGE_BUNDLES: Record<string, string[]> = {
   basic: ['members_core', 'giving_basic', 'attendance_full', 'events_full'],
-  standard: ['members_core', 'giving_full', 'attendance_full', 'events_full', 'communication_full', 'operations_full'],
-  premium: ['members_core', 'giving_full', 'attendance_full', 'events_full', 'communication_full', 'reports_full', 'operations_full'],
+  standard: ['members_core', 'giving_full', 'attendance_full', 'events_full', 'communication_full', 'operations_full', 'discipleship_core'],
+  premium: ['members_core', 'giving_full', 'attendance_full', 'events_full', 'communication_full', 'reports_full', 'operations_full', 'discipleship_core'],
 };
 
 async function main() {

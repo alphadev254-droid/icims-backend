@@ -153,10 +153,10 @@ model User {
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 
-  role                          Role?                   @relation(fields: [roleId], references: [id])
-  church                        Church?                 @relation(fields: [churchId], references: [id])
-  ownedChurches                 Church[]                @relation("MinistryAdminChurches")
-  createdSubaccounts            Subaccount[]            @relation("SubaccountCreator")
+  role                          Role?                         @relation(fields: [roleId], references: [id])
+  church                        Church?                       @relation(fields: [churchId], references: [id])
+  ownedChurches                 Church[]                      @relation("MinistryAdminChurches")
+  createdSubaccounts            Subaccount[]                  @relation("SubaccountCreator")
   tickets                       EventTicket[]
   programAssignments            ProgramItem[]
   transactions                  Transaction[]
@@ -170,25 +170,29 @@ model User {
   resourceViews                 ResourceView[]
   cellMemberships               CellMember[]
   cellAttendance                CellAttendance[]
-  invitedCellAttendance         CellAttendance[]        @relation("CellAttendanceInviter")
+  invitedCellAttendance         CellAttendance[]              @relation("CellAttendanceInviter")
   pledges                       Pledge[]
   churchProfile                 ChurchProfile?
   deviceTokens                  DeviceToken[]
-  createdSystemCampaigns        SystemCampaign[]          @relation("SystemCampaignCreator")
+  createdSystemCampaigns        SystemCampaign[]              @relation("SystemCampaignCreator")
   systemCampaignRecipients      SystemCampaignRecipient[]
   sharedAccessLinks             SharedAccessLink[]
   attendanceParticipants        AttendanceParticipant[]
-  invitedAttendanceParticipants AttendanceParticipant[] @relation("AttendanceParticipantInviter")
+  invitedAttendanceParticipants AttendanceParticipant[]       @relation("AttendanceParticipantInviter")
   childGuardianLinks            ChildGuardian[]
-  createdChildren               Child[]                 @relation("ChildCreator")
-  childProfile                  Child?                  @relation("ChildUser")
-  packageInvoices               PackageInvoice[]        @relation("PackageInvoiceMinistryAdmin")
-  createdPackageInvoices        PackageInvoice[]        @relation("PackageInvoiceCreator")
-  packageInvoicePayments        Payment[]               @relation("PackageInvoicePaymentCreator")
+  createdChildren               Child[]                       @relation("ChildCreator")
+  childProfile                  Child?                        @relation("ChildUser")
+  packageInvoices               PackageInvoice[]              @relation("PackageInvoiceMinistryAdmin")
+  createdPackageInvoices        PackageInvoice[]              @relation("PackageInvoiceCreator")
+  packageInvoicePayments        Payment[]                     @relation("PackageInvoicePaymentCreator")
   referrerProfile               Referrer?
-  referredMinistries            ReferralLink[]          @relation("ReferralMinistryAdmin")
-  requestedResourceBookings     ResourceBooking[]       @relation("ResourceBookingRequester")
-  decidedResourceBookings       ResourceBooking[]       @relation("ResourceBookingDecider")
+  referredMinistries            ReferralLink[]                @relation("ReferralMinistryAdmin")
+  requestedResourceBookings     ResourceBooking[]             @relation("ResourceBookingRequester")
+  decidedResourceBookings       ResourceBooking[]             @relation("ResourceBookingDecider")
+  discipleshipCandidateProfile  DiscipleshipCandidateProfile?
+  discipleshipJourneys          DiscipleshipJourney[]         @relation("DiscipleshipCandidateJourneys")
+  createdDiscipleshipJourneys   DiscipleshipJourney[]         @relation("DiscipleshipJourneyCreator")
+  discipleshipAuditEvents       DiscipleshipAuditEvent[]      @relation("DiscipleshipAuditActor")
 
   @@index([churchId, roleId, status, createdAt])
   @@index([membershipApprovalStatus])
@@ -245,35 +249,38 @@ model Church {
 
   inviteToken String? @unique
 
-  ministryAdmin          User?                   @relation("MinistryAdminChurches", fields: [ministryAdminId], references: [id])
-  users                  User[]
-  referralLinks          ReferralLink[]
-  events                 Event[]
-  services               Service[]
-  serviceLinks           ServiceChurch[]
-  eventLinks             EventChurch[]
-  eventTickets           EventTicket[]
-  givingCampaigns        GivingCampaign[]
-  givingCampaignLinks    GivingCampaignChurch[]
-  donationTransactions   DonationTransaction[]
-  attendance             Attendance[]
-  attendanceParticipants AttendanceParticipant[]
-  meetings               Meeting[]
-  announcements          Announcement[]
-  announcementLinks      AnnouncementChurch[]
-  resources              Resource[]
-  transactions           Transaction[]
-  subaccount             Subaccount?
-  wallet                 Wallet?
-  payouts                Payout[]
-  kpis                   KPI[]
-  teams                  Team[]
-  reminders              ReminderCache[]
-  cells                  Cell[]
-  pledges                Pledge[]
-  sharedAccessLinks      SharedAccessLink[]
-  children               Child[]
-  bookableResourceAccess BookableResourceChurch[]
+  ministryAdmin                 User?                          @relation("MinistryAdminChurches", fields: [ministryAdminId], references: [id])
+  users                         User[]
+  referralLinks                 ReferralLink[]
+  events                        Event[]
+  services                      Service[]
+  serviceLinks                  ServiceChurch[]
+  eventLinks                    EventChurch[]
+  eventTickets                  EventTicket[]
+  givingCampaigns               GivingCampaign[]
+  givingCampaignLinks           GivingCampaignChurch[]
+  donationTransactions          DonationTransaction[]
+  attendance                    Attendance[]
+  attendanceParticipants        AttendanceParticipant[]
+  meetings                      Meeting[]
+  announcements                 Announcement[]
+  announcementLinks             AnnouncementChurch[]
+  resources                     Resource[]
+  transactions                  Transaction[]
+  subaccount                    Subaccount?
+  wallet                        Wallet?
+  payouts                       Payout[]
+  kpis                          KPI[]
+  teams                         Team[]
+  reminders                     ReminderCache[]
+  cells                         Cell[]
+  pledges                       Pledge[]
+  sharedAccessLinks             SharedAccessLink[]
+  children                      Child[]
+  bookableResourceAccess        BookableResourceChurch[]
+  discipleshipCandidateProfiles DiscipleshipCandidateProfile[]
+  discipleshipJourneys          DiscipleshipJourney[]
+  discipleshipWorkflows         DiscipleshipWorkflow[]
 
   @@index([ministryAdminId, status])
   @@index([status])
@@ -407,22 +414,22 @@ model Event {
 }
 
 model Service {
-  id          String     @id @default(cuid())
+  id          String    @id @default(cuid())
   churchId    String
   title       String
   type        String?
   startsAt    DateTime
   endsAt      DateTime?
   location    String?
-  description String?    @db.Text
-  status      String     @default("scheduled")
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  description String?   @db.Text
+  status      String    @default("scheduled")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  church      Church     @relation(fields: [churchId], references: [id])
+  church         Church          @relation(fields: [churchId], references: [id])
   linkedChurches ServiceChurch[]
-  attendance  Attendance?
-  program     Program?
+  attendance     Attendance?
+  program        Program?
 
   @@index([churchId, startsAt])
   @@map("services")
@@ -443,17 +450,17 @@ model ServiceChurch {
 }
 
 model Program {
-  id          String        @id @default(cuid())
-  serviceId   String?       @unique
-  eventId     String?       @unique
+  id          String   @id @default(cuid())
+  serviceId   String?  @unique
+  eventId     String?  @unique
   title       String
-  description String?       @db.Text
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  service     Service?      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  event       Event?        @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  items       ProgramItem[]
+  service Service?      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  event   Event?        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  items   ProgramItem[]
 
   @@map("programs")
 }
@@ -471,8 +478,8 @@ model ProgramItem {
   guestEmail  String?
   guestPhone  String?
 
-  program     Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  program Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([programId, position])
   @@index([userId])
@@ -1023,9 +1030,9 @@ model Announcement {
   publicationStatus String    @default("published")
   publishedAt       DateTime?
 
-  church Church             @relation(fields: [churchId], references: [id])
+  church         Church               @relation(fields: [churchId], references: [id])
   targetChurches AnnouncementChurch[]
-  views  AnnouncementView[]
+  views          AnnouncementView[]
 
   @@map("announcements")
 }
@@ -1075,24 +1082,24 @@ model Resource {
 
 // Physical ministry assets. The existing Resource model is the digital content library.
 model BookableResource {
-  id                   String   @id @default(cuid())
-  ministryAdminId      String
-  churchId             String
-  name                 String
-  code                 String?
-  category             String
-  description          String?  @db.Text
-  location             String?
-  custodianName        String?
-  imageUrls            String?  @db.Text
-  scope                String   @default("own_church")
-  status               String   @default("active")
-  approvalRequired     Boolean  @default(false)
-  bufferBeforeMinutes  Int      @default(0)
-  bufferAfterMinutes   Int      @default(0)
-  createdById          String
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  ministryAdminId     String
+  churchId            String
+  name                String
+  code                String?
+  category            String
+  description         String?  @db.Text
+  location            String?
+  custodianName       String?
+  imageUrls           String?  @db.Text
+  scope               String   @default("own_church")
+  status              String   @default("active")
+  approvalRequired    Boolean  @default(false)
+  bufferBeforeMinutes Int      @default(0)
+  bufferAfterMinutes  Int      @default(0)
+  createdById         String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   bookings         ResourceBooking[]
   selectedChurches BookableResourceChurch[]
@@ -1116,30 +1123,30 @@ model BookableResourceChurch {
 }
 
 model ResourceBooking {
-  id                String    @id @default(cuid())
-  groupId           String
-  resourceId        String
-  ministryAdminId   String
-  churchId          String
-  requesterId       String
-  activityType      String    @default("manual")
-  activityId        String?
-  activityTitle     String
-  purpose           String?   @db.Text
-  startsAt          DateTime
-  endsAt            DateTime
-  blockedFrom       DateTime
-  blockedUntil      DateTime
-  status            String    @default("pending")
-  decidedById       String?
-  decidedAt         DateTime?
-  decisionNote      String?   @db.Text
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  groupId         String
+  resourceId      String
+  ministryAdminId String
+  churchId        String
+  requesterId     String
+  activityType    String    @default("manual")
+  activityId      String?
+  activityTitle   String
+  purpose         String?   @db.Text
+  startsAt        DateTime
+  endsAt          DateTime
+  blockedFrom     DateTime
+  blockedUntil    DateTime
+  status          String    @default("pending")
+  decidedById     String?
+  decidedAt       DateTime?
+  decisionNote    String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  resource    BookableResource @relation(fields: [resourceId], references: [id], onDelete: Restrict, map: "resource_bookings_resource_fkey")
-  requester   User             @relation("ResourceBookingRequester", fields: [requesterId], references: [id], map: "resource_bookings_requester_fkey")
-  decidedBy   User?            @relation("ResourceBookingDecider", fields: [decidedById], references: [id], map: "resource_bookings_decider_fkey")
+  resource  BookableResource @relation(fields: [resourceId], references: [id], onDelete: Restrict, map: "resource_bookings_resource_fkey")
+  requester User             @relation("ResourceBookingRequester", fields: [requesterId], references: [id], map: "resource_bookings_requester_fkey")
+  decidedBy User?            @relation("ResourceBookingDecider", fields: [decidedById], references: [id], map: "resource_bookings_decider_fkey")
 
   @@index([resourceId, status, blockedFrom, blockedUntil], map: "resource_bookings_resource_interval_idx")
   @@index([ministryAdminId, startsAt], map: "resource_bookings_ministry_start_idx")
@@ -1460,23 +1467,23 @@ model Payment {
 // ─── Referral Partner Programme ───────────────────────────────────────────────
 
 model Referrer {
-  id                String    @id @default(cuid())
-  userId            String    @unique
-  code              String    @unique
-  type              String    @default("referrer") // referrer | agent | ambassador | regional_partner
-  status            String    @default("pending") // pending | approved | suspended | rejected
-  displayName       String?
-  phone             String?
-  country           String?
-  city              String?
-  district          String?
-  pricingMarketId   String?
-  payoutPhone       String?
-  payoutProvider    String?
-  payoutSetupStatus String    @default("pending") // pending | complete | unsupported_market
-  approvedAt        DateTime?
-  approvedById      String?
-  rejectionReason   String?   @db.Text
+  id                       String    @id @default(cuid())
+  userId                   String    @unique
+  code                     String    @unique
+  type                     String    @default("referrer") // referrer | agent | ambassador | regional_partner
+  status                   String    @default("pending") // pending | approved | suspended | rejected
+  displayName              String?
+  phone                    String?
+  country                  String?
+  city                     String?
+  district                 String?
+  pricingMarketId          String?
+  payoutPhone              String?
+  payoutProvider           String?
+  payoutSetupStatus        String    @default("pending") // pending | complete | unsupported_market
+  approvedAt               DateTime?
+  approvedById             String?
+  rejectionReason          String?   @db.Text
   agreementTemplateUrl     String?   @default("/uploads/marketer-agreements/Midas_Marketer_Referral_Agreement.pdf")
   signedAgreementUrl       String?
   signedAgreementFileName  String?
@@ -1485,8 +1492,8 @@ model Referrer {
   agreementReviewedAt      DateTime?
   agreementReviewedById    String?
   agreementRejectionReason String?   @db.Text
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   pricingMarket         PricingMarket?          @relation(fields: [pricingMarketId], references: [id], onDelete: SetNull)
@@ -1571,7 +1578,7 @@ model ReferrerWithdrawal {
   gatewayResponse String?   @db.LongText
   failureReason   String?   @db.Text
   processedAt     DateTime?
-  attempts         Int       @default(0)
+  attempts        Int       @default(0)
   requestedAt     DateTime  @default(now())
   approvedAt      DateTime?
   paidAt          DateTime?
@@ -2183,7 +2190,7 @@ model ScheduledReminderLog {
 }
 
 model ReportAutomation {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   ministryAdminId String
   createdById     String
   reportType      String
@@ -2195,15 +2202,15 @@ model ReportAutomation {
   dayOfMonth      Int?
   timeOfDay       String
   timezone        String
-  format          String   @default("xlsx")
+  format          String    @default("xlsx")
   recipients      Json
-  isActive        Boolean  @default(true)
+  isActive        Boolean   @default(true)
   nextRunAt       DateTime?
   lastRunAt       DateTime?
   lastStatus      String?
-  lastError       String?  @db.Text
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  lastError       String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   runs ReportAutomationRun[]
 
@@ -2213,16 +2220,16 @@ model ReportAutomation {
 }
 
 model ReportAutomationRun {
-  id              String    @id @default(cuid())
-  automationId    String
-  scheduledFor    DateTime
-  status          String
-  recipientCount  Int       @default(0)
-  fileName        String?
-  error           String?   @db.Text
-  startedAt       DateTime  @default(now())
-  completedAt     DateTime?
-  createdAt       DateTime  @default(now())
+  id             String    @id @default(cuid())
+  automationId   String
+  scheduledFor   DateTime
+  status         String
+  recipientCount Int       @default(0)
+  fileName       String?
+  error          String?   @db.Text
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
 
   automation ReportAutomation @relation(fields: [automationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
@@ -2295,8 +2302,8 @@ model SystemCampaignRecipient {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  campaign SystemCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign SystemCampaign                  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User                            @relation(fields: [userId], references: [id], onDelete: Cascade)
   attempts SystemCampaignDeliveryAttempt[]
 
   @@unique([campaignId, userId])
@@ -2551,4 +2558,203 @@ model VisitRequest {
 
   @@index([ministryAdminId, createdAt])
   @@map("visit_requests")
+}
+
+// ─── Discipleship Management ────────────────────────────────────────────────
+
+model DiscipleshipCandidateProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  ministryAdminId   String
+  owningChurchId    String
+  preferredLanguage String?
+  referralSource    String?
+  status            String   @default("active") // active | completed | withdrawn
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user     User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  church   Church                @relation(fields: [owningChurchId], references: [id], onDelete: Restrict)
+  intakes  DiscipleshipIntake[]
+  journeys DiscipleshipJourney[]
+
+  @@index([ministryAdminId, status])
+  @@index([owningChurchId, status])
+  @@map("discipleship_candidate_profiles")
+}
+
+model DiscipleshipWorkflow {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  churchId        String
+  name            String
+  description     String?  @db.Text
+  status          String   @default("draft") // draft | published | archived
+  version         Int      @default(1)
+  isDefault       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  church   Church                      @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  stages   DiscipleshipWorkflowStage[]
+  journeys DiscipleshipJourney[]
+
+  @@unique([churchId, name, version])
+  @@index([ministryAdminId, status])
+  @@index([churchId, status, isDefault])
+  @@map("discipleship_workflows")
+}
+
+model DiscipleshipWorkflowStage {
+  id          String   @id @default(cuid())
+  workflowId  String
+  name        String
+  description String?  @db.Text
+  position    Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workflow     DiscipleshipWorkflow              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  requirements DiscipleshipWorkflowRequirement[]
+
+  @@unique([workflowId, position])
+  @@index([workflowId])
+  @@map("discipleship_workflow_stages")
+}
+
+model DiscipleshipWorkflowRequirement {
+  id          String   @id @default(cuid())
+  stageId     String
+  name        String
+  description String?  @db.Text
+  type        String   @default("checklist") // checklist | approval | course | milestone | assessment
+  isRequired  Boolean  @default(true)
+  position    Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stage DiscipleshipWorkflowStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  @@unique([stageId, position])
+  @@index([stageId])
+  @@map("discipleship_workflow_requirements")
+}
+
+model DiscipleshipIntake {
+  id             String    @id @default(cuid())
+  candidateId    String
+  churchId       String
+  sourceType     String    @default("direct") // direct | attendance | evangelism | transfer
+  sourceRecordId String?
+  consentStatus  String    @default("yes") // yes | not_yet | no | no_response
+  consentAt      DateTime?
+  consentById    String?
+  notes          String?   @db.Text
+  createdAt      DateTime  @default(now())
+
+  candidate DiscipleshipCandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([churchId, sourceType, sourceRecordId])
+  @@index([candidateId, createdAt])
+  @@index([churchId, consentStatus, createdAt])
+  @@map("discipleship_intakes")
+}
+
+model DiscipleshipJourney {
+  id              String    @id @default(cuid())
+  journeyCode     String    @unique
+  ministryAdminId String
+  churchId        String
+  candidateId     String
+  candidateUserId String
+  workflowId      String
+  currentStageId  String?
+  status          String    @default("active") // invited | active | paused | completed | withdrawn
+  progressPercent Int       @default(0)
+  version         Int       @default(1)
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  createdById     String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  church        Church                       @relation(fields: [churchId], references: [id], onDelete: Restrict)
+  candidate     DiscipleshipCandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  candidateUser User                         @relation("DiscipleshipCandidateJourneys", fields: [candidateUserId], references: [id], onDelete: Restrict)
+  workflow      DiscipleshipWorkflow         @relation(fields: [workflowId], references: [id], onDelete: Restrict)
+  createdBy     User                         @relation("DiscipleshipJourneyCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  stages        DiscipleshipJourneyStage[]
+  auditEvents   DiscipleshipAuditEvent[]
+
+  @@index([ministryAdminId, createdAt])
+  @@index([churchId, status, updatedAt])
+  @@index([candidateUserId, status])
+  @@index([workflowId, status])
+  @@map("discipleship_journeys")
+}
+
+model DiscipleshipJourneyStage {
+  id            String    @id @default(cuid())
+  journeyId     String
+  sourceStageId String
+  name          String
+  description   String?   @db.Text
+  position      Int
+  status        String    @default("not_started") // not_started | active | blocked | completed | skipped
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  journey      DiscipleshipJourney              @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+  requirements DiscipleshipJourneyRequirement[]
+
+  @@unique([journeyId, position])
+  @@unique([journeyId, sourceStageId])
+  @@index([journeyId, status])
+  @@map("discipleship_journey_stages")
+}
+
+model DiscipleshipJourneyRequirement {
+  id                  String    @id @default(cuid())
+  journeyStageId      String
+  sourceRequirementId String
+  name                String
+  description         String?   @db.Text
+  type                String    @default("checklist")
+  isRequired          Boolean   @default(true)
+  position            Int
+  status              String    @default("pending") // pending | completed | waived
+  completedById       String?
+  completionNote      String?   @db.Text
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  journeyStage DiscipleshipJourneyStage @relation(fields: [journeyStageId], references: [id], onDelete: Cascade)
+
+  @@unique([journeyStageId, sourceRequirementId])
+  @@index([journeyStageId, status])
+  @@map("discipleship_journey_requirements")
+}
+
+model DiscipleshipAuditEvent {
+  id              String   @id @default(cuid())
+  ministryAdminId String
+  churchId        String
+  journeyId       String?
+  actorUserId     String
+  action          String
+  entityType      String
+  entityId        String
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  journey DiscipleshipJourney? @relation(fields: [journeyId], references: [id], onDelete: SetNull)
+  actor   User                 @relation("DiscipleshipAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([churchId, entityType, entityId, createdAt])
+  @@index([journeyId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("discipleship_audit_events")
 }

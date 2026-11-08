@@ -99,12 +99,29 @@ const PERMISSIONS = [
   { name: 'church_website:manage', resource: 'church_website', action: 'manage' },
   { name: 'system_notifications:read', resource: 'system_notifications', action: 'read' },
   { name: 'system_notifications:acknowledge', resource: 'system_notifications', action: 'acknowledge' },
+  { name: 'discipleship_workflows:read', resource: 'discipleship_workflows', action: 'read' },
+  { name: 'discipleship_workflows:manage', resource: 'discipleship_workflows', action: 'manage' },
+  { name: 'discipleship_journeys:read', resource: 'discipleship_journeys', action: 'read' },
+  { name: 'discipleship_journeys:create', resource: 'discipleship_journeys', action: 'create' },
+  { name: 'discipleship_journeys:update', resource: 'discipleship_journeys', action: 'update' },
+  { name: 'discipleship_journeys:advance', resource: 'discipleship_journeys', action: 'advance' },
+  { name: 'discipleship_journeys:complete', resource: 'discipleship_journeys', action: 'complete' },
 ];
 
 const ROLES = [
   { name: 'ministry_admin', displayName: 'Ministry Administrator' },
   { name: 'member', displayName: 'Member' },
+  { name: 'discipleship_candidate', displayName: 'Discipleship Candidate' },
   { name: 'referrer', displayName: 'Referrer' },
+];
+
+const DISCIPLESHIP_CANDIDATE_PERMISSIONS = [
+  'dashboard:read',
+  'discipleship_workflows:read',
+  'discipleship_journeys:read',
+  'settings:read',
+  'system_notifications:read',
+  'system_notifications:acknowledge',
 ];
 
 const MEMBER_PERMISSIONS = [
@@ -244,6 +261,20 @@ async function main() {
       memberLinked++;
     }
     console.log(`✅ Linked ${memberLinked} permissions to member role\n`);
+  }
+
+  const candidateRole = await prisma.role.findUnique({ where: { name: 'discipleship_candidate' } });
+  if (candidateRole) {
+    const candidatePermissions = await prisma.permission.findMany({
+      where: { name: { in: DISCIPLESHIP_CANDIDATE_PERMISSIONS } },
+    });
+    for (const permission of candidatePermissions) {
+      await prisma.rolePermission.upsert({
+        where: { ministryAdminId_roleId_permissionId: { ministryAdminId: 'GLOBAL', roleId: candidateRole.id, permissionId: permission.id } },
+        update: {},
+        create: { ministryAdminId: 'GLOBAL', roleId: candidateRole.id, permissionId: permission.id },
+      });
+    }
   }
 
 
