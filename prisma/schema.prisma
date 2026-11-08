@@ -2628,6 +2628,8 @@ model DiscipleshipWorkflowRequirement {
   name        String
   description String?  @db.Text
   type        String   @default("checklist") // checklist | approval | course | milestone | assessment
+  courseId    String?
+  classId     String?
   isRequired  Boolean  @default(true)
   position    Int
   createdAt   DateTime @default(now())
@@ -2637,6 +2639,8 @@ model DiscipleshipWorkflowRequirement {
 
   @@unique([stageId, position])
   @@index([stageId])
+  @@index([courseId])
+  @@index([classId])
   @@map("discipleship_workflow_requirements")
 }
 
@@ -2722,6 +2726,8 @@ model DiscipleshipJourneyRequirement {
   name                String
   description         String?   @db.Text
   type                String    @default("checklist")
+  courseId            String?
+  classId             String?
   isRequired          Boolean   @default(true)
   position            Int
   status              String    @default("pending") // pending | completed | waived
@@ -2735,6 +2741,8 @@ model DiscipleshipJourneyRequirement {
 
   @@unique([journeyStageId, sourceRequirementId])
   @@index([journeyStageId, status])
+  @@index([courseId])
+  @@index([classId])
   @@map("discipleship_journey_requirements")
 }
 

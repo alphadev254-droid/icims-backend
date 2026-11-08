@@ -13,7 +13,12 @@ const stageSchema = z.object({
     name: z.string().trim().min(1).max(160),
     description: z.string().trim().max(2000).optional(),
     type: z.enum(['checklist', 'approval', 'course', 'milestone', 'assessment']).default('checklist'),
+    courseId: z.string().min(1).optional(),
+    classId: z.string().min(1).optional(),
     isRequired: z.boolean().default(true),
+  }).superRefine((value, ctx) => {
+    if (value.type === 'course' && !value.courseId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select a course for every course requirement', path: ['courseId'] });
+    if (value.type !== 'course' && (value.courseId || value.classId)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Course links are only valid for course requirements' });
   })).default([]),
 });
 
@@ -100,6 +105,21 @@ function safeUserSelect() {
   } as const;
 }
 
+async function validateWorkflowCourseLinks(churchId: string, stages: z.infer<typeof stageSchema>[]) {
+  const requirements = stages.flatMap(stage => stage.requirements).filter(item => item.type === 'course');
+  if (!requirements.length) return null;
+  const courseIds = [...new Set(requirements.map(item => item.courseId!))];
+  const classIds = [...new Set(requirements.map(item => item.classId).filter(Boolean) as string[])];
+  const [courses, classes] = await Promise.all([
+    prisma.discipleshipCourse.findMany({ where: { id: { in: courseIds }, churchId, status: 'published' }, select: { id: true } }),
+    classIds.length ? prisma.discipleshipClass.findMany({ where: { id: { in: classIds }, churchId, courseId: { in: courseIds }, status: { not: 'cancelled' } }, select: { id: true, courseId: true } }) : [],
+  ]);
+  if (courses.length !== courseIds.length) return 'One or more selected courses are unavailable for this church';
+  const classById = new Map(classes.map(item => [item.id, item]));
+  if (requirements.some(item => item.classId && classById.get(item.classId)?.courseId !== item.courseId)) return 'A selected class does not belong to its linked course';
+  return null;
+}
+
 export async function listWorkflows(req: Request, res: Response) {
   const churchIds = await requestScope(req);
   const requestedChurchId = typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
@@ -123,6 +143,8 @@ export async function createWorkflow(req: Request, res: Response) {
     res.status(404).json({ success: false, message: 'Church not found' });
     return;
   }
+  const courseLinkError = await validateWorkflowCourseLinks(church.id, parsed.data.stages);
+  if (courseLinkError) { res.status(422).json({ success: false, message: courseLinkError }); return; }
   const existingVersion = await prisma.discipleshipWorkflow.aggregate({
     where: { churchId: church.id, name: parsed.data.name },
     _max: { version: true },
@@ -167,6 +189,8 @@ export async function updateWorkflow(req: Request, res: Response) {
   if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid workflow' }); return; }
   const church = await scopedChurch(req, source.churchId);
   if (!church?.ministryAdminId) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
+  const courseLinkError = await validateWorkflowCourseLinks(source.churchId, parsed.data.stages);
+  if (courseLinkError) { res.status(422).json({ success: false, message: courseLinkError }); return; }
   const latest = await prisma.discipleshipWorkflow.aggregate({ where: { churchId: source.churchId, name: parsed.data.name }, _max: { version: true } });
   const workflow = await prisma.$transaction(async tx => {
     if (parsed.data.isDefault) await tx.discipleshipWorkflow.updateMany({ where: { churchId: source.churchId, isDefault: true }, data: { isDefault: false } });
@@ -319,6 +343,7 @@ export async function createJourney(req: Request, res: Response) {
             requirements: { create: stage.requirements.map(requirement => ({
               sourceRequirementId: requirement.id, name: requirement.name, description: requirement.description,
               type: requirement.type, isRequired: requirement.isRequired, position: requirement.position,
+              courseId: requirement.courseId, classId: requirement.classId,
             })) },
           })) },
         },
@@ -366,16 +391,27 @@ export async function getJourney(req: Request, res: Response) {
     },
   });
   if (!journey) { res.status(404).json({ success: false, message: 'Journey not found' }); return; }
+  const linkedCourseIds = [...new Set(journey.stages.flatMap(stage => stage.requirements.map(item => item.courseId).filter(Boolean) as string[]))];
+  const linkedClassIds = [...new Set(journey.stages.flatMap(stage => stage.requirements.map(item => item.classId).filter(Boolean) as string[]))];
   const [mentorAssignment, placement, enrollments, assessments] = await Promise.all([
     prisma.discipleshipMentorAssignment.findFirst({ where: { journeyId, status: 'active' }, include: { interactions: { orderBy: { occurredAt: 'desc' } } } }),
     prisma.discipleshipPlacement.findUnique({ where: { journeyId } }),
     prisma.discipleshipClassEnrollment.findMany({ where: { journeyId }, include: { class: { include: { course: true, sessions: { orderBy: { startsAt: 'asc' } } } }, attendance: true } }),
     prisma.discipleshipAssessmentResult.findMany({ where: { journeyId }, include: { assessment: true }, orderBy: { gradedAt: 'desc' } }),
   ]);
-  const currentStage = journey.stages.find(stage => stage.id === journey.currentStageId) || null;
+  const [linkedCourses, linkedClasses] = await Promise.all([
+    linkedCourseIds.length ? prisma.discipleshipCourse.findMany({ where: { id: { in: linkedCourseIds } }, select: { id: true, title: true, status: true } }) : [],
+    linkedClassIds.length ? prisma.discipleshipClass.findMany({ where: { id: { in: linkedClassIds } }, select: { id: true, title: true, startsAt: true, status: true } }) : [],
+  ]);
+  const courseMap = new Map(linkedCourses.map(item => [item.id, item])); const classMap = new Map(linkedClasses.map(item => [item.id, item]));
+  const stages = journey.stages.map(stage => ({ ...stage, requirements: stage.requirements.map(item => ({ ...item,
+    course: item.courseId ? courseMap.get(item.courseId) || null : null, class: item.classId ? classMap.get(item.classId) || null : null,
+  })) }));
+  const currentStage = stages.find(stage => stage.id === journey.currentStageId) || null;
   const blockingRequirements = currentStage?.requirements.filter(item => item.isRequired && item.status === 'pending') || [];
   res.json({ success: true, data: {
     ...journey,
+    stages,
     mentorAssignment,
     placement,
     enrollments,
