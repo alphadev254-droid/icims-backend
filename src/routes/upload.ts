@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authenticate } from '../middleware/auth';
+import { authenticate, authorizePermission } from '../middleware/auth';
 import { uploadImage, uploadFiles } from '../middleware/upload';
 import fs from 'fs';
 import path from 'path';
@@ -30,6 +30,22 @@ router.post('/communication', (req, _res, next) => { (req as any).uploadSubDir =
   res.json({ success: true, files });
 });
 
+router.post('/discipleship', authorizePermission('discipleship_courses:manage'), (req, _res, next) => {
+  (req as any).uploadSubDir = 'discipleship';
+  next();
+}, uploadFiles.single('file'), (req: Request, res: Response) => {
+  if (!req.file) {
+    res.status(400).json({ success: false, message: 'No curriculum file uploaded' });
+    return;
+  }
+  res.status(201).json({ success: true, file: {
+    url: `/uploads/discipleship/${req.file.filename}`,
+    name: req.file.originalname,
+    size: req.file.size,
+    mimeType: req.file.mimetype,
+  } });
+});
+
 router.delete('/delete', (req: Request, res: Response) => {
   const { fileUrl } = req.body;
   if (!fileUrl) {
@@ -38,7 +54,9 @@ router.delete('/delete', (req: Request, res: Response) => {
   }
   
   try {
-    if (typeof fileUrl !== 'string' || !fileUrl.startsWith('/uploads/communication/')) {
+    const isCommunication = typeof fileUrl === 'string' && fileUrl.startsWith('/uploads/communication/');
+    const isDiscipleship = typeof fileUrl === 'string' && fileUrl.startsWith('/uploads/discipleship/') && req.user?.permissions?.includes('discipleship_courses:manage');
+    if (!isCommunication && !isDiscipleship) {
       res.status(400).json({ success: false, message: 'Invalid upload path' });
       return;
     }

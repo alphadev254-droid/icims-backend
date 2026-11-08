@@ -198,7 +198,15 @@ export async function listJourneys(req: Request, res: Response) {
       { email: { contains: search } }, { phone: { contains: search } },
     ] } } : {}),
   };
-  const [items, total] = await Promise.all([
+  const summaryWhere: any = {
+    churchId: churchId || { in: churchIds },
+    ...(req.user!.role === 'discipleship_candidate' ? { candidateUserId: req.user!.userId } : {}),
+    ...(search ? { candidateUser: { OR: [
+      { firstName: { contains: search } }, { lastName: { contains: search } },
+      { email: { contains: search } }, { phone: { contains: search } },
+    ] } } : {}),
+  };
+  const [items, total, statusGroups, progress] = await Promise.all([
     prisma.discipleshipJourney.findMany({
       where,
       select: {
@@ -212,8 +220,15 @@ export async function listJourneys(req: Request, res: Response) {
       orderBy: { updatedAt: 'desc' }, skip: (page - 1) * limit, take: limit,
     }),
     prisma.discipleshipJourney.count({ where }),
+    prisma.discipleshipJourney.groupBy({ by: ['status'], where: summaryWhere, _count: { _all: true } }),
+    prisma.discipleshipJourney.aggregate({ where: { ...summaryWhere, status: 'active' }, _avg: { progressPercent: true } }),
   ]);
-  res.json({ success: true, data: items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  const byStatus = Object.fromEntries(statusGroups.map(item => [item.status, item._count._all]));
+  res.json({ success: true, data: items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }, summary: {
+    total: statusGroups.reduce((sum, item) => sum + item._count._all, 0), active: byStatus.active || 0,
+    paused: byStatus.paused || 0, completed: byStatus.completed || 0, withdrawn: byStatus.withdrawn || 0,
+    averageActiveProgress: Math.round(progress._avg.progressPercent || 0),
+  } });
 }
 
 export async function createJourney(req: Request, res: Response) {
