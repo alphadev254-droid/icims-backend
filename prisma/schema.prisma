@@ -2654,7 +2654,7 @@ model DiscipleshipIntake {
 
   candidate DiscipleshipCandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
-  @@unique([churchId, sourceType, sourceRecordId])
+  @@unique([churchId, sourceType, sourceRecordId], map: "discipleship_belonging_prompt_source_key")
   @@index([candidateId, createdAt])
   @@index([churchId, consentStatus, createdAt])
   @@map("discipleship_intakes")

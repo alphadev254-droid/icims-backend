@@ -1,11 +1,11 @@
-CREATE TABLE `discipleship_courses` (
+CREATE TABLE IF NOT EXISTS `discipleship_courses` (
   `id` VARCHAR(191) NOT NULL, `ministryAdminId` VARCHAR(191) NOT NULL, `churchId` VARCHAR(191) NOT NULL,
   `title` VARCHAR(191) NOT NULL, `description` TEXT NULL, `status` VARCHAR(191) NOT NULL DEFAULT 'draft',
   `createdById` VARCHAR(191) NOT NULL, `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), `updatedAt` DATETIME(3) NOT NULL,
   INDEX `discipleship_courses_churchId_status_idx` (`churchId`, `status`), PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_course_materials` (
+CREATE TABLE IF NOT EXISTS `discipleship_course_materials` (
   `id` VARCHAR(191) NOT NULL, `courseId` VARCHAR(191) NOT NULL, `title` VARCHAR(191) NOT NULL,
   `kind` VARCHAR(191) NOT NULL DEFAULT 'document', `url` VARCHAR(191) NULL, `content` TEXT NULL,
   `position` INTEGER NOT NULL DEFAULT 1, `downloadable` BOOLEAN NOT NULL DEFAULT false,
@@ -14,7 +14,7 @@ CREATE TABLE `discipleship_course_materials` (
   CONSTRAINT `discipleship_course_materials_courseId_fkey` FOREIGN KEY (`courseId`) REFERENCES `discipleship_courses` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_classes` (
+CREATE TABLE IF NOT EXISTS `discipleship_classes` (
   `id` VARCHAR(191) NOT NULL, `courseId` VARCHAR(191) NOT NULL, `churchId` VARCHAR(191) NOT NULL,
   `title` VARCHAR(191) NOT NULL, `facilitatorId` VARCHAR(191) NULL, `location` VARCHAR(191) NULL,
   `startsAt` DATETIME(3) NOT NULL, `endsAt` DATETIME(3) NULL, `capacity` INTEGER NULL,
@@ -24,7 +24,7 @@ CREATE TABLE `discipleship_classes` (
   CONSTRAINT `discipleship_classes_courseId_fkey` FOREIGN KEY (`courseId`) REFERENCES `discipleship_courses` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_class_sessions` (
+CREATE TABLE IF NOT EXISTS `discipleship_class_sessions` (
   `id` VARCHAR(191) NOT NULL, `classId` VARCHAR(191) NOT NULL, `title` VARCHAR(191) NOT NULL,
   `startsAt` DATETIME(3) NOT NULL, `endsAt` DATETIME(3) NULL, `location` VARCHAR(191) NULL,
   `checkInCode` VARCHAR(191) NOT NULL, `status` VARCHAR(191) NOT NULL DEFAULT 'scheduled',
@@ -34,7 +34,7 @@ CREATE TABLE `discipleship_class_sessions` (
   CONSTRAINT `discipleship_class_sessions_classId_fkey` FOREIGN KEY (`classId`) REFERENCES `discipleship_classes` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_class_enrollments` (
+CREATE TABLE IF NOT EXISTS `discipleship_class_enrollments` (
   `id` VARCHAR(191) NOT NULL, `classId` VARCHAR(191) NOT NULL, `journeyId` VARCHAR(191) NOT NULL,
   `requirementId` VARCHAR(191) NULL, `status` VARCHAR(191) NOT NULL DEFAULT 'enrolled',
   `enrolledAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), `completedAt` DATETIME(3) NULL,
@@ -43,7 +43,7 @@ CREATE TABLE `discipleship_class_enrollments` (
   CONSTRAINT `discipleship_class_enrollments_classId_fkey` FOREIGN KEY (`classId`) REFERENCES `discipleship_classes` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_session_attendance` (
+CREATE TABLE IF NOT EXISTS `discipleship_session_attendance` (
   `id` VARCHAR(191) NOT NULL, `sessionId` VARCHAR(191) NOT NULL, `enrollmentId` VARCHAR(191) NOT NULL,
   `status` VARCHAR(191) NOT NULL DEFAULT 'present', `method` VARCHAR(191) NOT NULL DEFAULT 'manual',
   `checkedInAt` DATETIME(3) NULL, `recordedById` VARCHAR(191) NULL, `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -53,7 +53,7 @@ CREATE TABLE `discipleship_session_attendance` (
   CONSTRAINT `discipleship_session_attendance_enrollmentId_fkey` FOREIGN KEY (`enrollmentId`) REFERENCES `discipleship_class_enrollments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_mentor_assignments` (
+CREATE TABLE IF NOT EXISTS `discipleship_mentor_assignments` (
   `id` VARCHAR(191) NOT NULL, `journeyId` VARCHAR(191) NOT NULL, `mentorUserId` VARCHAR(191) NOT NULL,
   `status` VARCHAR(191) NOT NULL DEFAULT 'active', `assignedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `nextFollowUpAt` DATETIME(3) NULL, `endedAt` DATETIME(3) NULL, `assignedById` VARCHAR(191) NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE `discipleship_mentor_assignments` (
   INDEX `discipleship_mentor_assignments_mentorUserId_status_idx` (`mentorUserId`, `status`), PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_mentor_interactions` (
+CREATE TABLE IF NOT EXISTS `discipleship_mentor_interactions` (
   `id` VARCHAR(191) NOT NULL, `assignmentId` VARCHAR(191) NOT NULL, `occurredAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `notes` TEXT NOT NULL, `concernFlag` BOOLEAN NOT NULL DEFAULT false, `createdById` VARCHAR(191) NOT NULL,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -69,7 +69,7 @@ CREATE TABLE `discipleship_mentor_interactions` (
   CONSTRAINT `discipleship_mentor_interactions_assignmentId_fkey` FOREIGN KEY (`assignmentId`) REFERENCES `discipleship_mentor_assignments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_milestone_records` (
+CREATE TABLE IF NOT EXISTS `discipleship_milestone_records` (
   `id` VARCHAR(191) NOT NULL, `journeyId` VARCHAR(191) NOT NULL, `requirementId` VARCHAR(191) NOT NULL,
   `milestoneDate` DATETIME(3) NOT NULL, `location` VARCHAR(191) NULL, `officiant` VARCHAR(191) NULL,
   `evidenceUrl` VARCHAR(191) NULL, `notes` TEXT NULL, `completedById` VARCHAR(191) NOT NULL,
@@ -78,7 +78,7 @@ CREATE TABLE `discipleship_milestone_records` (
   INDEX `discipleship_milestone_records_journeyId_milestoneDate_idx` (`journeyId`, `milestoneDate`), PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_assessments` (
+CREATE TABLE IF NOT EXISTS `discipleship_assessments` (
   `id` VARCHAR(191) NOT NULL, `courseId` VARCHAR(191) NULL, `churchId` VARCHAR(191) NOT NULL,
   `title` VARCHAR(191) NOT NULL, `description` TEXT NULL, `passScore` DOUBLE NOT NULL DEFAULT 70,
   `maxScore` DOUBLE NOT NULL DEFAULT 100, `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -86,7 +86,7 @@ CREATE TABLE `discipleship_assessments` (
   CONSTRAINT `discipleship_assessments_courseId_fkey` FOREIGN KEY (`courseId`) REFERENCES `discipleship_courses` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_assessment_results` (
+CREATE TABLE IF NOT EXISTS `discipleship_assessment_results` (
   `id` VARCHAR(191) NOT NULL, `assessmentId` VARCHAR(191) NOT NULL, `journeyId` VARCHAR(191) NOT NULL,
   `requirementId` VARCHAR(191) NULL, `score` DOUBLE NOT NULL, `passed` BOOLEAN NOT NULL,
   `notes` TEXT NULL, `gradedById` VARCHAR(191) NOT NULL, `gradedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -94,7 +94,7 @@ CREATE TABLE `discipleship_assessment_results` (
   CONSTRAINT `discipleship_assessment_results_assessmentId_fkey` FOREIGN KEY (`assessmentId`) REFERENCES `discipleship_assessments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_placements` (
+CREATE TABLE IF NOT EXISTS `discipleship_placements` (
   `id` VARCHAR(191) NOT NULL, `journeyId` VARCHAR(191) NOT NULL, `teamId` VARCHAR(191) NULL, `cellId` VARCHAR(191) NULL,
   `status` VARCHAR(191) NOT NULL DEFAULT 'planned', `placedAt` DATETIME(3) NULL, `placedById` VARCHAR(191) NULL,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), `updatedAt` DATETIME(3) NOT NULL,
@@ -103,7 +103,7 @@ CREATE TABLE `discipleship_placements` (
   INDEX `discipleship_placements_cellId_status_idx` (`cellId`, `status`), PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_notification_logs` (
+CREATE TABLE IF NOT EXISTS `discipleship_notification_logs` (
   `id` VARCHAR(191) NOT NULL, `key` VARCHAR(191) NOT NULL, `churchId` VARCHAR(191) NOT NULL,
   `journeyId` VARCHAR(191) NULL, `sessionId` VARCHAR(191) NULL, `type` VARCHAR(191) NOT NULL,
   `channel` VARCHAR(191) NOT NULL DEFAULT 'push', `recipientId` VARCHAR(191) NOT NULL,
@@ -112,13 +112,13 @@ CREATE TABLE `discipleship_notification_logs` (
   INDEX `discipleship_notification_logs_journeyId_sentAt_idx` (`journeyId`, `sentAt`), PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `discipleship_belonging_prompts` (
+CREATE TABLE IF NOT EXISTS `discipleship_belonging_prompts` (
   `id` VARCHAR(191) NOT NULL, `churchId` VARCHAR(191) NOT NULL, `sourceType` VARCHAR(191) NOT NULL DEFAULT 'attendance',
   `sourceRecordId` VARCHAR(191) NOT NULL, `name` VARCHAR(191) NOT NULL, `email` VARCHAR(191) NULL, `phone` VARCHAR(191) NULL,
   `status` VARCHAR(191) NOT NULL DEFAULT 'pending', `promptedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `respondedAt` DATETIME(3) NULL, `assignedToId` VARCHAR(191) NULL, `notes` TEXT NULL,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), `updatedAt` DATETIME(3) NOT NULL,
-  UNIQUE INDEX `discipleship_belonging_prompts_churchId_sourceType_sourceRecordId_key` (`churchId`, `sourceType`, `sourceRecordId`),
+  UNIQUE INDEX `discipleship_belonging_prompt_source_key` (`churchId`, `sourceType`, `sourceRecordId`),
   INDEX `discipleship_belonging_prompts_churchId_status_promptedAt_idx` (`churchId`, `status`, `promptedAt`), PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
