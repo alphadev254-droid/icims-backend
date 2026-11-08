@@ -50,6 +50,13 @@ const journeySchema = z.object({
 const completeRequirementSchema = z.object({
   version: z.number().int().positive(),
   note: z.string().trim().max(4000).optional(),
+  milestoneDate: z.string().datetime().optional(),
+  location: z.string().trim().max(240).optional(),
+  officiant: z.string().trim().max(160).optional(),
+  evidenceUrl: z.string().url().optional(),
+  approved: z.boolean().optional(),
+  score: z.number().min(0).optional(),
+  assessmentId: z.string().optional(),
 });
 
 const advanceStageSchema = z.object({ version: z.number().int().positive() });
@@ -151,6 +158,28 @@ export async function createWorkflow(req: Request, res: Response) {
     });
   });
   res.status(201).json({ success: true, data: workflow });
+}
+
+export async function updateWorkflow(req: Request, res: Response) {
+  const source = await prisma.discipleshipWorkflow.findUnique({ where: { id: String(req.params.id) } });
+  if (!source) { res.status(404).json({ success: false, message: 'Workflow not found' }); return; }
+  const parsed = workflowSchema.safeParse({ ...req.body, churchId: source.churchId, name: req.body.name || source.name });
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid workflow' }); return; }
+  const church = await scopedChurch(req, source.churchId);
+  if (!church?.ministryAdminId) { res.status(404).json({ success: false, message: 'Church not found' }); return; }
+  const latest = await prisma.discipleshipWorkflow.aggregate({ where: { churchId: source.churchId, name: parsed.data.name }, _max: { version: true } });
+  const workflow = await prisma.$transaction(async tx => {
+    if (parsed.data.isDefault) await tx.discipleshipWorkflow.updateMany({ where: { churchId: source.churchId, isDefault: true }, data: { isDefault: false } });
+    await tx.discipleshipWorkflow.update({ where: { id: source.id }, data: { status: 'archived', isDefault: false } });
+    return tx.discipleshipWorkflow.create({
+      data: { ministryAdminId: church.ministryAdminId!, churchId: source.churchId, name: parsed.data.name, description: parsed.data.description,
+        status: parsed.data.publish ? 'published' : 'draft', version: (latest._max.version || source.version) + 1, isDefault: parsed.data.isDefault,
+        stages: { create: parsed.data.stages.map((stage, si) => ({ name: stage.name, description: stage.description, position: si + 1,
+          requirements: { create: stage.requirements.map((item, ri) => ({ ...item, position: ri + 1 })) } })) } },
+      include: { stages: { orderBy: { position: 'asc' }, include: { requirements: { orderBy: { position: 'asc' } } } } },
+    });
+  });
+  res.json({ success: true, data: workflow, message: 'A new workflow version was published. Existing journeys keep their original snapshot.' });
 }
 
 export async function listJourneys(req: Request, res: Response) {
@@ -322,10 +351,20 @@ export async function getJourney(req: Request, res: Response) {
     },
   });
   if (!journey) { res.status(404).json({ success: false, message: 'Journey not found' }); return; }
+  const [mentorAssignment, placement, enrollments, assessments] = await Promise.all([
+    prisma.discipleshipMentorAssignment.findFirst({ where: { journeyId, status: 'active' }, include: { interactions: { orderBy: { occurredAt: 'desc' } } } }),
+    prisma.discipleshipPlacement.findUnique({ where: { journeyId } }),
+    prisma.discipleshipClassEnrollment.findMany({ where: { journeyId }, include: { class: { include: { course: true, sessions: { orderBy: { startsAt: 'asc' } } } }, attendance: true } }),
+    prisma.discipleshipAssessmentResult.findMany({ where: { journeyId }, include: { assessment: true }, orderBy: { gradedAt: 'desc' } }),
+  ]);
   const currentStage = journey.stages.find(stage => stage.id === journey.currentStageId) || null;
   const blockingRequirements = currentStage?.requirements.filter(item => item.isRequired && item.status === 'pending') || [];
   res.json({ success: true, data: {
     ...journey,
+    mentorAssignment,
+    placement,
+    enrollments,
+    assessments,
     currentStage,
     blockingRequirements,
     availableActions: {
@@ -359,10 +398,23 @@ export async function completeRequirement(req: Request, res: Response) {
   if (requirement.journeyStage.journey.version !== parsed.data.version) {
     res.status(409).json({ success: false, code: 'JOURNEY_VERSION_CONFLICT', message: 'The journey changed. Refresh and try again.' }); return;
   }
-  if (requirement.type !== 'checklist') {
-    res.status(422).json({ success: false, message: 'This requirement type needs its dedicated completion process' }); return;
-  }
+  if (requirement.type === 'approval' && parsed.data.approved !== true) { res.status(422).json({ success: false, message: 'Approval confirmation is required' }); return; }
+  if (requirement.type === 'milestone' && !parsed.data.milestoneDate) { res.status(422).json({ success: false, message: 'Milestone date is required' }); return; }
+  if (requirement.type === 'assessment' && (parsed.data.score === undefined || !parsed.data.assessmentId)) { res.status(422).json({ success: false, message: 'Assessment and score are required' }); return; }
+  if (requirement.type === 'course') { res.status(422).json({ success: false, message: 'Course requirements complete automatically after the enrolled class is completed' }); return; }
   const journey = await prisma.$transaction(async tx => {
+    if (requirement.type === 'milestone') await tx.discipleshipMilestoneRecord.upsert({ where: { requirementId: requirement.id }, update: {
+      milestoneDate: new Date(parsed.data.milestoneDate!), location: parsed.data.location, officiant: parsed.data.officiant, evidenceUrl: parsed.data.evidenceUrl, notes: parsed.data.note,
+    }, create: { journeyId, requirementId: requirement.id, milestoneDate: new Date(parsed.data.milestoneDate!), location: parsed.data.location,
+      officiant: parsed.data.officiant, evidenceUrl: parsed.data.evidenceUrl, notes: parsed.data.note, completedById: req.user!.userId } });
+    if (requirement.type === 'assessment') {
+      const assessment = await tx.discipleshipAssessment.findUnique({ where: { id: parsed.data.assessmentId! } });
+      if (!assessment) throw new Error('ASSESSMENT_NOT_FOUND');
+      const passed = parsed.data.score! >= assessment.passScore;
+      await tx.discipleshipAssessmentResult.create({ data: { assessmentId: assessment.id, journeyId, requirementId: requirement.id,
+        score: parsed.data.score!, passed, notes: parsed.data.note, gradedById: req.user!.userId } });
+      if (!passed) throw new Error('ASSESSMENT_NOT_PASSED');
+    }
     await tx.discipleshipJourneyRequirement.update({ where: { id: requirement.id }, data: {
       status: 'completed', completedById: req.user!.userId, completionNote: parsed.data.note, completedAt: new Date(),
     } });
@@ -435,6 +487,12 @@ export async function advanceStage(req: Request, res: Response) {
       }
       await tx.user.update({ where: { id: journey.candidateUserId }, data: userUpdate });
       await tx.discipleshipCandidateProfile.update({ where: { id: journey.candidateId }, data: { status: 'completed' } });
+      const placement = await tx.discipleshipPlacement.findUnique({ where: { journeyId: journey.id } });
+      if (placement?.teamId) await tx.userTeam.upsert({ where: { userId_teamId: { userId: journey.candidateUserId, teamId: placement.teamId } },
+        update: {}, create: { userId: journey.candidateUserId, teamId: placement.teamId } });
+      if (placement?.cellId) await tx.cellMember.upsert({ where: { cellId_userId: { cellId: placement.cellId, userId: journey.candidateUserId } },
+        update: { status: 'active', leftAt: null }, create: { cellId: placement.cellId, userId: journey.candidateUserId, status: 'active', tags: JSON.stringify(['Discipleship graduate']) } });
+      if (placement) await tx.discipleshipPlacement.update({ where: { id: placement.id }, data: { status: 'placed', placedAt: new Date(), placedById: req.user!.userId } });
     }
     await tx.discipleshipAuditEvent.create({ data: {
       ministryAdminId: journey.ministryAdminId, churchId: journey.churchId, journeyId: journey.id,

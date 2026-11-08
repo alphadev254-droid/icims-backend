@@ -2758,3 +2758,240 @@ model DiscipleshipAuditEvent {
   @@index([actorUserId, createdAt])
   @@map("discipleship_audit_events")
 }
+
+model DiscipleshipCourse {
+  id              String                       @id @default(cuid())
+  ministryAdminId String
+  churchId        String
+  title           String
+  description     String?                      @db.Text
+  status          String                       @default("draft") // draft | published | archived
+  createdById     String
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+  materials       DiscipleshipCourseMaterial[]
+  classes         DiscipleshipClass[]
+  assessments     DiscipleshipAssessment[]
+
+  @@index([churchId, status])
+  @@map("discipleship_courses")
+}
+
+model DiscipleshipCourseMaterial {
+  id           String             @id @default(cuid())
+  courseId     String
+  title        String
+  kind         String             @default("document") // text | document | audio | video | link
+  url          String?
+  content      String?            @db.Text
+  position     Int                @default(1)
+  downloadable Boolean            @default(false)
+  createdAt    DateTime           @default(now())
+  course       DiscipleshipCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@index([courseId, position])
+  @@map("discipleship_course_materials")
+}
+
+model DiscipleshipClass {
+  id              String                        @id @default(cuid())
+  courseId        String
+  churchId        String
+  title           String
+  facilitatorId   String?
+  location        String?
+  startsAt        DateTime
+  endsAt          DateTime?
+  capacity        Int?
+  status          String                        @default("scheduled") // scheduled | active | completed | cancelled
+  reminderMinutes Int                           @default(1440)
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
+  course          DiscipleshipCourse            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  sessions        DiscipleshipClassSession[]
+  enrollments     DiscipleshipClassEnrollment[]
+
+  @@index([churchId, startsAt, status])
+  @@map("discipleship_classes")
+}
+
+model DiscipleshipClassSession {
+  id          String                          @id @default(cuid())
+  classId     String
+  title       String
+  startsAt    DateTime
+  endsAt      DateTime?
+  location    String?
+  checkInCode String                          @unique
+  status      String                          @default("scheduled") // scheduled | open | completed | cancelled
+  createdAt   DateTime                        @default(now())
+  class       DiscipleshipClass               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  attendance  DiscipleshipSessionAttendance[]
+
+  @@index([classId, startsAt])
+  @@map("discipleship_class_sessions")
+}
+
+model DiscipleshipClassEnrollment {
+  id            String                          @id @default(cuid())
+  classId       String
+  journeyId     String
+  requirementId String?
+  status        String                          @default("enrolled") // enrolled | completed | withdrawn
+  enrolledAt    DateTime                        @default(now())
+  completedAt   DateTime?
+  class         DiscipleshipClass               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  attendance    DiscipleshipSessionAttendance[]
+
+  @@unique([classId, journeyId])
+  @@index([journeyId, status])
+  @@map("discipleship_class_enrollments")
+}
+
+model DiscipleshipSessionAttendance {
+  id           String                      @id @default(cuid())
+  sessionId    String
+  enrollmentId String
+  status       String                      @default("present") // present | late | absent | excused
+  method       String                      @default("manual") // manual | qr | sms_code
+  checkedInAt  DateTime?
+  recordedById String?
+  createdAt    DateTime                    @default(now())
+  session      DiscipleshipClassSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  enrollment   DiscipleshipClassEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, enrollmentId])
+  @@index([sessionId, status])
+  @@map("discipleship_session_attendance")
+}
+
+model DiscipleshipMentorAssignment {
+  id             String                          @id @default(cuid())
+  journeyId      String
+  mentorUserId   String
+  status         String                          @default("active") // active | completed | reassigned
+  assignedAt     DateTime                        @default(now())
+  nextFollowUpAt DateTime?
+  endedAt        DateTime?
+  assignedById   String
+  interactions   DiscipleshipMentorInteraction[]
+
+  @@index([journeyId, status])
+  @@index([mentorUserId, status])
+  @@map("discipleship_mentor_assignments")
+}
+
+model DiscipleshipMentorInteraction {
+  id           String                       @id @default(cuid())
+  assignmentId String
+  occurredAt   DateTime                     @default(now())
+  notes        String                       @db.Text
+  concernFlag  Boolean                      @default(false)
+  createdById  String
+  createdAt    DateTime                     @default(now())
+  assignment   DiscipleshipMentorAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@index([assignmentId, occurredAt])
+  @@map("discipleship_mentor_interactions")
+}
+
+model DiscipleshipMilestoneRecord {
+  id            String   @id @default(cuid())
+  journeyId     String
+  requirementId String   @unique
+  milestoneDate DateTime
+  location      String?
+  officiant     String?
+  evidenceUrl   String?
+  notes         String?  @db.Text
+  completedById String
+  createdAt     DateTime @default(now())
+
+  @@index([journeyId, milestoneDate])
+  @@map("discipleship_milestone_records")
+}
+
+model DiscipleshipAssessment {
+  id          String                         @id @default(cuid())
+  courseId    String?
+  churchId    String
+  title       String
+  description String?                        @db.Text
+  passScore   Float                          @default(70)
+  maxScore    Float                          @default(100)
+  createdAt   DateTime                       @default(now())
+  course      DiscipleshipCourse?            @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  results     DiscipleshipAssessmentResult[]
+
+  @@index([churchId, createdAt])
+  @@map("discipleship_assessments")
+}
+
+model DiscipleshipAssessmentResult {
+  id            String                 @id @default(cuid())
+  assessmentId  String
+  journeyId     String
+  requirementId String?
+  score         Float
+  passed        Boolean
+  notes         String?                @db.Text
+  gradedById    String
+  gradedAt      DateTime               @default(now())
+  assessment    DiscipleshipAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@index([journeyId, gradedAt])
+  @@map("discipleship_assessment_results")
+}
+
+model DiscipleshipPlacement {
+  id         String    @id @default(cuid())
+  journeyId  String    @unique
+  teamId     String?
+  cellId     String?
+  status     String    @default("planned") // planned | placed
+  placedAt   DateTime?
+  placedById String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([teamId, status])
+  @@index([cellId, status])
+  @@map("discipleship_placements")
+}
+
+model DiscipleshipNotificationLog {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  churchId    String
+  journeyId   String?
+  sessionId   String?
+  type        String // class_reminder | missed_session | mentor_follow_up | belonging_prompt
+  channel     String   @default("push")
+  recipientId String
+  sentAt      DateTime @default(now())
+
+  @@index([churchId, type, sentAt])
+  @@index([journeyId, sentAt])
+  @@map("discipleship_notification_logs")
+}
+
+model DiscipleshipBelongingPrompt {
+  id             String    @id @default(cuid())
+  churchId       String
+  sourceType     String    @default("attendance") // attendance | evangelism
+  sourceRecordId String
+  name           String
+  email          String?
+  phone          String?
+  status         String    @default("pending") // pending | contacted | consented | declined | converted
+  promptedAt     DateTime  @default(now())
+  respondedAt    DateTime?
+  assignedToId   String?
+  notes          String?   @db.Text
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([churchId, sourceType, sourceRecordId])
+  @@index([churchId, status, promptedAt])
+  @@map("discipleship_belonging_prompts")
+}
