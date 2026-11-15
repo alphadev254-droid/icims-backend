@@ -305,26 +305,69 @@ export async function updateClassSessionStatus(req: Request, res: Response) {
 }
 
 export async function getDiscipleshipReport(req: Request, res: Response) {
-  const churchIds = await scope(req); const selected = typeof req.query.churchId === 'string' && churchIds.includes(req.query.churchId) ? [req.query.churchId] : churchIds;
-  const from = typeof req.query.from === 'string' ? new Date(req.query.from) : new Date(Date.now() - 90 * 86400000); const to = typeof req.query.to === 'string' ? new Date(req.query.to) : new Date();
+  const accessibleChurchIds = await scope(req);
+  const accessibleChurches = await prisma.church.findMany({ where: { id: { in: accessibleChurchIds } }, select: { id: true, name: true, region: true } });
+  const requestedChurchId = typeof req.query.churchId === 'string' ? req.query.churchId : undefined;
+  const requestedRegion = typeof req.query.region === 'string' ? req.query.region.trim() : undefined;
+  const requestedWorkflowId = typeof req.query.workflowId === 'string' ? req.query.workflowId : undefined;
+  const requestedSourceType = typeof req.query.sourceType === 'string' ? req.query.sourceType : undefined;
+  const mode = req.query.mode === 'activity' ? 'activity' : 'cohort';
+  if (requestedChurchId && !accessibleChurchIds.includes(requestedChurchId)) { res.status(403).json({ success: false, message: 'The selected church is outside your access scope' }); return; }
+  let selected = accessibleChurches.filter(church => !requestedRegion || church.region === requestedRegion).map(church => church.id);
+  if (requestedChurchId) selected = selected.filter(id => id === requestedChurchId);
+  const parseBoundary = (value: unknown, endOfDay: boolean) => typeof value === 'string'
+    ? new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`)
+    : new Date(Date.now() - (endOfDay ? 0 : 90 * 86400000));
+  const from = parseBoundary(req.query.from, false); const to = parseBoundary(req.query.to, true);
   if (Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf()) || from > to) { res.status(400).json({ success: false, message: 'Invalid report date range' }); return; }
-  const journeys = await prisma.discipleshipJourney.findMany({ where: { churchId: { in: selected }, startedAt: { gte: from, lte: to } }, include: { church: { select: { id: true, name: true } }, stages: { orderBy: { position: 'asc' } } } });
-  const completed = journeys.filter(item => item.status === 'completed'); const withdrawn = journeys.filter(item => item.status === 'withdrawn');
-  const stageCounts = new Map<string, number>(); journeys.filter(item => item.status !== 'completed').forEach(item => { const stage = item.stages.find(value => value.id === item.currentStageId); if (stage) stageCounts.set(stage.name, (stageCounts.get(stage.name) || 0) + 1); });
+  const baseWhere: any = {
+    churchId: { in: selected },
+    ...(requestedWorkflowId ? { workflowId: requestedWorkflowId } : {}),
+    ...(requestedSourceType ? { candidate: { intakes: { some: { sourceType: requestedSourceType } } } } : {}),
+  };
+  let activityIds: string[] | undefined;
+  const activityWithdrawnIds = new Set<string>();
+  if (mode === 'activity') {
+    const [journeyActivity, auditActivity, milestones, attendance] = await Promise.all([
+      prisma.discipleshipJourney.findMany({ where: { ...baseWhere, OR: [{ startedAt: { gte: from, lte: to } }, { completedAt: { gte: from, lte: to } }, { updatedAt: { gte: from, lte: to } }] }, select: { id: true } }),
+      prisma.discipleshipAuditEvent.findMany({ where: { churchId: { in: selected }, journeyId: { not: null }, createdAt: { gte: from, lte: to } }, select: { journeyId: true, action: true } }),
+      prisma.discipleshipMilestoneRecord.findMany({ where: { milestoneDate: { gte: from, lte: to } }, select: { journeyId: true } }),
+      prisma.discipleshipSessionAttendance.findMany({ where: { enrollment: { class: { churchId: { in: selected } } }, OR: [{ checkedInAt: { gte: from, lte: to } }, { createdAt: { gte: from, lte: to } }] }, select: { enrollment: { select: { journeyId: true } } } }),
+    ]);
+    auditActivity.filter(item => item.action === 'journey.withdrawn' && item.journeyId).forEach(item => activityWithdrawnIds.add(item.journeyId!));
+    activityIds = [...new Set([...journeyActivity.map(item => item.id), ...auditActivity.map(item => item.journeyId).filter((id): id is string => !!id), ...milestones.map(item => item.journeyId), ...attendance.map(item => item.enrollment.journeyId)])];
+  }
+  const journeys = await prisma.discipleshipJourney.findMany({ where: { ...baseWhere, ...(mode === 'cohort' ? { startedAt: { gte: from, lte: to } } : { id: { in: activityIds || [] } }) }, include: { church: { select: { id: true, name: true, region: true } }, workflow: { select: { id: true, name: true } }, stages: { orderBy: { position: 'asc' } } } });
+  const intakeJourneys = journeys.filter(item => item.startedAt >= from && item.startedAt <= to);
+  const completed = journeys.filter(item => mode === 'cohort' ? item.status === 'completed' : !!item.completedAt && item.completedAt >= from && item.completedAt <= to);
+  const withdrawn = journeys.filter(item => mode === 'cohort' ? item.status === 'withdrawn' : activityWithdrawnIds.has(item.id));
+  const stageCounts = new Map<string, number>(); journeys.filter(item => ['invited', 'active', 'paused'].includes(item.status)).forEach(item => { const stage = item.stages.find(value => value.id === item.currentStageId); if (stage) stageCounts.set(stage.name, (stageCounts.get(stage.name) || 0) + 1); });
   const dropoutCounts = new Map<string, number>(); withdrawn.forEach(item => { const stage = item.stages.find(value => value.id === item.currentStageId); const stageName = stage?.name || 'Stage not recorded'; dropoutCounts.set(stageName, (dropoutCounts.get(stageName) || 0) + 1); });
-  const trend = new Map<string, number>(); journeys.forEach(item => { const key = item.startedAt.toISOString().slice(0, 7); trend.set(key, (trend.get(key) || 0) + 1); });
+  const trend = new Map<string, number>(); intakeJourneys.forEach(item => { const key = item.startedAt.toISOString().slice(0, 7); trend.set(key, (trend.get(key) || 0) + 1); });
   const averageCompletionDays = completed.length ? completed.reduce((sum, item) => sum + ((item.completedAt!.getTime() - item.startedAt.getTime()) / 86400000), 0) / completed.length : 0;
   const journeyIds = journeys.map(item => item.id); const now = new Date(); const inSevenDays = new Date(now.getTime() + 7 * 86400000);
-  const [mentorAssignments, upcomingSessions, attendance, placements] = await Promise.all([
+  const candidateIds = [...new Set(journeys.map(item => item.candidateId))];
+  const [mentorAssignments, upcomingSessions, attendance, placements, milestoneRecords, intakes, filterWorkflows] = await Promise.all([
     prisma.discipleshipMentorAssignment.findMany({ where: { journeyId: { in: journeyIds }, status: 'active' }, select: { journeyId: true, nextFollowUpAt: true } }),
-    prisma.discipleshipClassSession.count({ where: { class: { churchId: { in: selected } }, status: { in: ['scheduled', 'open'] }, startsAt: { gte: now, lte: inSevenDays } } }),
+    prisma.discipleshipClassSession.count({ where: { class: { churchId: { in: selected }, enrollments: { some: { journeyId: { in: journeyIds }, status: 'enrolled' } } }, status: { in: ['scheduled', 'open'] }, startsAt: { gte: now, lte: inSevenDays } } }),
     prisma.discipleshipSessionAttendance.groupBy({ by: ['status'], where: { enrollment: { journeyId: { in: journeyIds } } }, _count: { _all: true } }),
     prisma.discipleshipPlacement.count({ where: { journeyId: { in: journeyIds }, status: 'planned' } }),
+    prisma.discipleshipMilestoneRecord.findMany({ where: { journeyId: { in: journeyIds }, ...(mode === 'activity' ? { milestoneDate: { gte: from, lte: to } } : {}) }, select: { journeyId: true, requirementId: true, milestoneDate: true } }),
+    prisma.discipleshipIntake.findMany({ where: { candidateId: { in: candidateIds } }, orderBy: { createdAt: 'asc' }, select: { candidateId: true, sourceType: true } }),
+    prisma.discipleshipWorkflow.findMany({ where: { churchId: { in: accessibleChurchIds }, status: { in: ['published', 'archived'] } }, orderBy: { name: 'asc' }, select: { id: true, name: true, church: { select: { id: true, name: true } } } }),
   ]);
+  const requirementIds = [...new Set(milestoneRecords.map(item => item.requirementId))];
+  const milestoneRequirements = requirementIds.length ? await prisma.discipleshipJourneyRequirement.findMany({ where: { id: { in: requirementIds } }, select: { id: true, name: true } }) : [];
+  const milestoneName = new Map(milestoneRequirements.map(item => [item.id, item.name])); const journeyStart = new Map(journeys.map(item => [item.id, item.startedAt]));
+  const milestoneDurations = new Map<string, number[]>(); milestoneRecords.forEach(record => { const startedAt = journeyStart.get(record.journeyId); if (!startedAt) return; const days = (record.milestoneDate.getTime() - startedAt.getTime()) / 86400000; if (days < 0) return; const name = milestoneName.get(record.requirementId) || 'Milestone'; milestoneDurations.set(name, [...(milestoneDurations.get(name) || []), days]); });
+  const timeToMilestone = [...milestoneDurations].map(([milestone, durations]) => { const sorted = [...durations].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2; return { milestone, completed: durations.length, averageDays: Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length * 10) / 10, medianDays: Math.round(median * 10) / 10 }; }).sort((a, b) => a.averageDays - b.averageDays);
+  const regionCounts = new Map<string, number>(); const workflowCounts = new Map<string, number>(); journeys.forEach(item => { const region = item.church.region || 'Region not recorded'; regionCounts.set(region, (regionCounts.get(region) || 0) + 1); workflowCounts.set(item.workflow.name, (workflowCounts.get(item.workflow.name) || 0) + 1); });
+  const intakeByCandidate = new Map<string, string>(); intakes.forEach(item => { if (!intakeByCandidate.has(item.candidateId)) intakeByCandidate.set(item.candidateId, item.sourceType); });
+  const sourceCounts = new Map<string, number>(); journeys.forEach(item => { const source = intakeByCandidate.get(item.candidateId) || 'direct'; sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1); });
   const attendanceTotal = attendance.reduce((sum, item) => sum + item._count._all, 0); const attended = attendance.filter(item => ['present', 'late'].includes(item.status)).reduce((sum, item) => sum + item._count._all, 0);
   const activeJourneys = journeys.filter(item => item.status === 'active'); const assignedJourneyIds = new Set(mentorAssignments.map(item => item.journeyId));
   const overdueFollowUps = mentorAssignments.filter(item => item.nextFollowUpAt && item.nextFollowUpAt < now).length;
-  res.json({ success: true, data: { range: { from, to }, totals: { intake: journeys.length, active: journeys.filter(item => item.status === 'active').length,
+  res.json({ success: true, data: { range: { from, to, mode }, totals: { inScope: journeys.length, intake: intakeJourneys.length, active: journeys.filter(item => item.status === 'active').length,
     completed: completed.length, withdrawn: withdrawn.length, completionRate: journeys.length ? Math.round(completed.length / journeys.length * 1000) / 10 : 0,
     dropoutRate: journeys.length ? Math.round(withdrawn.length / journeys.length * 1000) / 10 : 0, averageCompletionDays: Math.round(averageCompletionDays * 10) / 10,
     attendanceRate: attendanceTotal ? Math.round(attended / attendanceTotal * 1000) / 10 : 0,
@@ -332,7 +375,12 @@ export async function getDiscipleshipReport(req: Request, res: Response) {
     overdueFollowUps, upcomingSessions, pendingPlacements: placements },
     intakeTrend: [...trend].map(([period, count]) => ({ period, count })).sort((a, b) => a.period.localeCompare(b.period)),
     candidatesByStage: [...stageCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count),
-    dropoutsByStage: [...dropoutCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count) } });
+    dropoutsByStage: [...dropoutCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count),
+    timeToMilestone,
+    byRegion: [...regionCounts].map(([region, count]) => ({ region, count })).sort((a, b) => b.count - a.count),
+    byWorkflow: [...workflowCounts].map(([workflow, count]) => ({ workflow, count })).sort((a, b) => b.count - a.count),
+    bySource: [...sourceCounts].map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count),
+    filterOptions: { regions: [...new Set(accessibleChurches.map(church => church.region).filter((region): region is string => !!region))].sort(), workflows: filterWorkflows, sources: ['attendance', 'evangelism', 'direct', 'transfer'] } } });
 }
 
 export async function dispatchDiscipleshipReminders(req: Request, res: Response) {
