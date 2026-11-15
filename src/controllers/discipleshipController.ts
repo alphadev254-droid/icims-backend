@@ -19,7 +19,7 @@ const stageSchema = z.object({
     isRequired: z.boolean().default(true),
   }).superRefine((value, ctx) => {
     if (value.type === 'course' && !value.courseId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select a course for every course requirement', path: ['courseId'] });
-    if (value.type !== 'course' && !value.definitionId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select a saved requirement', path: ['definitionId'] });
+    if (value.type === 'assessment' && !value.definitionId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select a saved assessment so its pass mark can be enforced', path: ['definitionId'] });
     if (value.type !== 'course' && (value.courseId || value.classId)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Course links are only valid for course requirements' });
   })).default([]),
 });
@@ -72,6 +72,11 @@ const completeRequirementSchema = z.object({
 });
 
 const advanceStageSchema = z.object({ version: z.number().int().positive() });
+const journeyStatusSchema = z.object({
+  status: z.enum(['active', 'paused', 'withdrawn']),
+  reason: z.string().trim().min(3).max(2000),
+  version: z.number().int().positive(),
+});
 
 async function requestScope(req: Request) {
   const user = req.user!;
@@ -118,7 +123,7 @@ function definitionChurchIds(value: unknown): string[] {
 
 async function validateWorkflowLinks(churchIds: string[], stages: z.infer<typeof stageSchema>[]) {
   const requirements = stages.flatMap(stage => stage.requirements).filter(item => item.type === 'course');
-  const savedRequirements = stages.flatMap(stage => stage.requirements).filter(item => item.type !== 'course');
+  const savedRequirements = stages.flatMap(stage => stage.requirements).filter(item => item.type !== 'course' && item.definitionId);
   const courseIds = [...new Set(requirements.map(item => item.courseId!))];
   const classIds = [...new Set(requirements.map(item => item.classId).filter(Boolean) as string[])];
   const definitionIds = [...new Set(savedRequirements.map(item => item.definitionId!))];
@@ -294,11 +299,19 @@ export async function createJourney(req: Request, res: Response) {
     return;
   }
 
+  const attendanceUser = !parsed.data.existingUserId && parsed.data.sourceType === 'attendance' && parsed.data.sourceRecordId
+    ? await prisma.attendanceParticipant.findFirst({
+        where: { id: parsed.data.sourceRecordId, attendance: { churchId: church.id }, userId: { not: null } },
+        select: { userId: true },
+      })
+    : null;
+
   try {
     const result = await prisma.$transaction(async tx => {
       let candidateUser;
-      if (parsed.data.existingUserId) {
-        candidateUser = await tx.user.findFirst({ where: { id: parsed.data.existingUserId, churchId: church.id, status: 'active' } });
+      const existingUserId = parsed.data.existingUserId || attendanceUser?.userId;
+      if (existingUserId) {
+        candidateUser = await tx.user.findFirst({ where: { id: existingUserId, churchId: church.id, status: 'active' } });
         if (!candidateUser) throw new Error('CANDIDATE_NOT_FOUND');
       } else {
         const candidateRole = await tx.role.findUnique({ where: { name: 'discipleship_candidate' } });
@@ -375,6 +388,17 @@ export async function createJourney(req: Request, res: Response) {
         actorUserId: req.user!.userId, action: 'journey.created', entityType: 'journey', entityId: journey.id,
         metadata: { workflowId: workflow.id, candidateUserId: candidateUser.id },
       } });
+      if (parsed.data.sourceType === 'attendance' && parsed.data.sourceRecordId) {
+        await tx.discipleshipBelongingPrompt.updateMany({
+          where: {
+            churchId: church.id,
+            sourceType: 'attendance',
+            sourceRecordId: parsed.data.sourceRecordId,
+            status: { not: 'converted' },
+          },
+          data: { status: 'converted', respondedAt: new Date() },
+        });
+      }
       return updated;
     });
     res.status(201).json({ success: true, data: result });
@@ -428,21 +452,52 @@ export async function getJourney(req: Request, res: Response) {
   })) }));
   const currentStage = stages.find(stage => stage.id === journey.currentStageId) || null;
   const blockingRequirements = currentStage?.requirements.filter(item => item.isRequired && item.status === 'pending') || [];
+  const candidateView = req.user!.role === 'discipleship_candidate';
   res.json({ success: true, data: {
     ...journey,
+    auditEvents: candidateView ? [] : journey.auditEvents,
     stages,
-    mentorAssignment,
+    mentorAssignment: candidateView && mentorAssignment ? {
+      id: mentorAssignment.id,
+      mentorUserId: mentorAssignment.mentorUserId,
+      status: mentorAssignment.status,
+      assignedAt: mentorAssignment.assignedAt,
+      nextFollowUpAt: mentorAssignment.nextFollowUpAt,
+    } : mentorAssignment,
     placement,
     enrollments,
     assessments,
     currentStage,
     blockingRequirements,
     availableActions: {
-      canCompleteRequirement: journey.status === 'active',
-      canAdvance: journey.status === 'active' && blockingRequirements.length === 0 && !!currentStage,
-      canCompleteJourney: journey.status === 'active' && journey.progressPercent === 100,
+      canCompleteRequirement: !candidateView && journey.status === 'active',
+      canAdvance: !candidateView && journey.status === 'active' && blockingRequirements.length === 0 && !!currentStage,
+      canCompleteJourney: !candidateView && journey.status === 'active' && journey.progressPercent === 100,
     },
   } });
+}
+
+export async function updateJourneyStatus(req: Request, res: Response) {
+  const parsed = journeyStatusSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Status, reason and current version are required' }); return; }
+  const churchIds = await requestScope(req);
+  const journey = await prisma.discipleshipJourney.findFirst({ where: { id: String(req.params.id), churchId: { in: churchIds } } });
+  if (!journey) { res.status(404).json({ success: false, message: 'Journey not found' }); return; }
+  if (journey.status === 'completed') { res.status(422).json({ success: false, message: 'A completed journey cannot be paused or withdrawn' }); return; }
+  if (journey.version !== parsed.data.version) { res.status(409).json({ success: false, code: 'JOURNEY_VERSION_CONFLICT', message: 'The journey changed. Refresh and try again.' }); return; }
+  if (parsed.data.status === 'active' && journey.status !== 'paused') { res.status(422).json({ success: false, message: 'Only a paused journey can be resumed' }); return; }
+  if (journey.status === 'withdrawn') { res.status(422).json({ success: false, message: 'A withdrawn journey is closed and cannot be changed' }); return; }
+  const updated = await prisma.$transaction(async tx => {
+    const result = await tx.discipleshipJourney.updateMany({ where: { id: journey.id, version: parsed.data.version }, data: { status: parsed.data.status, version: { increment: 1 } } });
+    if (!result.count) throw new Error('VERSION_CONFLICT');
+    await tx.discipleshipAuditEvent.create({ data: {
+      ministryAdminId: journey.ministryAdminId, churchId: journey.churchId, journeyId: journey.id,
+      actorUserId: req.user!.userId, action: `journey.${parsed.data.status}`, entityType: 'journey', entityId: journey.id,
+      metadata: { previousStatus: journey.status, reason: parsed.data.reason },
+    } });
+    return tx.discipleshipJourney.findUnique({ where: { id: journey.id } });
+  });
+  res.json({ success: true, data: updated });
 }
 
 async function recalculateProgress(tx: any, journeyId: string) {

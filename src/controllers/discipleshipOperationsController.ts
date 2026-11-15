@@ -3,7 +3,8 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { getAccessibleChurchIds } from '../lib/churchScope';
-import { sendPushToUsers } from '../lib/fcm';
+import { syncFirstTimerAttendanceCandidates } from '../services/discipleshipIntakeService';
+import { dispatchDiscipleshipNotifications } from '../services/discipleshipNotificationService';
 
 async function scope(req: Request) {
   const user = req.user!;
@@ -12,7 +13,11 @@ async function scope(req: Request) {
 
 async function scopedJourney(req: Request, journeyId: string) {
   const churchIds = await scope(req);
-  return prisma.discipleshipJourney.findFirst({ where: { id: journeyId, churchId: { in: churchIds } } });
+  return prisma.discipleshipJourney.findFirst({ where: {
+    id: journeyId,
+    churchId: { in: churchIds },
+    ...(req.user!.role === 'discipleship_candidate' ? { candidateUserId: req.user!.userId } : {}),
+  } });
 }
 
 const personInChargeSchema = z.array(z.object({ churchId: z.string().min(1), userId: z.string().min(1) })).min(1).max(100);
@@ -56,6 +61,41 @@ async function validatePersonsInCharge(churchIds: string[], assignments: Array<{
 async function attachAssignments<T extends { id: string }>(items: T[], itemType: 'course' | 'requirement') {
   const assignments = items.length ? await prisma.discipleshipCatalogAssignment.findMany({ where: { itemType, itemId: { in: items.map(item => item.id) } } }) : [];
   return items.map(item => ({ ...item, personsInCharge: assignments.filter(assignment => assignment.itemId === item.id) }));
+}
+
+async function completeCourseEnrollmentIfSatisfied(enrollmentId: string, actorUserId: string) {
+  const enrollment = await prisma.discipleshipClassEnrollment.findUnique({
+    where: { id: enrollmentId },
+    include: {
+      class: { include: { sessions: { where: { status: { not: 'cancelled' } }, include: { attendance: { where: { enrollmentId } } } } } },
+    },
+  });
+  if (!enrollment || enrollment.status === 'completed' || !enrollment.class.sessions.length) return false;
+  const completedStatuses = new Set(['present', 'late', 'excused']);
+  const allSessionsCompleted = enrollment.class.sessions.every(session => session.attendance.some(record => completedStatuses.has(record.status)));
+  if (!allSessionsCompleted) return false;
+
+  const journey = await prisma.discipleshipJourney.findUnique({ where: { id: enrollment.journeyId }, select: { ministryAdminId: true, churchId: true } });
+  if (!journey) return false;
+  await prisma.$transaction(async tx => {
+    await tx.discipleshipClassEnrollment.update({ where: { id: enrollment.id }, data: { status: 'completed', completedAt: new Date() } });
+    if (enrollment.requirementId) {
+      await tx.discipleshipJourneyRequirement.updateMany({ where: { id: enrollment.requirementId, status: 'pending' }, data: {
+        status: 'completed', completedById: actorUserId, completedAt: new Date(), completionNote: 'Completed automatically from class attendance.',
+      } });
+    }
+    const stages = await tx.discipleshipJourneyStage.findMany({ where: { journeyId: enrollment.journeyId }, include: { requirements: true } });
+    const required = stages.flatMap(stage => stage.requirements).filter(requirement => requirement.isRequired);
+    const completed = required.filter(requirement => requirement.status !== 'pending').length;
+    const progressPercent = required.length ? Math.round(completed / required.length * 100) : 0;
+    await tx.discipleshipJourney.update({ where: { id: enrollment.journeyId }, data: { progressPercent, version: { increment: 1 } } });
+    await tx.discipleshipAuditEvent.create({ data: {
+      ministryAdminId: journey.ministryAdminId, churchId: journey.churchId, journeyId: enrollment.journeyId,
+      actorUserId, action: 'course.completed', entityType: 'class_enrollment', entityId: enrollment.id,
+      metadata: { classId: enrollment.classId, requirementId: enrollment.requirementId },
+    } });
+  });
+  return true;
 }
 
 export async function listCourses(req: Request, res: Response) {
@@ -162,7 +202,8 @@ export async function recordSessionAttendance(req: Request, res: Response) {
     update: { status: parsed.data.status, method: parsed.data.method, checkedInAt: parsed.data.status === 'present' || parsed.data.status === 'late' ? new Date() : null, recordedById: req.user!.userId },
     create: { sessionId: session.id, enrollmentId: enrollment.id, status: parsed.data.status, method: parsed.data.method,
       checkedInAt: parsed.data.status === 'present' || parsed.data.status === 'late' ? new Date() : null, recordedById: req.user!.userId } });
-  res.json({ success: true, data: item });
+  const courseCompleted = await completeCourseEnrollmentIfSatisfied(enrollment.id, req.user!.userId);
+  res.json({ success: true, data: item, courseCompleted });
 }
 
 export async function checkInByCode(req: Request, res: Response) {
@@ -174,7 +215,8 @@ export async function checkInByCode(req: Request, res: Response) {
   if (!session || !enrollment) { res.status(404).json({ success: false, message: 'No open session or enrollment matches this code' }); return; }
   const item = await prisma.discipleshipSessionAttendance.upsert({ where: { sessionId_enrollmentId: { sessionId: session.id, enrollmentId: enrollment.id } },
     update: { status: 'present', method: 'sms_code', checkedInAt: new Date() }, create: { sessionId: session.id, enrollmentId: enrollment.id, status: 'present', method: 'sms_code', checkedInAt: new Date() } });
-  res.json({ success: true, data: item });
+  const courseCompleted = await completeCourseEnrollmentIfSatisfied(enrollment.id, req.user!.userId);
+  res.json({ success: true, data: item, courseCompleted });
 }
 
 export async function assignMentor(req: Request, res: Response) {
@@ -212,6 +254,54 @@ export async function savePlacement(req: Request, res: Response) {
   res.json({ success: true, data: item });
 }
 
+export async function getJourneyOperationsOptions(req: Request, res: Response) {
+  const journey = await scopedJourney(req, String(req.params.id));
+  if (!journey) { res.status(404).json({ success: false, message: 'Journey not found' }); return; }
+  const [mentors, teams, cells, classes] = await Promise.all([
+    prisma.user.findMany({
+      where: { churchId: journey.churchId, status: 'active', role: { name: { notIn: ['discipleship_candidate', 'referrer'] } } },
+      select: { id: true, firstName: true, lastName: true, email: true, role: { select: { name: true, displayName: true } } },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      take: 500,
+    }),
+    prisma.team.findMany({ where: { churchId: journey.churchId }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+    prisma.cell.findMany({ where: { churchId: journey.churchId, status: 'active' }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+    prisma.discipleshipClass.findMany({
+      where: { churchId: journey.churchId, status: { in: ['scheduled', 'active'] }, course: { status: 'published' } },
+      select: { id: true, courseId: true, title: true, startsAt: true, endsAt: true, capacity: true, status: true, course: { select: { id: true, title: true } }, _count: { select: { enrollments: true } } },
+      orderBy: { startsAt: 'asc' },
+      take: 500,
+    }),
+  ]);
+  res.json({ success: true, data: { mentors, teams, cells, classes } });
+}
+
+export async function getClassRoster(req: Request, res: Response) {
+  const churchIds = await scope(req);
+  const klass = await prisma.discipleshipClass.findFirst({
+    where: { id: String(req.params.classId), churchId: { in: churchIds } },
+    include: { course: { select: { id: true, title: true } }, sessions: { orderBy: { startsAt: 'asc' } } },
+  });
+  if (!klass) { res.status(404).json({ success: false, message: 'Class not found' }); return; }
+  const enrollments = await prisma.discipleshipClassEnrollment.findMany({ where: { classId: klass.id }, include: { attendance: true }, orderBy: { enrolledAt: 'asc' } });
+  const journeys = enrollments.length ? await prisma.discipleshipJourney.findMany({
+    where: { id: { in: enrollments.map(item => item.journeyId) } },
+    select: { id: true, journeyCode: true, candidateUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } } },
+  }) : [];
+  const journeyMap = new Map(journeys.map(item => [item.id, item]));
+  res.json({ success: true, data: { ...klass, enrollments: enrollments.map(item => ({ ...item, journey: journeyMap.get(item.journeyId) || null })) } });
+}
+
+export async function updateClassSessionStatus(req: Request, res: Response) {
+  const parsed = z.object({ status: z.enum(['scheduled', 'open', 'completed', 'cancelled']) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: 'Invalid session status' }); return; }
+  const churchIds = await scope(req);
+  const session = await prisma.discipleshipClassSession.findFirst({ where: { id: String(req.params.sessionId), class: { churchId: { in: churchIds } } } });
+  if (!session) { res.status(404).json({ success: false, message: 'Session not found' }); return; }
+  const updated = await prisma.discipleshipClassSession.update({ where: { id: session.id }, data: { status: parsed.data.status } });
+  res.json({ success: true, data: updated });
+}
+
 export async function getDiscipleshipReport(req: Request, res: Response) {
   const churchIds = await scope(req); const selected = typeof req.query.churchId === 'string' && churchIds.includes(req.query.churchId) ? [req.query.churchId] : churchIds;
   const from = typeof req.query.from === 'string' ? new Date(req.query.from) : new Date(Date.now() - 90 * 86400000); const to = typeof req.query.to === 'string' ? new Date(req.query.to) : new Date();
@@ -219,6 +309,7 @@ export async function getDiscipleshipReport(req: Request, res: Response) {
   const journeys = await prisma.discipleshipJourney.findMany({ where: { churchId: { in: selected }, startedAt: { gte: from, lte: to } }, include: { church: { select: { id: true, name: true } }, stages: { orderBy: { position: 'asc' } } } });
   const completed = journeys.filter(item => item.status === 'completed'); const withdrawn = journeys.filter(item => item.status === 'withdrawn');
   const stageCounts = new Map<string, number>(); journeys.filter(item => item.status !== 'completed').forEach(item => { const stage = item.stages.find(value => value.id === item.currentStageId); if (stage) stageCounts.set(stage.name, (stageCounts.get(stage.name) || 0) + 1); });
+  const dropoutCounts = new Map<string, number>(); withdrawn.forEach(item => { const stage = item.stages.find(value => value.id === item.currentStageId); const stageName = stage?.name || 'Stage not recorded'; dropoutCounts.set(stageName, (dropoutCounts.get(stageName) || 0) + 1); });
   const trend = new Map<string, number>(); journeys.forEach(item => { const key = item.startedAt.toISOString().slice(0, 7); trend.set(key, (trend.get(key) || 0) + 1); });
   const averageCompletionDays = completed.length ? completed.reduce((sum, item) => sum + ((item.completedAt!.getTime() - item.startedAt.getTime()) / 86400000), 0) / completed.length : 0;
   const journeyIds = journeys.map(item => item.id); const now = new Date(); const inSevenDays = new Date(now.getTime() + 7 * 86400000);
@@ -238,36 +329,20 @@ export async function getDiscipleshipReport(req: Request, res: Response) {
     unassignedMentors: activeJourneys.filter(item => !assignedJourneyIds.has(item.id)).length,
     overdueFollowUps, upcomingSessions, pendingPlacements: placements },
     intakeTrend: [...trend].map(([period, count]) => ({ period, count })).sort((a, b) => a.period.localeCompare(b.period)),
-    candidatesByStage: [...stageCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count) } });
+    candidatesByStage: [...stageCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count),
+    dropoutsByStage: [...dropoutCounts].map(([stage, count]) => ({ stage, count })).sort((a, b) => b.count - a.count) } });
 }
 
 export async function dispatchDiscipleshipReminders(req: Request, res: Response) {
-  const churchIds = await scope(req); const now = new Date(); const nextDay = new Date(now.getTime() + 25 * 3600000);
-  const sessions = await prisma.discipleshipClassSession.findMany({ where: { class: { churchId: { in: churchIds }, status: { in: ['scheduled', 'active'] } }, status: { in: ['scheduled', 'open'] }, startsAt: { gte: now, lte: nextDay } },
-    include: { class: { include: { enrollments: true } } } });
-  let sent = 0;
-  for (const session of sessions) for (const enrollment of session.class.enrollments.filter(item => item.status === 'enrolled')) {
-    const journey = await prisma.discipleshipJourney.findUnique({ where: { id: enrollment.journeyId }, select: { candidateUserId: true, churchId: true } }); if (!journey) continue;
-    const key = `class:${session.id}:${journey.candidateUserId}`; const exists = await prisma.discipleshipNotificationLog.findUnique({ where: { key } }); if (exists) continue;
-    await sendPushToUsers([journey.candidateUserId], `Class reminder: ${session.title}`, `Your class starts ${session.startsAt.toLocaleString()}. Check the schedule for the location.`, { type: 'discipleship_class', sessionId: session.id });
-    await prisma.discipleshipNotificationLog.create({ data: { key, churchId: journey.churchId, journeyId: enrollment.journeyId, sessionId: session.id, type: 'class_reminder', recipientId: journey.candidateUserId } }); sent++;
-  }
-  const missed = await prisma.discipleshipSessionAttendance.findMany({ where: { status: 'absent', session: { class: { churchId: { in: churchIds } }, endsAt: { lt: now } } }, include: { session: true, enrollment: true } });
-  for (const record of missed) { const journey = await prisma.discipleshipJourney.findUnique({ where: { id: record.enrollment.journeyId }, select: { candidateUserId: true, churchId: true } }); if (!journey) continue;
-    const key = `missed:${record.id}`; if (await prisma.discipleshipNotificationLog.findUnique({ where: { key } })) continue;
-    await sendPushToUsers([journey.candidateUserId], 'We missed you', `You were marked absent for ${record.session.title}. Please contact your mentor to arrange the next step.`, { type: 'discipleship_missed_session' });
-    await prisma.discipleshipNotificationLog.create({ data: { key, churchId: journey.churchId, journeyId: record.enrollment.journeyId, sessionId: record.sessionId, type: 'missed_session', recipientId: journey.candidateUserId } }); sent++;
-  }
-  res.json({ success: true, data: { sent } });
+  const churchIds = await scope(req);
+  const result = await dispatchDiscipleshipNotifications({ churchIds });
+  res.json({ success: true, data: result });
 }
 
 export async function syncAttendanceIntake(req: Request, res: Response) {
   const churchIds = await scope(req);
-  const participants = await prisma.attendanceParticipant.findMany({ where: { attendance: { churchId: { in: churchIds } }, OR: [{ guestFirstTime: true }, { isNewConvert: true }], userId: null }, include: { attendance: { select: { churchId: true } } }, orderBy: { checkedInAt: 'desc' }, take: 500 });
-  let created = 0;
-  for (const person of participants) { const result = await prisma.discipleshipBelongingPrompt.upsert({ where: { churchId_sourceType_sourceRecordId: { churchId: person.attendance.churchId, sourceType: 'attendance', sourceRecordId: person.id } }, update: {},
-    create: { churchId: person.attendance.churchId, sourceType: 'attendance', sourceRecordId: person.id, name: person.guestName || 'Attendance visitor', email: person.guestEmail, phone: person.guestPhone } }); if (result.createdAt.getTime() === result.updatedAt.getTime()) created++; }
-  res.json({ success: true, data: { scanned: participants.length, created } });
+  const result = await syncFirstTimerAttendanceCandidates({ churchIds, take: 5000 });
+  res.json({ success: true, data: result });
 }
 
 export async function listBelongingPrompts(req: Request, res: Response) {

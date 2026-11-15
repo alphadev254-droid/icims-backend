@@ -50,6 +50,31 @@ const formatEmailDate = (value: Date | string | null | undefined) => value
 const formatEmailMoney = (currency: string, amount: number) =>
   `${currency} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+export function discipleshipReminderTemplate(data: { recipientName: string; title: string; message: string }) {
+  return `<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="email-brand">
+      <h1>${escapeHtml(SYSTEM_NAME)}</h1>
+    </div>
+    <div class="header">
+      <h1>${escapeHtml(data.title)}</h1>
+      <p>Discipleship development</p>
+    </div>
+    <div class="content">
+      <h2>Hello ${escapeHtml(data.recipientName || 'there')},</h2>
+      <p>${escapeHtml(data.message)}</p>
+      <a class="button" href="${FRONTEND_URL}/dashboard/discipleship/journeys">Open discipleship</a>
+      <p style="font-size:13px;color:#6b7280;">This is an automated reminder from your church's discipleship team.</p>
+    </div>
+    <div class="footer"><p>${escapeHtml(SYSTEM_NAME)} · Supporting every discipleship journey</p></div>
+  </div>
+</body>
+</html>`;
+}
+
 export function scheduledReportTemplate(data: {
   reportName: string;
   startDate: string;

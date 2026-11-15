@@ -14,6 +14,8 @@ import { startPaymentReconciliationWorker } from './workers/paymentReconciliatio
 import { startSettlementReconciliationWorker } from './workers/settlementReconciliationWorker';
 import { startReferrerPayoutReviewWorker, startReferrerPayoutWorker } from './workers/referrerPayoutWorker';
 import { startReportAutomationWorker } from './workers/reportAutomationWorker';
+import { startDiscipleshipIntakeWorker } from './workers/discipleshipIntakeWorker';
+import { startDiscipleshipNotificationWorker } from './workers/discipleshipNotificationWorker';
 
 const PORT = process.env.PORT || 5000;
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
@@ -53,6 +55,8 @@ async function main() {
   startReferrerPayoutWorker();
   startReferrerPayoutReviewWorker();
   startReportAutomationWorker();
+  startDiscipleshipIntakeWorker();
+  startDiscipleshipNotificationWorker();
   console.log('⏰ Cron jobs initialized');
 
   app.listen(PORT, () => {
