@@ -5,6 +5,8 @@ import prisma from '../lib/prisma';
 import { hashPassword } from '../lib/password';
 import { getAccessibleChurchIds } from '../lib/churchScope';
 import { checkMemberLimit } from '../lib/packageChecker';
+import { queueEmail } from '../lib/emailQueue';
+import { discipleshipCandidateInvitationTemplate } from '../lib/emailTemplates';
 
 const stageSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -436,19 +438,23 @@ export async function getJourney(req: Request, res: Response) {
   if (!journey) { res.status(404).json({ success: false, message: 'Journey not found' }); return; }
   const linkedCourseIds = [...new Set(journey.stages.flatMap(stage => stage.requirements.map(item => item.courseId).filter(Boolean) as string[]))];
   const linkedClassIds = [...new Set(journey.stages.flatMap(stage => stage.requirements.map(item => item.classId).filter(Boolean) as string[]))];
+  const linkedDefinitionIds = [...new Set(journey.stages.flatMap(stage => stage.requirements.map(item => item.definitionId).filter(Boolean) as string[]))];
   const [mentorAssignment, placement, enrollments, assessments] = await Promise.all([
     prisma.discipleshipMentorAssignment.findFirst({ where: { journeyId, status: 'active' }, include: { interactions: { orderBy: { occurredAt: 'desc' } } } }),
     prisma.discipleshipPlacement.findUnique({ where: { journeyId } }),
     prisma.discipleshipClassEnrollment.findMany({ where: { journeyId }, include: { class: { include: { course: true, sessions: { orderBy: { startsAt: 'asc' } } } }, attendance: true } }),
     prisma.discipleshipAssessmentResult.findMany({ where: { journeyId }, include: { assessment: true }, orderBy: { gradedAt: 'desc' } }),
   ]);
-  const [linkedCourses, linkedClasses] = await Promise.all([
+  const [linkedCourses, linkedClasses, linkedDefinitions] = await Promise.all([
     linkedCourseIds.length ? prisma.discipleshipCourse.findMany({ where: { id: { in: linkedCourseIds } }, select: { id: true, title: true, status: true } }) : [],
     linkedClassIds.length ? prisma.discipleshipClass.findMany({ where: { id: { in: linkedClassIds } }, select: { id: true, title: true, startsAt: true, status: true } }) : [],
+    linkedDefinitionIds.length ? prisma.discipleshipRequirementDefinition.findMany({ where: { id: { in: linkedDefinitionIds } }, select: { id: true, _count: { select: { questions: true } } } }) : [],
   ]);
   const courseMap = new Map(linkedCourses.map(item => [item.id, item])); const classMap = new Map(linkedClasses.map(item => [item.id, item]));
+  const definitionQuestionCount = new Map(linkedDefinitions.map(item => [item.id, item._count.questions]));
   const stages = journey.stages.map(stage => ({ ...stage, requirements: stage.requirements.map(item => ({ ...item,
     course: item.courseId ? courseMap.get(item.courseId) || null : null, class: item.classId ? classMap.get(item.classId) || null : null,
+    assessmentQuestionCount: item.definitionId ? definitionQuestionCount.get(item.definitionId) || 0 : 0,
   })) }));
   const currentStage = stages.find(stage => stage.id === journey.currentStageId) || null;
   const blockingRequirements = currentStage?.requirements.filter(item => item.isRequired && item.status === 'pending') || [];
@@ -500,6 +506,38 @@ export async function updateJourneyStatus(req: Request, res: Response) {
   res.json({ success: true, data: updated });
 }
 
+export async function inviteCandidateToPortal(req: Request, res: Response) {
+  const churchIds = await requestScope(req);
+  const journey = await prisma.discipleshipJourney.findFirst({
+    where: { id: String(req.params.id), churchId: { in: churchIds } },
+    include: { candidateUser: { select: { id: true, email: true, firstName: true, loginEnabled: true, status: true } }, church: { select: { name: true } } },
+  });
+  if (!journey) { res.status(404).json({ success: false, message: 'Journey not found' }); return; }
+  if (journey.candidateUser.status !== 'active') { res.status(422).json({ success: false, message: 'Only an active candidate account can be invited' }); return; }
+  if (journey.candidateUser.loginEnabled) { res.status(409).json({ success: false, message: 'This candidate already has portal access' }); return; }
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresInHours = 48;
+  const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
+  await prisma.$transaction(async tx => {
+    await tx.passwordResetToken.updateMany({ where: { userId: journey.candidateUser.id, purpose: 'candidate_invitation', used: false }, data: { used: true } });
+    await tx.passwordResetToken.create({ data: { userId: journey.candidateUser.id, token, expiresAt, purpose: 'candidate_invitation' } });
+    await tx.discipleshipAuditEvent.create({ data: {
+      ministryAdminId: journey.ministryAdminId, churchId: journey.churchId, journeyId: journey.id,
+      actorUserId: req.user!.userId, action: 'candidate.portal_invited', entityType: 'user', entityId: journey.candidateUser.id,
+      metadata: { email: journey.candidateUser.email, expiresAt },
+    } });
+  });
+  try {
+    await queueEmail(journey.candidateUser.email, `Your ${journey.church.name} discipleship portal invitation`, discipleshipCandidateInvitationTemplate({
+      firstName: journey.candidateUser.firstName, churchName: journey.church.name, resetToken: token, expiresInHours,
+    }), 'notification');
+  } catch (error) {
+    await prisma.passwordResetToken.updateMany({ where: { token, used: false }, data: { used: true } });
+    throw error;
+  }
+  res.json({ success: true, message: `Portal invitation sent to ${journey.candidateUser.email}`, data: { email: journey.candidateUser.email, expiresAt } });
+}
+
 async function recalculateProgress(tx: any, journeyId: string) {
   const stages = await tx.discipleshipJourneyStage.findMany({
     where: { journeyId }, include: { requirements: true }, orderBy: { position: 'asc' },
@@ -528,8 +566,9 @@ export async function completeRequirement(req: Request, res: Response) {
   if (requirement.type === 'assessment' && parsed.data.score === undefined) { res.status(422).json({ success: false, message: 'Assessment score is required' }); return; }
   let assessmentPassed: boolean | undefined;
   if (requirement.type === 'assessment') {
-    const definition = requirement.definitionId ? await prisma.discipleshipRequirementDefinition.findUnique({ where: { id: requirement.definitionId } }) : null;
+    const definition = requirement.definitionId ? await prisma.discipleshipRequirementDefinition.findUnique({ where: { id: requirement.definitionId }, include: { _count: { select: { questions: true } } } }) : null;
     if (!definition) { res.status(422).json({ success: false, message: 'The linked assessment definition is unavailable' }); return; }
+    if (definition._count.questions > 0) { res.status(422).json({ success: false, message: 'This assessment is automatically graded. Open the assessment and submit answers instead of entering a manual score.' }); return; }
     if (definition.maxScore !== null && parsed.data.score! > definition.maxScore) { res.status(422).json({ success: false, message: `Score cannot exceed ${definition.maxScore}` }); return; }
     assessmentPassed = parsed.data.score! >= (definition.passScore ?? 0);
     if (!assessmentPassed) {

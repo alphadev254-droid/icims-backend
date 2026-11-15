@@ -11,11 +11,13 @@ import {
   listWorkflows,
   updateWorkflow,
   updateJourneyStatus,
+  inviteCandidateToPortal,
 } from '../controllers/discipleshipController';
 import {
   addMentorFollowUp, assignMentor, checkInByCode, createClass, createCourse, createRequirementDefinition, enrollCandidate,
   dispatchDiscipleshipReminders, getClassRoster, getDiscipleshipReport, getJourneyOperationsOptions, listBelongingPrompts, listCourses, listRequirementDefinitions, recordSessionAttendance, savePlacement, syncAttendanceIntake, updateBelongingPrompt, updateClassSessionStatus,
 } from '../controllers/discipleshipOperationsController';
+import { getAssessmentQuestions, getJourneyAssessment, replaceAssessmentQuestions, submitJourneyAssessment } from '../controllers/discipleshipAssessmentController';
 
 const router = Router();
 router.use(authenticate);
@@ -29,6 +31,8 @@ router.post('/courses', authorizePermission('discipleship_courses:manage'), crea
 router.post('/courses/:courseId/classes', authorizePermission('discipleship_courses:manage'), createClass);
 router.get('/requirement-definitions', authorizePermission('discipleship_courses:read'), listRequirementDefinitions);
 router.post('/requirement-definitions', authorizePermission('discipleship_courses:manage'), createRequirementDefinition);
+router.get('/requirement-definitions/:definitionId/questions', authorizePermission('discipleship_courses:read'), getAssessmentQuestions);
+router.put('/requirement-definitions/:definitionId/questions', authorizePermission('discipleship_courses:manage'), replaceAssessmentQuestions);
 router.post('/classes/:classId/enrollments', authorizePermission('discipleship_courses:manage'), enrollCandidate);
 router.get('/classes/:classId/roster', authorizeAnyPermission(['discipleship_courses:manage', 'discipleship_attendance:manage']), getClassRoster);
 router.post('/sessions/:sessionId/attendance', authorizePermission('discipleship_attendance:manage'), recordSessionAttendance);
@@ -42,7 +46,10 @@ router.patch('/intake/prompts/:promptId', authorizePermission('discipleship_jour
 router.get('/journeys', authorizePermission('discipleship_journeys:read'), listJourneys);
 router.post('/journeys', authorizePermission('discipleship_journeys:create'), createJourney);
 router.get('/journeys/:id', authorizePermission('discipleship_journeys:read'), getJourney);
+router.get('/journeys/:id/requirements/:requirementId/assessment', authorizePermission('discipleship_journeys:read'), getJourneyAssessment);
+router.post('/journeys/:id/requirements/:requirementId/assessment/submit', authorizePermission('discipleship_journeys:read'), submitJourneyAssessment);
 router.patch('/journeys/:id/status', authorizePermission('discipleship_journeys:update'), updateJourneyStatus);
+router.post('/journeys/:id/portal-invitation', authorizePermission('discipleship_journeys:update'), inviteCandidateToPortal);
 router.get('/journeys/:id/operations-options', authorizeAnyPermission(['discipleship_mentors:manage', 'discipleship_journeys:update', 'discipleship_courses:manage']), getJourneyOperationsOptions);
 router.post('/journeys/:id/requirements/:requirementId/complete', authorizePermission('discipleship_journeys:update'), completeRequirement);
 router.post('/journeys/:id/advance', authorizePermission('discipleship_journeys:advance'), advanceStage);

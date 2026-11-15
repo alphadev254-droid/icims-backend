@@ -331,6 +331,28 @@ export const passwordResetTemplate = (data: { firstName: string; resetToken: str
 </html>
 `;
 
+export const discipleshipCandidateInvitationTemplate = (data: { firstName: string; churchName: string; resetToken: string; expiresInHours: number }) => `
+<!DOCTYPE html>
+<html>
+<head>${getBaseStyle()}</head>
+<body>
+  <div class="container">
+    <div class="email-brand"><h1>${escapeHtml(SYSTEM_NAME)}</h1></div>
+    ${getChurchHeader(data.churchName)}
+    <div class="header"><h1>Your discipleship portal is ready</h1><p>Continue your journey online</p></div>
+    <div class="content">
+      <h2>Hello ${escapeHtml(data.firstName)},</h2>
+      <p>${escapeHtml(data.churchName)} has invited you to access your discipleship journey in ICIMS.</p>
+      <div class="info-box"><p>From your portal you can view your current stage, check in to classes using QR codes, and complete assigned assessments.</p></div>
+      <p>Use the secure button below to create your password and activate your access.</p>
+      <a href="${FRONTEND_URL}/reset-password?token=${encodeURIComponent(data.resetToken)}" class="button">Create password and activate account</a>
+      <p style="font-size:13px;color:#6b7280;">This invitation expires in ${data.expiresInHours} hours. If you were not expecting it, contact your church office.</p>
+    </div>
+    <div class="footer"><p>&copy; ${new Date().getFullYear()} ${escapeHtml(data.churchName)}. All rights reserved.</p></div>
+  </div>
+</body>
+</html>`;
+
 export const passwordChangedTemplate = (data: { firstName: string; email: string; churchName?: string }) => `
 <!DOCTYPE html>
 <html>

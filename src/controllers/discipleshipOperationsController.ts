@@ -153,6 +153,7 @@ export async function listRequirementDefinitions(req: Request, res: Response) {
   const accessibleChurchIds = await scope(req);
   const items = await prisma.discipleshipRequirementDefinition.findMany({
     where: { status: req.query.includeDrafts === 'true' ? undefined : 'published' },
+    include: { _count: { select: { questions: true } } },
     orderBy: [{ type: 'asc' }, { title: 'asc' }],
   });
   const visible = items.filter(item => jsonChurchIds(item.churchIds).some(churchId => accessibleChurchIds.includes(churchId)));
@@ -209,12 +210,13 @@ export async function recordSessionAttendance(req: Request, res: Response) {
 export async function checkInByCode(req: Request, res: Response) {
   const parsed = z.object({ code: z.string().trim().min(4), journeyId: z.string().min(1) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ success: false, message: 'Check-in code and journey are required' }); return; }
+  const code = parsed.data.code.replace(/^ICIMS-DISCIPLESHIP:/i, '').trim().toUpperCase();
   const journey = await scopedJourney(req, parsed.data.journeyId);
-  const session = journey ? await prisma.discipleshipClassSession.findFirst({ where: { checkInCode: parsed.data.code.toUpperCase(), status: 'open', class: { churchId: journey.churchId } } }) : null;
+  const session = journey ? await prisma.discipleshipClassSession.findFirst({ where: { checkInCode: code, status: 'open', class: { churchId: journey.churchId } } }) : null;
   const enrollment = session ? await prisma.discipleshipClassEnrollment.findUnique({ where: { classId_journeyId: { classId: session.classId, journeyId: parsed.data.journeyId } } }) : null;
   if (!session || !enrollment) { res.status(404).json({ success: false, message: 'No open session or enrollment matches this code' }); return; }
   const item = await prisma.discipleshipSessionAttendance.upsert({ where: { sessionId_enrollmentId: { sessionId: session.id, enrollmentId: enrollment.id } },
-    update: { status: 'present', method: 'sms_code', checkedInAt: new Date() }, create: { sessionId: session.id, enrollmentId: enrollment.id, status: 'present', method: 'sms_code', checkedInAt: new Date() } });
+    update: { status: 'present', method: parsed.data.code.toUpperCase().startsWith('ICIMS-DISCIPLESHIP:') ? 'qr' : 'sms_code', checkedInAt: new Date() }, create: { sessionId: session.id, enrollmentId: enrollment.id, status: 'present', method: parsed.data.code.toUpperCase().startsWith('ICIMS-DISCIPLESHIP:') ? 'qr' : 'sms_code', checkedInAt: new Date() } });
   const courseCompleted = await completeCourseEnrollmentIfSatisfied(enrollment.id, req.user!.userId);
   res.json({ success: true, data: item, courseCompleted });
 }

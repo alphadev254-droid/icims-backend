@@ -80,6 +80,7 @@ model PasswordResetToken {
   token     String   @unique
   expiresAt DateTime
   used      Boolean  @default(false)
+  purpose   String   @default("password_reset") // password_reset | candidate_invitation
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -2805,9 +2806,49 @@ model DiscipleshipRequirementDefinition {
   createdById     String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  questions       DiscipleshipAssessmentQuestion[]
+  attempts        DiscipleshipAssessmentAttempt[]
 
   @@index([ministryAdminId, type, status])
   @@map("discipleship_requirement_definitions")
+}
+
+model DiscipleshipAssessmentQuestion {
+  id             String                              @id @default(cuid())
+  definitionId   String
+  prompt         String                              @db.Text
+  type           String                              @default("single_choice") // single_choice | multiple_choice | true_false
+  options        Json
+  correctAnswers Json
+  points         Float                               @default(1)
+  explanation    String?                             @db.Text
+  position       Int
+  createdAt      DateTime                            @default(now())
+  updatedAt      DateTime                            @updatedAt
+  definition     DiscipleshipRequirementDefinition  @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+
+  @@unique([definitionId, position], map: "disc_assess_question_position_key")
+  @@index([definitionId], map: "disc_assess_question_definition_idx")
+  @@map("discipleship_assessment_questions")
+}
+
+model DiscipleshipAssessmentAttempt {
+  id              String                             @id @default(cuid())
+  definitionId    String
+  journeyId       String
+  requirementId   String
+  candidateUserId String
+  score           Float
+  pointsEarned    Float
+  pointsAvailable Float
+  passed          Boolean
+  answers         Json
+  submittedAt     DateTime                           @default(now())
+  definition      DiscipleshipRequirementDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+
+  @@index([journeyId, requirementId, submittedAt], map: "disc_assess_attempt_journey_req_idx")
+  @@index([candidateUserId, submittedAt], map: "disc_assess_attempt_candidate_idx")
+  @@map("discipleship_assessment_attempts")
 }
 
 model DiscipleshipCatalogAssignment {
