@@ -22,12 +22,22 @@ async function scopedJourney(req: Request, journeyId: string) {
 
 const personInChargeSchema = z.array(z.object({ churchId: z.string().min(1), userId: z.string().min(1) })).min(1).max(100);
 
+const materialUrlSchema = z.string().trim().refine(value => {
+  if (/^\/uploads\/discipleship\/[^/]+$/.test(value)) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'Invalid material URL');
+
 const courseSchema = z.object({
   churchId: z.string().min(1).optional(), churchIds: z.array(z.string().min(1)).min(1).max(100).optional(), title: z.string().trim().min(1).max(180), description: z.string().trim().max(5000).optional(),
   status: z.enum(['draft', 'published']).default('draft'),
   personsInCharge: personInChargeSchema,
   materials: z.array(z.object({ title: z.string().trim().min(1).max(180), kind: z.enum(['text', 'document', 'audio', 'video', 'link']),
-    url: z.string().url().optional(), content: z.string().max(50000).optional(), downloadable: z.boolean().default(false) })
+    url: materialUrlSchema.optional(), content: z.string().max(50000).optional(), downloadable: z.boolean().default(false) })
     .refine(item => item.content || item.url, 'Material content or URL is required')).default([]),
 }).refine(value => value.churchId || value.churchIds?.length, { message: 'Select at least one church', path: ['churchIds'] });
 
