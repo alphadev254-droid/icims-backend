@@ -232,6 +232,21 @@ export async function updateWorkflow(req: Request, res: Response) {
   res.json({ success: true, data: workflow, message: 'A new workflow version was published. Existing journeys keep their original snapshot.' });
 }
 
+export async function deleteWorkflow(req: Request, res: Response) {
+  const workflow = await prisma.discipleshipWorkflow.findUnique({ where: { id: String(req.params.id) } });
+  if (!workflow) { res.status(404).json({ success: false, message: 'Workflow not found' }); return; }
+  const church = await scopedChurch(req, workflow.churchId);
+  if (!church) { res.status(404).json({ success: false, message: 'Workflow not found' }); return; }
+  const journeyCount = await prisma.discipleshipJourney.count({ where: { workflowId: workflow.id } });
+  if (journeyCount) {
+    const item = await prisma.discipleshipWorkflow.update({ where: { id: workflow.id }, data: { status: 'archived', isDefault: false } });
+    res.json({ success: true, data: item, disposition: 'archived', message: 'Workflow archived because one or more journeys use this version.' });
+    return;
+  }
+  await prisma.discipleshipWorkflow.delete({ where: { id: workflow.id } });
+  res.json({ success: true, disposition: 'deleted', message: 'Workflow deleted.' });
+}
+
 export async function listJourneys(req: Request, res: Response) {
   const churchIds = await requestScope(req);
   const page = Math.max(1, Number(req.query.page) || 1);

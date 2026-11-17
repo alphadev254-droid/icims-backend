@@ -6,6 +6,7 @@ import {
   completeRequirement,
   createJourney,
   createWorkflow,
+  deleteWorkflow,
   getJourney,
   listJourneys,
   listWorkflows,
@@ -14,8 +15,8 @@ import {
   inviteCandidateToPortal,
 } from '../controllers/discipleshipController';
 import {
-  addMentorFollowUp, assignMentor, checkInByCode, createClass, createCourse, createRequirementDefinition, enrollCandidate,
-  dispatchDiscipleshipReminders, getClassRoster, getDiscipleshipReport, getJourneyOperationsOptions, listBelongingPrompts, listCourses, listRequirementDefinitions, recordSessionAttendance, savePlacement, syncAttendanceIntake, updateBelongingPrompt, updateClassSessionStatus,
+  addMentorFollowUp, assignMentor, checkInByCode, createClass, createCourse, createRequirementDefinition, deleteClass, deleteCourse, deleteRequirementDefinition, enrollCandidate,
+  dispatchDiscipleshipReminders, getClassRoster, getDiscipleshipReport, getJourneyOperationsOptions, listBelongingPrompts, listCourses, listRequirementDefinitions, recordSessionAttendance, savePlacement, syncAttendanceIntake, updateBelongingPrompt, updateClass, updateClassSessionStatus, updateCourse, updateRequirementDefinition,
 } from '../controllers/discipleshipOperationsController';
 import { getAssessmentQuestions, getJourneyAssessment, replaceAssessmentQuestions, submitJourneyAssessment } from '../controllers/discipleshipAssessmentController';
 
@@ -26,11 +27,18 @@ router.use(requireFeature('discipleship_management'));
 router.get('/workflows', authorizePermission('discipleship_workflows:read'), listWorkflows);
 router.post('/workflows', authorizePermission('discipleship_workflows:manage'), createWorkflow);
 router.put('/workflows/:id', authorizePermission('discipleship_workflows:manage'), updateWorkflow);
+router.delete('/workflows/:id', authorizePermission('discipleship_workflows:manage'), deleteWorkflow);
 router.get('/courses', authorizePermission('discipleship_courses:read'), listCourses);
 router.post('/courses', authorizePermission('discipleship_courses:manage'), createCourse);
+router.put('/courses/:courseId', authorizePermission('discipleship_courses:manage'), updateCourse);
+router.delete('/courses/:courseId', authorizePermission('discipleship_courses:manage'), deleteCourse);
 router.post('/courses/:courseId/classes', authorizePermission('discipleship_courses:manage'), createClass);
+router.put('/classes/:classId', authorizePermission('discipleship_courses:manage'), updateClass);
+router.delete('/classes/:classId', authorizePermission('discipleship_courses:manage'), deleteClass);
 router.get('/requirement-definitions', authorizePermission('discipleship_courses:read'), listRequirementDefinitions);
 router.post('/requirement-definitions', authorizePermission('discipleship_courses:manage'), createRequirementDefinition);
+router.put('/requirement-definitions/:definitionId', authorizePermission('discipleship_courses:manage'), updateRequirementDefinition);
+router.delete('/requirement-definitions/:definitionId', authorizePermission('discipleship_courses:manage'), deleteRequirementDefinition);
 router.get('/requirement-definitions/:definitionId/questions', authorizePermission('discipleship_courses:read'), getAssessmentQuestions);
 router.put('/requirement-definitions/:definitionId/questions', authorizePermission('discipleship_courses:manage'), replaceAssessmentQuestions);
 router.post('/classes/:classId/enrollments', authorizePermission('discipleship_courses:manage'), enrollCandidate);

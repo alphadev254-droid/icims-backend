@@ -136,9 +136,64 @@ export async function createCourse(req: Request, res: Response) {
   res.status(201).json({ success: true, data: item });
 }
 
+export async function updateCourse(req: Request, res: Response) {
+  const course = await prisma.discipleshipCourse.findUnique({ where: { id: String(req.params.courseId) } });
+  if (!course) { res.status(404).json({ success: false, message: 'Course not found' }); return; }
+  const accessibleChurchIds = await scope(req);
+  if (!jsonChurchIds(course.churchIds, course.churchId).some(churchId => accessibleChurchIds.includes(churchId))) {
+    res.status(404).json({ success: false, message: 'Course not found' }); return;
+  }
+  const parsed = courseSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid course' }); return; }
+  const selectedChurchIds = [...new Set(parsed.data.churchIds?.length ? parsed.data.churchIds : [parsed.data.churchId!])];
+  if (selectedChurchIds.some(churchId => !accessibleChurchIds.includes(churchId))) { res.status(403).json({ success: false, message: 'A selected church is outside your access scope' }); return; }
+  const churches = await prisma.church.findMany({ where: { id: { in: selectedChurchIds }, status: 'active', ministryAdminId: { not: null } }, select: { id: true, ministryAdminId: true } });
+  if (churches.length !== selectedChurchIds.length || new Set(churches.map(church => church.ministryAdminId)).size !== 1) { res.status(422).json({ success: false, message: 'Selected churches must be active and belong to the same ministry' }); return; }
+  const incompatibleClasses = await prisma.discipleshipClass.count({ where: { courseId: course.id, churchId: { notIn: selectedChurchIds } } });
+  if (incompatibleClasses) { res.status(409).json({ success: false, message: 'Keep every church that already has a scheduled class for this course' }); return; }
+  const assignmentError = await validatePersonsInCharge(selectedChurchIds, parsed.data.personsInCharge);
+  if (assignmentError) { res.status(422).json({ success: false, message: assignmentError }); return; }
+  const item = await prisma.$transaction(async tx => {
+    await tx.discipleshipCourseMaterial.deleteMany({ where: { courseId: course.id } });
+    await tx.discipleshipCatalogAssignment.deleteMany({ where: { itemType: 'course', itemId: course.id } });
+    const updated = await tx.discipleshipCourse.update({ where: { id: course.id }, data: {
+      ministryAdminId: churches[0].ministryAdminId!, churchId: selectedChurchIds[0], churchIds: selectedChurchIds,
+      title: parsed.data.title, description: parsed.data.description, status: parsed.data.status,
+      materials: { create: parsed.data.materials.map((material, index) => ({ ...material, position: index + 1 })) },
+    }, include: { materials: { orderBy: { position: 'asc' } }, classes: { orderBy: { startsAt: 'desc' }, include: { sessions: { orderBy: { startsAt: 'asc' } }, _count: { select: { enrollments: true } } } }, assessments: true } });
+    await tx.discipleshipCatalogAssignment.createMany({ data: parsed.data.personsInCharge.map(assignment => ({ ...assignment, itemType: 'course', itemId: course.id })) });
+    return updated;
+  });
+  res.json({ success: true, data: item });
+}
+
+export async function deleteCourse(req: Request, res: Response) {
+  const course = await prisma.discipleshipCourse.findUnique({ where: { id: String(req.params.courseId) } });
+  if (!course) { res.status(404).json({ success: false, message: 'Course not found' }); return; }
+  const accessibleChurchIds = await scope(req);
+  if (!jsonChurchIds(course.churchIds, course.churchId).some(churchId => accessibleChurchIds.includes(churchId))) {
+    res.status(404).json({ success: false, message: 'Course not found' }); return;
+  }
+  const [workflowLinks, journeyLinks, enrollments] = await Promise.all([
+    prisma.discipleshipWorkflowRequirement.count({ where: { courseId: course.id } }),
+    prisma.discipleshipJourneyRequirement.count({ where: { courseId: course.id } }),
+    prisma.discipleshipClassEnrollment.count({ where: { class: { courseId: course.id } } }),
+  ]);
+  if (workflowLinks || journeyLinks || enrollments) {
+    const item = await prisma.discipleshipCourse.update({ where: { id: course.id }, data: { status: 'archived' } });
+    res.json({ success: true, data: item, disposition: 'archived', message: 'Course archived because it is already used by a workflow, journey, or class enrolment.' });
+    return;
+  }
+  await prisma.$transaction([
+    prisma.discipleshipCatalogAssignment.deleteMany({ where: { itemType: 'course', itemId: course.id } }),
+    prisma.discipleshipCourse.delete({ where: { id: course.id } }),
+  ]);
+  res.json({ success: true, disposition: 'deleted', message: 'Course deleted.' });
+}
+
 const classSchema = z.object({ churchId: z.string().min(1).optional(), title: z.string().trim().min(1).max(180), facilitatorId: z.string().optional(), location: z.string().trim().max(240).optional(),
   startsAt: z.string().datetime(), endsAt: z.string().datetime().optional(), capacity: z.number().int().positive().optional(), reminderMinutes: z.number().int().min(0).max(10080).default(1440),
-  sessions: z.array(z.object({ title: z.string().trim().min(1).max(180), startsAt: z.string().datetime(), endsAt: z.string().datetime().optional(), location: z.string().trim().max(240).optional() })).min(1),
+  sessions: z.array(z.object({ id: z.string().min(1).optional(), title: z.string().trim().min(1).max(180), startsAt: z.string().datetime(), endsAt: z.string().datetime().optional(), location: z.string().trim().max(240).optional() })).min(1),
 });
 
 export async function createClass(req: Request, res: Response) {
@@ -157,6 +212,60 @@ export async function createClass(req: Request, res: Response) {
       startsAt: new Date(session.startsAt), endsAt: session.endsAt ? new Date(session.endsAt) : null, location: session.location, checkInCode: crypto.randomBytes(4).toString('hex').toUpperCase() })) } },
     include: { sessions: { orderBy: { startsAt: 'asc' } } } });
   res.status(201).json({ success: true, data: item });
+}
+
+export async function updateClass(req: Request, res: Response) {
+  const churchIds = await scope(req);
+  const klass = await prisma.discipleshipClass.findFirst({ where: { id: String(req.params.classId), churchId: { in: churchIds } }, include: { sessions: true } });
+  if (!klass) { res.status(404).json({ success: false, message: 'Class not found' }); return; }
+  const parsed = classSchema.safeParse({ ...req.body, churchId: req.body.churchId || klass.churchId });
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid class schedule' }); return; }
+  if (parsed.data.churchId !== klass.churchId) { res.status(422).json({ success: false, message: 'A scheduled class cannot be moved to another church' }); return; }
+  if (parsed.data.endsAt && new Date(parsed.data.endsAt) <= new Date(parsed.data.startsAt)) { res.status(400).json({ success: false, message: 'Class end must be after its start' }); return; }
+  const existingIds = new Set(klass.sessions.map(session => session.id));
+  const suppliedIds = parsed.data.sessions.map(session => session.id).filter(Boolean) as string[];
+  if (suppliedIds.some(id => !existingIds.has(id)) || new Set(suppliedIds).size !== suppliedIds.length) { res.status(422).json({ success: false, message: 'One or more class sessions are invalid' }); return; }
+  const removedIds = klass.sessions.filter(session => !suppliedIds.includes(session.id)).map(session => session.id);
+  if (removedIds.length) {
+    const attendanceCount = await prisma.discipleshipSessionAttendance.count({ where: { sessionId: { in: removedIds } } });
+    if (attendanceCount) { res.status(409).json({ success: false, message: 'A session with recorded attendance cannot be removed' }); return; }
+  }
+  const item = await prisma.$transaction(async tx => {
+    if (removedIds.length) await tx.discipleshipClassSession.deleteMany({ where: { id: { in: removedIds } } });
+    for (const session of parsed.data.sessions) {
+      const data = { title: session.title, startsAt: new Date(session.startsAt), endsAt: session.endsAt ? new Date(session.endsAt) : null, location: session.location };
+      if (session.id) await tx.discipleshipClassSession.update({ where: { id: session.id }, data });
+      else await tx.discipleshipClassSession.create({ data: { ...data, classId: klass.id, checkInCode: crypto.randomBytes(4).toString('hex').toUpperCase() } });
+    }
+    return tx.discipleshipClass.update({ where: { id: klass.id }, data: {
+      title: parsed.data.title, facilitatorId: parsed.data.facilitatorId, location: parsed.data.location,
+      startsAt: new Date(parsed.data.startsAt), endsAt: parsed.data.endsAt ? new Date(parsed.data.endsAt) : null,
+      capacity: parsed.data.capacity, reminderMinutes: parsed.data.reminderMinutes,
+    }, include: { sessions: { orderBy: { startsAt: 'asc' } }, _count: { select: { enrollments: true } } } });
+  });
+  res.json({ success: true, data: item });
+}
+
+export async function deleteClass(req: Request, res: Response) {
+  const churchIds = await scope(req);
+  const klass = await prisma.discipleshipClass.findFirst({ where: { id: String(req.params.classId), churchId: { in: churchIds } } });
+  if (!klass) { res.status(404).json({ success: false, message: 'Class not found' }); return; }
+  const [enrollments, workflowLinks, journeyLinks] = await Promise.all([
+    prisma.discipleshipClassEnrollment.count({ where: { classId: klass.id } }),
+    prisma.discipleshipWorkflowRequirement.count({ where: { classId: klass.id } }),
+    prisma.discipleshipJourneyRequirement.count({ where: { classId: klass.id } }),
+  ]);
+  if (enrollments || workflowLinks || journeyLinks) {
+    const item = await prisma.$transaction(async tx => {
+      await tx.discipleshipClassSession.updateMany({ where: { classId: klass.id, status: { in: ['scheduled', 'open'] } }, data: { status: 'cancelled' } });
+      await tx.discipleshipClassEnrollment.updateMany({ where: { classId: klass.id, status: 'enrolled' }, data: { status: 'withdrawn' } });
+      return tx.discipleshipClass.update({ where: { id: klass.id }, data: { status: 'cancelled' } });
+    });
+    res.json({ success: true, data: item, disposition: 'cancelled', message: 'Class cancelled because it already has enrolments or is linked to a workflow or journey.' });
+    return;
+  }
+  await prisma.discipleshipClass.delete({ where: { id: klass.id } });
+  res.json({ success: true, disposition: 'deleted', message: 'Class deleted.' });
 }
 
 export async function listRequirementDefinitions(req: Request, res: Response) {
@@ -186,6 +295,51 @@ export async function createRequirementDefinition(req: Request, res: Response) {
     return definition;
   });
   res.status(201).json({ success: true, data: item });
+}
+
+export async function updateRequirementDefinition(req: Request, res: Response) {
+  const definition = await prisma.discipleshipRequirementDefinition.findUnique({ where: { id: String(req.params.definitionId) } });
+  if (!definition) { res.status(404).json({ success: false, message: 'Requirement not found' }); return; }
+  const accessibleChurchIds = await scope(req);
+  if (!jsonChurchIds(definition.churchIds).some(churchId => accessibleChurchIds.includes(churchId))) { res.status(404).json({ success: false, message: 'Requirement not found' }); return; }
+  const parsed = requirementDefinitionSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid requirement' }); return; }
+  if (parsed.data.type !== definition.type) { res.status(409).json({ success: false, message: 'The type of an existing requirement cannot be changed' }); return; }
+  if (parsed.data.churchIds.some(churchId => !accessibleChurchIds.includes(churchId))) { res.status(403).json({ success: false, message: 'A selected church is outside your access scope' }); return; }
+  const churches = await prisma.church.findMany({ where: { id: { in: parsed.data.churchIds }, status: 'active', ministryAdminId: { not: null } }, select: { ministryAdminId: true } });
+  if (churches.length !== parsed.data.churchIds.length || new Set(churches.map(church => church.ministryAdminId)).size !== 1) { res.status(422).json({ success: false, message: 'Selected churches must be active and belong to the same ministry' }); return; }
+  const assignmentError = await validatePersonsInCharge(parsed.data.churchIds, parsed.data.personsInCharge);
+  if (assignmentError) { res.status(422).json({ success: false, message: assignmentError }); return; }
+  const { personsInCharge, ...definitionData } = parsed.data;
+  const item = await prisma.$transaction(async tx => {
+    await tx.discipleshipCatalogAssignment.deleteMany({ where: { itemType: 'requirement', itemId: definition.id } });
+    const updated = await tx.discipleshipRequirementDefinition.update({ where: { id: definition.id }, data: { ...definitionData, churchIds: [...new Set(definitionData.churchIds)], ministryAdminId: churches[0].ministryAdminId! } });
+    await tx.discipleshipCatalogAssignment.createMany({ data: personsInCharge.map(assignment => ({ ...assignment, itemType: 'requirement', itemId: definition.id })) });
+    return updated;
+  });
+  res.json({ success: true, data: item });
+}
+
+export async function deleteRequirementDefinition(req: Request, res: Response) {
+  const definition = await prisma.discipleshipRequirementDefinition.findUnique({ where: { id: String(req.params.definitionId) } });
+  if (!definition) { res.status(404).json({ success: false, message: 'Requirement not found' }); return; }
+  const accessibleChurchIds = await scope(req);
+  if (!jsonChurchIds(definition.churchIds).some(churchId => accessibleChurchIds.includes(churchId))) { res.status(404).json({ success: false, message: 'Requirement not found' }); return; }
+  const [workflowLinks, journeyLinks, attempts] = await Promise.all([
+    prisma.discipleshipWorkflowRequirement.count({ where: { definitionId: definition.id } }),
+    prisma.discipleshipJourneyRequirement.count({ where: { definitionId: definition.id } }),
+    prisma.discipleshipAssessmentAttempt.count({ where: { definitionId: definition.id } }),
+  ]);
+  if (workflowLinks || journeyLinks || attempts) {
+    const item = await prisma.discipleshipRequirementDefinition.update({ where: { id: definition.id }, data: { status: 'archived' } });
+    res.json({ success: true, data: item, disposition: 'archived', message: 'Requirement archived because it is already used by a workflow, journey, or assessment attempt.' });
+    return;
+  }
+  await prisma.$transaction([
+    prisma.discipleshipCatalogAssignment.deleteMany({ where: { itemType: 'requirement', itemId: definition.id } }),
+    prisma.discipleshipRequirementDefinition.delete({ where: { id: definition.id } }),
+  ]);
+  res.json({ success: true, disposition: 'deleted', message: 'Requirement deleted.' });
 }
 
 const enrollmentSchema = z.object({ journeyId: z.string().min(1), requirementId: z.string().optional() });
